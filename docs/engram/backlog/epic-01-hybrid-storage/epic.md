@@ -50,7 +50,11 @@ Erweiterung von Hindsight's monolithischem PostgreSQL+pgvector um Qdrant (Conten
 
 ## Stories
 
-1. [Qdrant Integration](story-01-qdrant-integration.md)
-2. [Neo4j Integration](story-02-neo4j-integration.md)
-3. [PostgreSQL Dictionary Table](story-03-dictionary-table.md)
-4. [Engram Storage Service](story-04-storage-service.md)
+1. [x] [Qdrant Integration](story-01-qdrant-integration.md)
+2. [x] [Neo4j Integration](story-02-neo4j-integration.md)
+3. [x] [PostgreSQL Dictionary Table](story-03-dictionary-table.md)
+4. [x] [Engram Storage Service](story-04-storage-service.md)
+
+## Status
+
+**DONE** — Alle 4 Stories abgeschlossen (2026-04-03)
