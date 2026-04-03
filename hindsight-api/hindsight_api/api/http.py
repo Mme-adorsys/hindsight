@@ -14,6 +14,8 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 
+from hindsight_api.config import get_config
+from hindsight_api.engine.qdrant_client import QdrantEngineClient
 from hindsight_api.extensions import AuthenticationError
 
 
@@ -963,6 +965,18 @@ def create_app(
                 metrics_collector.set_db_pool(memory._pool)
                 logging.info("DB pool metrics configured")
 
+        # Initialize Qdrant collection (idempotent — creates if not exists)
+        _config = get_config()
+        qdrant = QdrantEngineClient(
+            url=_config.qdrant_url,
+            api_key=_config.qdrant_api_key,
+            collection=_config.qdrant_collection,
+        )
+        await qdrant.connect()
+        await qdrant.ensure_collection()
+        app.state.qdrant = qdrant
+        logging.info("Qdrant collection ready")
+
         # Call HTTP extension startup hook
         if http_extension:
             await http_extension.on_startup()
@@ -974,6 +988,11 @@ def create_app(
         if http_extension:
             await http_extension.on_shutdown()
             logging.info("HTTP extension stopped")
+
+        # Shutdown: Close Qdrant client
+        if hasattr(app.state, "qdrant"):
+            await app.state.qdrant.close()
+            logging.info("Qdrant client closed")
 
         # Shutdown: Cleanup memory system
         await memory.close()

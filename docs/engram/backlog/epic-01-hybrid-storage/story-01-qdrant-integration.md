@@ -26,9 +26,9 @@ Hindsight nutzt aktuell PostgreSQL+pgvector für Vektor-Operationen (HNSW Index 
 
 ## Tasks
 
-- [ ] **T1 — Qdrant zu Docker-Compose hinzufügen:** `docker/` Verzeichnis prüfen, Qdrant Service mit Volume und Port ergänzen. Health-Check konfigurieren.
-- [ ] **T2 — Config erweitern:** In `hindsight_api/config.py` neue Env-Vars hinzufügen: `QDRANT_URL` (default: "http://localhost:6333"), `QDRANT_API_KEY` (optional), `QDRANT_COLLECTION` (default: "engrams"). In HindsightConfig Dataclass aufnehmen.
-- [ ] **T3 — Dependency hinzufügen:** `qdrant-client` in `pyproject.toml` unter `[tool.poetry.dependencies]` ergänzen.
-- [ ] **T4 — Qdrant Client-Modul erstellen:** Neues Modul `hindsight_api/engine/qdrant_client.py`. Async QdrantClient mit Retry-Logik analog zu `db_utils.py`. Methoden: `ensure_collection()` (erstellt Collection wenn nicht vorhanden), `upsert_point(engram_id, embedding, payload)`, `search_similar(embedding, limit, filters)`, `get_by_id(engram_id)`, `delete_by_id(engram_id)`, `batch_upsert(points)`.
-- [ ] **T5 — Collection-Initialisierung:** `ensure_collection()` wird beim Start aufgerufen (analog zu Alembic Migrations). Prüft ob Collection existiert, erstellt sie mit 384-dim Cosine Distance wenn nicht. Payload-Index auf `engram_id`, `tags`, `source`.
-- [ ] **T6 — Connectivity-Test:** Test in `hindsight_api/tests/` der Qdrant-Client instantiiert, Point schreibt, per Vector Search zurückholt und löscht.
+- [x] **T1 — Qdrant zu Docker-Compose hinzufügen:** `docker/docker-compose.yml` neu erstellt. Qdrant Service mit Volume, Port 6333/6334 und Health-Check.
+- [x] **T2 — Config erweitern:** In `hindsight_api/config.py` neue Env-Vars: `QDRANT_URL` (default: "http://localhost:6333"), `QDRANT_API_KEY` (optional), `QDRANT_COLLECTION` (default: "engrams"). In HindsightConfig Dataclass + from_env() + main.py aufgenommen.
+- [x] **T3 — Dependency hinzufügen:** `qdrant-client>=1.9.0` in `pyproject.toml` ergänzt.
+- [x] **T4 — Qdrant Client-Modul erstellen:** `hindsight_api/engine/qdrant_client.py` mit `QdrantEngineClient`. Async Client + Retry-Logik analog `db_utils.py`. Methoden: `connect()`, `close()`, `ensure_collection()`, `upsert_point()`, `search_similar()`, `get_by_id()`, `delete_by_id()`, `batch_upsert()`.
+- [x] **T5 — Collection-Initialisierung:** `ensure_collection()` in FastAPI-Lifespan (`api/http.py`) eingehängt. Qdrant-Client wird nach `memory.initialize()` gestartet, Collection idempotent angelegt, Client auf `app.state.qdrant` gespeichert. Shutdown via `app.state.qdrant.close()`.
+- [x] **T6 — Connectivity-Test:** `tests/test_qdrant_connectivity.py` mit 4 Tests: upsert→search→get→delete Round-trip, batch_upsert, ensure_collection idempotent, get_by_id für fehlende ID.
