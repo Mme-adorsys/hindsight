@@ -95,6 +95,12 @@ ENV_QDRANT_URL = "QDRANT_URL"
 ENV_QDRANT_API_KEY = "QDRANT_API_KEY"
 ENV_QDRANT_COLLECTION = "QDRANT_COLLECTION"
 
+# Neo4j (Graph Store)
+ENV_NEO4J_BOLT_URL = "NEO4J_BOLT_URL"
+ENV_NEO4J_USERNAME = "NEO4J_USERNAME"
+ENV_NEO4J_PASSWORD = "NEO4J_PASSWORD"
+ENV_NEO4J_DATABASE = "NEO4J_DATABASE"
+
 # Default values
 DEFAULT_DATABASE_URL = "pg0"
 DEFAULT_LLM_PROVIDER = "openai"
@@ -152,6 +158,11 @@ DEFAULT_TASK_BACKEND_MEMORY_BATCH_INTERVAL = 1.0  # seconds
 # Qdrant defaults
 DEFAULT_QDRANT_URL = "http://localhost:6333"
 DEFAULT_QDRANT_COLLECTION = "engrams"
+
+# Neo4j defaults
+DEFAULT_NEO4J_BOLT_URL = "bolt://localhost:7687"
+DEFAULT_NEO4J_USERNAME = "neo4j"
+DEFAULT_NEO4J_DATABASE = "neo4j"
 
 # Default MCP tool descriptions (can be customized via env vars)
 DEFAULT_MCP_RETAIN_DESCRIPTION = """Store important information to long-term memory.
@@ -270,6 +281,12 @@ class HindsightConfig:
     qdrant_api_key: str | None
     qdrant_collection: str
 
+    # Neo4j (Graph Store)
+    neo4j_bolt_url: str
+    neo4j_username: str
+    neo4j_password: str | None
+    neo4j_database: str
+
     @classmethod
     def from_env(cls) -> "HindsightConfig":
         """Create configuration from environment variables."""
@@ -354,6 +371,11 @@ class HindsightConfig:
             qdrant_url=os.getenv(ENV_QDRANT_URL, DEFAULT_QDRANT_URL),
             qdrant_api_key=os.getenv(ENV_QDRANT_API_KEY) or None,
             qdrant_collection=os.getenv(ENV_QDRANT_COLLECTION, DEFAULT_QDRANT_COLLECTION),
+            # Neo4j
+            neo4j_bolt_url=os.getenv(ENV_NEO4J_BOLT_URL, DEFAULT_NEO4J_BOLT_URL),
+            neo4j_username=os.getenv(ENV_NEO4J_USERNAME, DEFAULT_NEO4J_USERNAME),
+            neo4j_password=os.getenv(ENV_NEO4J_PASSWORD) or None,
+            neo4j_database=os.getenv(ENV_NEO4J_DATABASE, DEFAULT_NEO4J_DATABASE),
         )
 
     def get_llm_base_url(self) -> str:

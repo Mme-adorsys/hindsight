@@ -28,10 +28,10 @@ Hindsight speichert Beziehungen aktuell in der `memory_links` Tabelle (PostgreSQ
 
 ## Tasks
 
-- [ ] **T1 — Neo4j zu Docker-Compose hinzufügen:** Neo4j Service mit Bolt-Port (7687), HTTP-Port (7474), Volume für Data, Auth-Config. APOC Plugin aktivieren (für erweiterte Graph-Algorithmen). Health-Check.
-- [ ] **T2 — Config erweitern:** In `hindsight_api/config.py` neue Env-Vars: `NEO4J_BOLT_URL` (default: "bolt://localhost:7687"), `NEO4J_USERNAME` (default: "neo4j"), `NEO4J_PASSWORD`, `NEO4J_DATABASE` (default: "neo4j"). In HindsightConfig Dataclass aufnehmen.
-- [ ] **T3 — Dependency hinzufügen:** `neo4j` (async Driver) in `pyproject.toml` ergänzen.
-- [ ] **T4 — Neo4j Client-Modul erstellen:** Neues Modul `hindsight_api/engine/neo4j_client.py`. AsyncGraphDatabase Driver mit Session-Management. Retry-Logik analog zu `db_utils.py`. Methoden: `ensure_schema()`, `create_node(label, properties)`, `create_relationship(from_id, to_id, rel_type, properties)`, `get_node(engram_id)`, `get_relationships(engram_id, rel_types)`, `delete_node(engram_id, cascade_relationships=True)`, `traverse(start_id, rel_types, max_depth, min_weight)`, `run_cypher(query, params)`.
-- [ ] **T5 — Graph-Definition bei Start:** `ensure_schema()` wird beim Start aufgerufen. Erstellt: Unique Constraint auf `Engram.engram_id`. Composite Index auf `layer` + `status`. Indexe auf `strength`, `thalamus_overall`, `tags`. Prüft ob bereits vorhanden (idempotent).
-- [ ] **T6 — Relationship-Types dokumentieren:** In `ensure_schema()` Kommentare zu allen 8 Types: `SEMANTIC` (weight), `TEMPORAL` (weight), `ENTITY` (weight, entity_id), `CAUSAL` (weight, subtype: causes/caused_by/enables/prevents), `CO_ACTIVATED` (weight, activation_count), `TEMPORAL_PROXIMITY` (weight, time_delta), `SCHEMA` (weight), `CONTRADICTION` (weight, resolution). Neo4j erstellt Types implizit beim ersten Create.
-- [ ] **T7 — Connectivity-Test:** Test der Node anlegt, Relationship erstellt, per Cypher traversiert und aufräumt.
+- [x] **T1 — Neo4j zu Docker-Compose hinzufügen:** `docker/compose.yml` um Neo4j 5-community erweitert. Bolt (7687) + HTTP (7474), Volumes für data/logs, Auth `neo4j/hindsight`, APOC Plugin aktiviert, Health-Check via wget.
+- [x] **T2 — Config erweitern:** `NEO4J_BOLT_URL`, `NEO4J_USERNAME`, `NEO4J_PASSWORD`, `NEO4J_DATABASE` in `config.py` + HindsightConfig Dataclass + from_env() + main.py.
+- [x] **T3 — Dependency hinzufügen:** `neo4j>=5.0.0` in `pyproject.toml`.
+- [x] **T4 — Neo4j Client-Modul erstellen:** `hindsight_api/engine/neo4j_client.py` mit `Neo4jEngineClient`. AsyncGraphDatabase Driver + Session-Management + Retry-Logik. Methoden: `connect()`, `close()`, `ensure_schema()`, `create_node()`, `create_relationship()`, `get_node()`, `get_relationships()`, `delete_node()`, `traverse()`, `run_cypher()`.
+- [x] **T5 — Graph-Definition bei Start:** `ensure_schema()` in FastAPI-Lifespan (`api/http.py`) eingehängt. Unique Constraint + Composite Index (layer+status) + Index strength + Index thalamus_overall. Idempotent via `IF NOT EXISTS`.
+- [x] **T6 — Relationship-Types dokumentieren:** Alle 8 Types im Modul-Docstring + `RELATIONSHIP_TYPES` Konstante. Validation in `create_relationship()` mit ValueError bei unbekanntem Type.
+- [x] **T7 — Connectivity-Test:** `tests/test_neo4j_connectivity.py` mit 7 Tests: create+get, relationship, traversal, delete, idempotenz, invalid type, run_cypher.

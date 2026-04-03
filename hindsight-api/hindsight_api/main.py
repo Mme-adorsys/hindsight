@@ -212,6 +212,10 @@ def main():
             qdrant_url=config.qdrant_url,
             qdrant_api_key=config.qdrant_api_key,
             qdrant_collection=config.qdrant_collection,
+            neo4j_bolt_url=config.neo4j_bolt_url,
+            neo4j_username=config.neo4j_username,
+            neo4j_password=config.neo4j_password,
+            neo4j_database=config.neo4j_database,
         )
     config.configure_logging()
     if not args.daemon:

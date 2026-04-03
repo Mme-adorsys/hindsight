@@ -15,6 +15,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 
 from hindsight_api.config import get_config
+from hindsight_api.engine.neo4j_client import Neo4jEngineClient
 from hindsight_api.engine.qdrant_client import QdrantEngineClient
 from hindsight_api.extensions import AuthenticationError
 
@@ -977,6 +978,18 @@ def create_app(
         app.state.qdrant = qdrant
         logging.info("Qdrant collection ready")
 
+        # Initialize Neo4j schema (idempotent — creates constraints/indexes if not exists)
+        neo4j = Neo4jEngineClient(
+            bolt_url=_config.neo4j_bolt_url,
+            username=_config.neo4j_username,
+            password=_config.neo4j_password,
+            database=_config.neo4j_database,
+        )
+        await neo4j.connect()
+        await neo4j.ensure_schema()
+        app.state.neo4j = neo4j
+        logging.info("Neo4j schema ready")
+
         # Call HTTP extension startup hook
         if http_extension:
             await http_extension.on_startup()
@@ -988,6 +1001,11 @@ def create_app(
         if http_extension:
             await http_extension.on_shutdown()
             logging.info("HTTP extension stopped")
+
+        # Shutdown: Close Neo4j driver
+        if hasattr(app.state, "neo4j"):
+            await app.state.neo4j.close()
+            logging.info("Neo4j driver closed")
 
         # Shutdown: Close Qdrant client
         if hasattr(app.state, "qdrant"):
