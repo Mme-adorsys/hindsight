@@ -6,7 +6,9 @@ API response models should be kept separate and convert from these core models t
 API stability even if internal models change.
 """
 
+from datetime import datetime
 from typing import Any
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -259,3 +261,79 @@ class EntityState(BaseModel):
     observations: list[EntityObservation] = Field(
         default_factory=list, description="List of observations about this entity"
     )
+
+
+# =============================================================================
+# Engram Models (Epic 01 — Hybrid Storage Architecture)
+# =============================================================================
+
+
+class EngramMetadata(BaseModel):
+    """
+    Metadata stored in the PostgreSQL Dictionary (Hippocampal Pointer Index).
+
+    Knows WHERE the Engram lives and HOW STRONG / VALUED it is.
+    No text content, no embeddings, no graph relationships.
+    """
+
+    engram_id: UUID
+    bank_id: str
+    strength: float = Field(default=0.0, ge=0.0, le=1.0)
+    layer: str | None = Field(default=None, description="'buffer' or 'neocortex'")
+    abstraction_level: float = Field(default=0.0, ge=0.0, le=1.0)
+    tags: list[str] = Field(default_factory=list)
+    novelty: float | None = None
+    surprise: float | None = None
+    task_relevance: float | None = None
+    emotional_valence: float | None = None
+    thalamus_overall: float | None = None
+    created_at: datetime | None = None
+    last_accessed: datetime | None = None
+    access_count: int = 0
+    status: str = Field(default="active", description="'active', 'archived', or 'decayed'")
+    confidence_score: float | None = None
+    session_ref: UUID | None = None
+
+
+class EngramContent(BaseModel):
+    """
+    Content stored in Qdrant (text + embedding vector).
+
+    This is the actual information the Engram carries.
+    """
+
+    text: str
+    embedding: list[float] | None = Field(default=None, description="384-dim cosine embedding")
+    source: str | None = None
+    extra: dict[str, Any] = Field(default_factory=dict, description="Additional payload fields")
+
+
+class EngramRelationship(BaseModel):
+    """
+    A single relationship stored in Neo4j between two Engram nodes.
+
+    rel_type must be one of the 8 defined types (see neo4j_client.RELATIONSHIP_TYPES).
+    """
+
+    target_id: UUID
+    rel_type: str
+    weight: float = Field(default=1.0, ge=0.0, le=1.0)
+    properties: dict[str, Any] = Field(default_factory=dict)
+
+
+class FullEngram(BaseModel):
+    """
+    Complete Engram assembled from all three storage systems.
+
+    - metadata: from PostgreSQL Dictionary (fast pre-filter)
+    - content: from Qdrant (text + embedding)
+    - relationships: from Neo4j (graph links)
+
+    Any field may be None if that storage system was not queried
+    (use the `fields` parameter in EngramStorageService.read_engram).
+    """
+
+    engram_id: UUID
+    metadata: EngramMetadata | None = None
+    content: EngramContent | None = None
+    relationships: list[EngramRelationship] = Field(default_factory=list)

@@ -15,6 +15,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 
 from hindsight_api.config import get_config
+from hindsight_api.engine.engram_storage import EngramStorageService
 from hindsight_api.engine.neo4j_client import Neo4jEngineClient
 from hindsight_api.engine.qdrant_client import QdrantEngineClient
 from hindsight_api.extensions import AuthenticationError
@@ -989,6 +990,15 @@ def create_app(
         await neo4j.ensure_schema()
         app.state.neo4j = neo4j
         logging.info("Neo4j schema ready")
+
+        # Wire EngramStorageService into MemoryEngine (Epic 01, Story 04, T8)
+        if memory._pool is not None:
+            memory.engram_storage = EngramStorageService(
+                pool=memory._pool,
+                qdrant=qdrant,
+                neo4j=neo4j,
+            )
+            logging.info("EngramStorageService initialized")
 
         # Call HTTP extension startup hook
         if http_extension:

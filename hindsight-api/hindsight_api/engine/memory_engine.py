@@ -323,6 +323,9 @@ class MemoryEngine(MemoryEngineInterface):
         # Initialize entity resolver (will be created in initialize())
         self.entity_resolver = None
 
+        # Engram Storage Service — set by the lifespan after pool + clients are ready (Epic 01)
+        self.engram_storage = None
+
         # Initialize embeddings (from env vars if not provided)
         if embeddings is not None:
             self.embeddings = embeddings
