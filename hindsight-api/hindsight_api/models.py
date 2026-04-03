@@ -37,7 +37,7 @@ from sqlalchemy import (
 from sqlalchemy import (
     text as sql_text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TIMESTAMP, UUID
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -314,3 +314,71 @@ class Bank(Base):
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 
     __table_args__ = (Index("idx_banks_bank_id", "bank_id"),)
+
+    # Relationships
+    engram_entries = relationship("EngramDictionary", back_populates="bank", cascade="all, delete-orphan")
+
+
+class EngramDictionary(Base):
+    """
+    Hippocampal Pointer Index — lightweight metadata lookup for Engrams.
+
+    Stores WHERE information lives (engram_id links to Qdrant + Neo4j) and
+    HOW STRONG / VALUED it is. No text content, no embeddings, no relationships.
+    Enables fast pre-filter queries before expensive Qdrant/Neo4j operations.
+
+    Part of Epic 01 (Hybrid Storage Architecture), concept.md ch. 3.
+    """
+
+    __tablename__ = "engram_dictionary"
+
+    engram_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    bank_id: Mapped[str] = mapped_column(Text, ForeignKey("banks.bank_id", ondelete="CASCADE"), nullable=False)
+
+    # Engram strength (0.0–1.0) — increases via reinforcement, decays over time
+    strength: Mapped[float] = mapped_column(Float, server_default="0.0")
+
+    # Memory layer: 'buffer' (recent, fragile) or 'neocortex' (consolidated, stable)
+    layer: Mapped[str | None] = mapped_column(Text)
+
+    # Abstraction level (0.0 = concrete episode, 1.0 = abstract schema)
+    abstraction_level: Mapped[float] = mapped_column(Float, server_default="0.0")
+
+    # Semantic tags for fast filtering
+    tags: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
+
+    # Thalamus Filter scores (set during Retain, Epic 04)
+    novelty: Mapped[float | None] = mapped_column(Float)
+    surprise: Mapped[float | None] = mapped_column(Float)
+    task_relevance: Mapped[float | None] = mapped_column(Float)
+    emotional_valence: Mapped[float | None] = mapped_column(Float)
+    thalamus_overall: Mapped[float | None] = mapped_column(Float)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
+    last_accessed: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    access_count: Mapped[int] = mapped_column(Integer, server_default="0")
+
+    # Lifecycle status
+    status: Mapped[str] = mapped_column(Text, server_default="active")
+
+    # Optional confidence (set during fact extraction)
+    confidence_score: Mapped[float | None] = mapped_column(Float)
+
+    # Session that created this Engram (transient reference, not FK)
+    session_ref: Mapped[PyUUID | None] = mapped_column(UUID(as_uuid=True))
+
+    # Relationships
+    bank = relationship("Bank", back_populates="engram_entries")
+
+    __table_args__ = (
+        CheckConstraint("layer IN ('buffer', 'neocortex')", name="engram_dictionary_layer_check"),
+        CheckConstraint("status IN ('active', 'archived', 'decayed')", name="engram_dictionary_status_check"),
+        Index("idx_engram_dictionary_strength", "strength"),
+        Index("idx_engram_dictionary_layer", "layer"),
+        Index("idx_engram_dictionary_status", "status"),
+        Index("idx_engram_dictionary_thalamus", "thalamus_overall"),
+        Index("idx_engram_dictionary_tags", "tags", postgresql_using="gin"),
+        Index("idx_engram_dictionary_bank_layer_status", "bank_id", "layer", "status"),
+        Index("idx_engram_dictionary_bank_strength", "bank_id", "strength"),
+    )
