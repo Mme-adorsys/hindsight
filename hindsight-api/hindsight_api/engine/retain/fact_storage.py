@@ -6,6 +6,7 @@ Handles insertion of facts into the database.
 
 import json
 import logging
+import uuid
 
 from ..memory_engine import fq_table
 from .types import ProcessedFact
@@ -94,7 +95,48 @@ async def insert_facts_batch(
     )
 
     unit_ids = [str(row["id"]) for row in results]
+
+    # Write tags + thalamus scores to engram_dictionary (same transaction).
+    # memory_units.id == engram_dictionary.engram_id — the shared Engram ID.
+    await _insert_engram_dictionary_batch(conn, bank_id, unit_ids, facts)
+
     return unit_ids
+
+
+async def _insert_engram_dictionary_batch(conn, bank_id: str, unit_ids: list[str], facts: list[ProcessedFact]) -> None:
+    """Write tags + thalamus scores into engram_dictionary for each stored fact.
+
+    Called within the same DB transaction as insert_facts_batch so that
+    memory_units and engram_dictionary stay consistent even on rollback.
+
+    Args:
+        conn: Active DB connection (already inside a transaction).
+        bank_id: Bank identifier.
+        unit_ids: UUIDs returned from the memory_units INSERT (one per fact).
+        facts: ProcessedFact list in the same order as unit_ids.
+    """
+    for unit_id, fact in zip(unit_ids, facts):
+        ts = fact.thalamus_scores
+        await conn.execute(
+            """
+            INSERT INTO engram_dictionary (
+                engram_id, bank_id, tags,
+                novelty, surprise, task_relevance, emotional_valence, thalamus_overall,
+                strength, status
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            ON CONFLICT (engram_id) DO NOTHING
+            """,
+            uuid.UUID(unit_id),
+            bank_id,
+            fact.tags or None,
+            ts.novelty if ts else None,
+            ts.surprise if ts else None,
+            ts.task_relevance if ts else None,
+            ts.emotional_valence if ts else None,
+            ts.overall if ts else None,
+            0.0,
+            "active",
+        )
 
 
 async def ensure_bank_exists(conn, bank_id: str) -> None:
