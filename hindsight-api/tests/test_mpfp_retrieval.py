@@ -427,7 +427,7 @@ class TestMPFPGraphRetriever:
         async def mock_traverse(*args, **kwargs):
             return PatternResult(pattern=["semantic"], scores={"seed-1": 0.5, "result-1": 0.3})
 
-        async def mock_fetch(pool, node_ids, fact_type):
+        async def mock_fetch(pool, node_ids, **kwargs):
             return [
                 RetrievalResult(id="seed-1", text="seed text", fact_type="world"),
                 RetrievalResult(id="result-1", text="result text", fact_type="world"),

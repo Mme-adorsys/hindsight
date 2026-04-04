@@ -1518,9 +1518,10 @@ class MemoryEngine(MemoryEngineInterface):
 
         # Resolve ModeConfig for session-aware retrieval (Epic 06 wire-through; used in Epic 07)
         mode_config = self._resolve_session_config(session)
+        retrieval_mode = session.mode if session else None
         logger.debug(
             "Recall mode_config: mode=%s strength_pre_filter=%.2f weak_links=%s traversal=%s bank=%s",
-            session.mode.value if session else "precision",
+            retrieval_mode.value if retrieval_mode else "precision",
             mode_config.strength_pre_filter,
             mode_config.weak_link_policy,
             mode_config.traversal_depth,
@@ -1586,6 +1587,7 @@ class MemoryEngine(MemoryEngineInterface):
                         max_chunk_tokens,
                         request_context,
                         tags=tags,
+                        mode=retrieval_mode,
                     )
                     break  # Success - exit retry loop
                 except Exception as e:
@@ -1704,6 +1706,7 @@ class MemoryEngine(MemoryEngineInterface):
         max_chunk_tokens: int = 8192,
         request_context: "RequestContext" = None,
         tags: list[str] | None = None,
+        mode=None,  # RetrievalMode | None — forwarded to retrieve_parallel for MPFP pattern selection
     ) -> RecallResultModel:
         """
         Search implementation with modular retrieval and reranking.
@@ -1788,6 +1791,7 @@ class MemoryEngine(MemoryEngineInterface):
                 self.query_analyzer,
                 temporal_constraint=temporal_constraint,
                 tags=tags,
+                mode=mode,
             )
             parallel_duration = time.time() - parallel_start
 

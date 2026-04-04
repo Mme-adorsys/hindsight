@@ -18,7 +18,7 @@ Key properties:
 import asyncio
 import logging
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from ..db_utils import acquire_with_retry
 from ..memory_engine import fq_table
@@ -107,6 +107,75 @@ class PatternResult:
 
     pattern: list[str]
     scores: dict[str, float]  # node_id -> accumulated mass
+
+
+@dataclass(frozen=True)
+class MPFPPatternSet:
+    """
+    Mode-specific MPFP pattern configuration. Immutable.
+
+    Bio-mapping: PFC top-down attention modulating hippocampal strategy selection —
+    different cognitive demands (Precision/Exploration/Analogy/Validation) require
+    different memory access patterns and activation thresholds.
+    """
+
+    semantic_patterns: tuple[tuple[str, ...], ...]  # patterns seeded from semantic entry points
+    temporal_patterns: tuple[tuple[str, ...], ...]  # patterns seeded from temporal entry points
+    threshold: float  # mass pruning threshold (lower = explore further)
+    top_k: int  # max results returned from rrf_fusion
+
+
+# Mode-specific pattern sets (keyed by RetrievalMode.value to avoid circular import).
+# Selected at retrieve() time when mode is provided; falls back to MPFPConfig defaults otherwise.
+MODE_PATTERNS: dict[str, MPFPPatternSet] = {
+    # Precision: short direct paths, high threshold — strongest signal only
+    "precision": MPFPPatternSet(
+        semantic_patterns=(
+            ("semantic",),  # direct semantic neighbors
+            ("entity", "semantic"),  # entity context (1 entity hop + 1 semantic)
+        ),
+        temporal_patterns=(("temporal",),),
+        threshold=0.01,
+        top_k=10,
+    ),
+    # Exploration: long multi-hop paths, low threshold — weak links included
+    "exploration": MPFPPatternSet(
+        semantic_patterns=(
+            ("semantic", "semantic"),  # topic expansion
+            ("entity", "temporal"),  # entity timeline
+            ("co_activated", "semantic"),  # co-activation spreading
+            ("temporal_proximity", "entity"),  # temporal proximity chains
+        ),
+        temporal_patterns=(
+            ("temporal", "semantic"),
+            ("temporal", "entity"),
+        ),
+        threshold=0.0001,
+        top_k=30,
+    ),
+    # Analogy: schema link traversal — abstract patterns across domains
+    "analogy": MPFPPatternSet(
+        semantic_patterns=(
+            ("schema", "entity"),  # schema → concrete instances
+            ("schema", "semantic"),  # schema → related concepts
+            ("semantic", "schema"),  # concept → its schema
+        ),
+        temporal_patterns=(("temporal", "semantic"),),
+        threshold=0.001,
+        top_k=20,
+    ),
+    # Validation: causal + contradiction chains — evidence and counter-evidence
+    "validation": MPFPPatternSet(
+        semantic_patterns=(
+            ("causes", "entity"),  # causal forward chains
+            ("caused_by", "semantic"),  # causal backward chains
+            ("contradiction", "semantic"),  # contradicting evidence
+        ),
+        temporal_patterns=(("temporal", "semantic"),),
+        threshold=0.001,
+        top_k=20,
+    ),
+}
 
 
 @dataclass
@@ -395,6 +464,7 @@ class MPFPGraphRetriever(GraphRetriever):
         adjacency=None,  # Ignored - kept for interface compatibility
         tags: list[str] | None = None,
         fact_type: str | None = None,  # Deprecated, ignored
+        mode=None,  # RetrievalMode | None — selects mode-aware pattern set
     ) -> tuple[list[RetrievalResult], MPFPTimings | None]:
         """
         Retrieve facts using MPFP algorithm with lazy edge loading.
@@ -410,6 +480,8 @@ class MPFPGraphRetriever(GraphRetriever):
             adjacency: Ignored (kept for interface compatibility)
             tags: Optional tag filter — only return Engrams whose tags contain all given values.
             fact_type: Deprecated, ignored.
+            mode: Optional RetrievalMode — selects mode-aware pattern set from MODE_PATTERNS.
+                  Falls back to MPFPConfig defaults when None.
 
         Returns:
             Tuple of (List of RetrievalResult with activation scores, MPFPTimings)
@@ -417,6 +489,29 @@ class MPFPGraphRetriever(GraphRetriever):
         import time
 
         timings = MPFPTimings(tags=tags or [])
+
+        # Resolve mode-specific pattern set (bio: PFC top-down attention on hippocampal traversal)
+        mode_key = mode.value if mode is not None else None
+        if mode_key is not None and mode_key in MODE_PATTERNS:
+            ps = MODE_PATTERNS[mode_key]
+            semantic_patterns = [list(p) for p in ps.semantic_patterns]
+            temporal_patterns = [list(p) for p in ps.temporal_patterns]
+            effective_top_k = ps.top_k
+            # Override config threshold for this mode while keeping other params
+            effective_config = replace(self.config, threshold=ps.threshold)
+            logger.debug(
+                "MPFP mode=%s patterns=%d+%d threshold=%.4f top_k=%d",
+                mode_key,
+                len(semantic_patterns),
+                len(temporal_patterns),
+                ps.threshold,
+                effective_top_k,
+            )
+        else:
+            semantic_patterns = self.config.patterns_semantic
+            temporal_patterns = self.config.patterns_temporal
+            effective_top_k = 50  # rrf_fusion default
+            effective_config = self.config
 
         # Convert seeds to SeedNode format
         semantic_seed_nodes = self._convert_seeds(semantic_seeds, "similarity")
@@ -432,12 +527,12 @@ class MPFPGraphRetriever(GraphRetriever):
         pattern_jobs = []
 
         # Patterns from semantic seeds
-        for pattern in self.config.patterns_semantic:
+        for pattern in semantic_patterns:
             if semantic_seed_nodes:
                 pattern_jobs.append((semantic_seed_nodes, pattern))
 
         # Patterns from temporal seeds
-        for pattern in self.config.patterns_temporal:
+        for pattern in temporal_patterns:
             if temporal_seed_nodes:
                 pattern_jobs.append((temporal_seed_nodes, pattern))
 
@@ -452,7 +547,7 @@ class MPFPGraphRetriever(GraphRetriever):
         # Run all patterns in parallel (each does lazy edge loading)
         step_start = time.time()
         pattern_tasks = [
-            mpfp_traverse_async(pool, seeds, pattern, self.config, cache) for seeds, pattern in pattern_jobs
+            mpfp_traverse_async(pool, seeds, pattern, effective_config, cache) for seeds, pattern in pattern_jobs
         ]
         pattern_results = await asyncio.gather(*pattern_tasks)
         timings.traverse = time.time() - step_start
@@ -462,9 +557,9 @@ class MPFPGraphRetriever(GraphRetriever):
         timings.db_queries = cache.db_queries
         timings.edge_load_time = cache.edge_load_time
 
-        # Fuse results
+        # Fuse results (mode-specific top_k)
         step_start = time.time()
-        fused = rrf_fusion(pattern_results, top_k=budget)
+        fused = rrf_fusion(pattern_results, top_k=min(budget, effective_top_k))
         timings.fusion = time.time() - step_start
 
         if not fused:

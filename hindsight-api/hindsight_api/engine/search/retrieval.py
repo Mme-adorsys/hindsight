@@ -403,6 +403,7 @@ async def retrieve_parallel(
     graph_retriever: GraphRetriever | None = None,
     temporal_constraint: tuple | None = None,  # Pre-extracted temporal constraint
     tags: list[str] | None = None,
+    mode=None,  # RetrievalMode | None — forwarded to graph retriever for mode-aware patterns
 ) -> ParallelRetrievalResult:
     """
     Run 3-way or 4-way parallel retrieval (adds temporal if detected).
@@ -418,6 +419,7 @@ async def retrieve_parallel(
         graph_retriever: Graph retrieval strategy (defaults to configured retriever)
         temporal_constraint: Pre-extracted temporal constraint (optional)
         tags: Optional tag filter — only return Engrams whose tags contain all given values.
+        mode: Optional RetrievalMode — enables mode-aware MPFP pattern selection.
 
     Returns:
         ParallelRetrievalResult with semantic, bm25, graph, temporal results and timings
@@ -442,10 +444,19 @@ async def retrieve_parallel(
             temporal_constraint,
             retriever,
             tags=tags,
+            mode=mode,
         )
     else:
         return await _retrieve_parallel_bfs(
-            pool, query_text, query_embedding_str, bank_id, thinking_budget, temporal_constraint, retriever, tags=tags
+            pool,
+            query_text,
+            query_embedding_str,
+            bank_id,
+            thinking_budget,
+            temporal_constraint,
+            retriever,
+            tags=tags,
+            mode=mode,
         )
 
 
@@ -466,6 +477,7 @@ async def _retrieve_parallel_mpfp(
     temporal_constraint: tuple | None,
     retriever: GraphRetriever,
     tags: list[str] | None = None,
+    mode=None,  # RetrievalMode | None
 ) -> ParallelRetrievalResult:
     """
     MPFP retrieval with true parallelization.
@@ -517,6 +529,7 @@ async def _retrieve_parallel_mpfp(
             query_text=query_text,
             semantic_seeds=None,  # Let MPFP find its own seeds
             temporal_seeds=temporal_seeds,
+            mode=mode,
         )
         return results, time.time() - start, mpfp_timing
 
@@ -676,6 +689,7 @@ async def _retrieve_parallel_bfs(
     temporal_constraint: tuple | None,
     retriever: GraphRetriever,
     tags: list[str] | None = None,
+    mode=None,  # RetrievalMode | None — forwarded to retriever (no-op for BFS)
 ) -> ParallelRetrievalResult:
     """BFS retrieval: all methods run in parallel (original behavior)."""
     import time
@@ -701,6 +715,7 @@ async def _retrieve_parallel_bfs(
             tags=tags,
             budget=thinking_budget,
             query_text=query_text,
+            mode=mode,
         )
         return _TimedResult(results, time.time() - start)
 

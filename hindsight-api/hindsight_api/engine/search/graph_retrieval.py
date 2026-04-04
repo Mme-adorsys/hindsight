@@ -45,6 +45,7 @@ class GraphRetriever(ABC):
         tags: list[str] | None = None,
         # Deprecated: fact_type kept for backward compat, ignored internally
         fact_type: str | None = None,
+        mode=None,  # RetrievalMode | None — mode-aware pattern selection (MPFP only)
     ) -> tuple[list[RetrievalResult], MPFPTimings | None]:
         """
         Retrieve relevant facts via graph traversal.
@@ -60,6 +61,8 @@ class GraphRetriever(ABC):
             adjacency: Pre-loaded typed adjacency graph (optional, for MPFP)
             tags: Optional tag filter — only return Engrams whose tags contain all given values.
             fact_type: Deprecated — converted to tags internally for backward compat.
+            mode: Optional RetrievalMode — enables mode-aware pattern selection in MPFP.
+                  Ignored by BFS retriever.
 
         Returns:
             Tuple of (List of RetrievalResult with activation scores, optional timing info)
@@ -118,6 +121,7 @@ class BFSGraphRetriever(GraphRetriever):
         adjacency=None,  # Not used by BFS
         tags: list[str] | None = None,
         fact_type: str | None = None,  # Deprecated, ignored
+        mode=None,  # RetrievalMode | None — accepted for interface compat, not used by BFS
     ) -> tuple[list[RetrievalResult], MPFPTimings | None]:
         """
         Retrieve facts using BFS spreading activation.
