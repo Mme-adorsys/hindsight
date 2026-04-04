@@ -50,6 +50,7 @@ async def retain_batch(
     is_first_batch: bool = True,
     fact_type_override: str | None = None,
     confidence_score: float | None = None,
+    session=None,
 ) -> tuple[list[list[str]], TokenUsage]:
     """
     Process a batch of content through the retain pipeline.
@@ -184,7 +185,7 @@ async def retain_batch(
 
     # Step 2: Augment texts and generate embeddings
     step_start = time.time()
-    augmented_texts = embedding_processing.augment_texts_with_dates(extracted_facts, format_date_fn)
+    augmented_texts = embedding_processing.augment_texts_with_context(extracted_facts, format_date_fn, session=session)
     embeddings = await embedding_processing.generate_embeddings_batch(embeddings_model, augmented_texts)
     log_buffer.append(f"[2] Generate embeddings: {len(embeddings)} embeddings in {time.time() - step_start:.3f}s")
 

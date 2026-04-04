@@ -1268,6 +1268,7 @@ class MemoryEngine(MemoryEngineInterface):
                     is_first_batch=i == 1,  # Only upsert on first batch
                     fact_type_override=fact_type_override,
                     confidence_score=confidence_score,
+                    session=session,
                 )
                 all_results.extend(sub_results)
                 total_usage = total_usage + sub_usage
@@ -1286,6 +1287,7 @@ class MemoryEngine(MemoryEngineInterface):
                 is_first_batch=True,
                 fact_type_override=fact_type_override,
                 confidence_score=confidence_score,
+                session=session,
             )
 
         # Reconstruct full result shape when thalamus filtering dropped some contents.
@@ -1329,6 +1331,7 @@ class MemoryEngine(MemoryEngineInterface):
         is_first_batch: bool = True,
         fact_type_override: str | None = None,
         confidence_score: float | None = None,
+        session: "Session | None" = None,
     ) -> tuple[list[list[str]], "TokenUsage"]:
         """
         Internal method for batch processing without chunking logic.
@@ -1345,6 +1348,7 @@ class MemoryEngine(MemoryEngineInterface):
             is_first_batch: Whether this is the first batch (for chunked operations, only delete on first batch)
             fact_type_override: Override fact type for all facts
             confidence_score: Confidence score for opinions
+            session: Optional Session for embedding enrichment (task_context, mode)
 
         Returns:
             Tuple of (unit ID lists, token usage for fact extraction)
@@ -1369,6 +1373,7 @@ class MemoryEngine(MemoryEngineInterface):
                 is_first_batch=is_first_batch,
                 fact_type_override=fact_type_override,
                 confidence_score=confidence_score,
+                session=session,
             )
 
     def recall(
