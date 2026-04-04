@@ -51,6 +51,7 @@ async def retain_batch(
     fact_type_override: str | None = None,
     confidence_score: float | None = None,
     session=None,
+    neo4j_client=None,
 ) -> tuple[list[list[str]], TokenUsage]:
     """
     Process a batch of content through the retain pipeline.
@@ -393,6 +394,7 @@ async def retain_batch(
                 non_duplicate_facts,
                 log_buffer,
                 user_entities_per_content=user_entities_per_content,
+                llm=llm_registry.get_llm("retain", "entity_disambiguation") if llm_registry else None,
             )
             log_buffer.append(f"[6] Process entities: {len(entity_links)} links in {time.time() - step_start:.3f}s")
 
@@ -409,13 +411,36 @@ async def retain_batch(
             )
             log_buffer.append(f"[8] Semantic links: {semantic_link_count} links in {time.time() - step_start:.3f}s")
 
-            # Insert entity links
+            # Insert entity links (PostgreSQL)
             step_start = time.time()
             if entity_links:
                 await entity_processing.insert_entity_links_batch(conn, entity_links)
             log_buffer.append(
                 f"[9] Entity links: {len(entity_links) if entity_links else 0} links in {time.time() - step_start:.3f}s"
             )
+
+            # Dual-write: Entity nodes + ENTITY relationships in Neo4j (R4/T4+T5)
+            # Runs outside the PostgreSQL transaction — eventual consistency, errors logged only.
+            if neo4j_client is not None and entity_links:
+                import uuid as _uuid
+
+                from ..memory_engine import fq_table
+
+                unique_entity_ids = list({str(link.entity_id) for link in entity_links})
+                try:
+                    entity_rows = await conn.fetch(
+                        f"SELECT id::text AS entity_id, canonical_name"
+                        f" FROM {fq_table('entities')} WHERE id = ANY($1::uuid[])",
+                        [_uuid.UUID(eid) for eid in unique_entity_ids],
+                    )
+                    neo4j_entities = [
+                        {"entity_id": r["entity_id"], "canonical_name": r["canonical_name"], "type": "CONCEPT"}
+                        for r in entity_rows
+                    ]
+                    await entity_processing.create_entity_nodes_batch(neo4j_client, neo4j_entities)
+                except Exception as _exc:
+                    logger.warning(f"Neo4j entity node query/write failed: {_exc}")
+                await entity_processing.create_entity_relationships_batch(neo4j_client, entity_links)
 
             # Create causal links
             step_start = time.time()
