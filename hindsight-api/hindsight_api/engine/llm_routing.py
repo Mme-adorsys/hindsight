@@ -51,6 +51,42 @@ class ModelTier(str, Enum):
 # so their tier is explicit before implementation, not decided ad-hoc.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Provider-Tier-Mappings (L3)
+# ---------------------------------------------------------------------------
+# Maps (provider, tier) → default model name.
+# Used by resolve_llm_config when no explicit subtask env var is set:
+#   set LLM_PROVIDER=anthropic  →  fact_extraction gets claude-opus-4-6 automatically,
+#                                   observation_synthesis gets claude-sonnet-4-6, etc.
+#
+# Override a single subtask:
+#   HINDSIGHT_API_RETAIN_FACT_EXTRACTION_LLM_MODEL=my-custom-model  (always wins)
+#
+# Extend for new providers: add a key to PROVIDER_TIER_MODELS.
+# Providers without an entry fall back to the operation-level model config.
+# ---------------------------------------------------------------------------
+
+PROVIDER_TIER_MODELS: Final[dict[str, dict[ModelTier, str]]] = {
+    "anthropic": {
+        ModelTier.SMALL: "claude-haiku-4-5-20251001",
+        ModelTier.MEDIUM: "claude-sonnet-4-6",
+        ModelTier.LARGE: "claude-opus-4-6",
+    },
+    "openai": {
+        # No stronger reasoning model on OpenAI available; Opus-equivalent → gpt-4o.
+        ModelTier.SMALL: "gpt-4o-mini",
+        ModelTier.MEDIUM: "gpt-4o",
+        ModelTier.LARGE: "gpt-4o",
+    },
+    "groq": {
+        ModelTier.SMALL: "llama-3.1-8b-instant",
+        ModelTier.MEDIUM: "llama-3.3-70b-versatile",
+        ModelTier.LARGE: "llama-3.3-70b-versatile",
+    },
+    # "ollama": intentionally omitted — local model names are installation-specific.
+    # Use subtask env vars to configure per-subtask models for Ollama.
+}
+
 TASK_TIER_MAPPING: Final[dict[str, ModelTier]] = {
     # --- Retain pipeline ---
     # Full fact extraction: entity linking, temporal relations, causal reasoning.
@@ -89,28 +125,31 @@ def resolve_llm_config(
 ) -> LLMConfig:
     """Resolve LLMConfig for a subtask using a 3-level fallback chain.
 
-    Priority: subtask env var → operation config → global config.
-    The operation_config is already built with the global fallback in memory_engine,
-    so returning it covers both the operation and global levels.
+    Priority (highest → lowest):
+      1. Subtask env var  — HINDSIGHT_API_{OP}_{SUBTASK}_LLM_{MODEL,PROVIDER}
+      2. Tier default     — PROVIDER_TIER_MODELS[provider][tier] for this subtask
+      3. Operation config — the operation-level model (already falls back to global)
+
+    Tier defaults only apply when the task key is in TASK_TIER_MAPPING and the
+    active provider has an entry in PROVIDER_TIER_MODELS. Unknown providers fall
+    through to the operation config unchanged.
 
     Args:
         operation: Pipeline name, e.g. "retain" or "reflect".
-        subtask: Subtask name, e.g. "fact_extraction" (underscores, no dots).
-        operation_config: Operation-level LLMConfig (already falls back to global).
-        global_config: Global LLMConfig (used to fill gaps when subtask overrides partial fields).
+        subtask: Subtask name with underscores, e.g. "fact_extraction" (no dots).
+        operation_config: Operation-level LLMConfig (already incorporates global fallback).
+        global_config: Global LLMConfig (fills gaps when subtask overrides partial fields).
 
     Returns:
-        Resolved LLMConfig for this subtask.
+        Resolved LLMConfig for this subtask. Never None.
     """
     from ..config import get_subtask_llm_model, get_subtask_llm_provider
+    from .llm_wrapper import LLMConfig as _LLMConfig
 
+    # --- Level 1: Explicit subtask env var ---
     subtask_provider = get_subtask_llm_provider(operation, subtask)
     subtask_model = get_subtask_llm_model(operation, subtask)
-
     if subtask_provider or subtask_model:
-        # Build from subtask env vars, inherit remaining fields from operation config
-        from .llm_wrapper import LLMConfig as _LLMConfig
-
         return _LLMConfig(
             provider=subtask_provider or operation_config.provider,
             model=subtask_model or operation_config.model,
@@ -118,6 +157,20 @@ def resolve_llm_config(
             base_url=operation_config.base_url,
         )
 
+    # --- Level 2: Tier default from PROVIDER_TIER_MODELS ---
+    task_key = f"{operation}.{subtask}"
+    tier = TASK_TIER_MAPPING.get(task_key)
+    if tier is not None:
+        tier_model = PROVIDER_TIER_MODELS.get(operation_config.provider, {}).get(tier)
+        if tier_model:
+            return _LLMConfig(
+                provider=operation_config.provider,
+                model=tier_model,
+                api_key=operation_config.api_key,
+                base_url=operation_config.base_url,
+            )
+
+    # --- Level 3: Operation config (already falls back to global) ---
     return operation_config
 
 
