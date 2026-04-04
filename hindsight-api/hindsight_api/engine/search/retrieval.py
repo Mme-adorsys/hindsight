@@ -404,6 +404,7 @@ async def retrieve_parallel(
     temporal_constraint: tuple | None = None,  # Pre-extracted temporal constraint
     tags: list[str] | None = None,
     mode=None,  # RetrievalMode | None — forwarded to graph retriever for mode-aware patterns
+    registry: "RetrieverRegistry | None" = None,  # Bank-aware retriever registry (T6)
 ) -> ParallelRetrievalResult:
     """
     Run 3-way or 4-way parallel retrieval (adds temporal if detected).
@@ -432,7 +433,13 @@ async def retrieve_parallel(
             query_text, reference_date=question_date, analyzer=query_analyzer
         )
 
-    retriever = graph_retriever or get_default_graph_retriever()
+    # Resolve retriever: explicit arg → registry (bank-aware) → global default
+    if graph_retriever is not None:
+        retriever = graph_retriever
+    elif registry is not None:
+        retriever = registry.get(bank_id)
+    else:
+        retriever = get_default_graph_retriever()
 
     if retriever.name == "mpfp":
         return await _retrieve_parallel_mpfp(
@@ -773,3 +780,54 @@ async def _retrieve_parallel_bfs(
             },
             temporal_constraint=None,
         )
+
+
+# ---------------------------------------------------------------------------
+# T6 — RetrieverRegistry
+# Maps bank_id strings to GraphRetriever instances. Configurable, not hardcoded.
+# Bio-mapping: Session Layer (PFC) routes retrieval to the appropriate strategy
+# based on bank type — Agent Session Bank → MPFP/BFS, Shared Bank → EngramRetriever.
+# ---------------------------------------------------------------------------
+
+
+class RetrieverRegistry:
+    """
+    Maps bank_id → GraphRetriever instance for bank-aware retrieval routing.
+
+    Usage:
+        registry = RetrieverRegistry(default=MPFPGraphRetriever())
+        registry.register("shared-bank-id", EngramRetriever(qdrant, neo4j))
+        retriever = registry.get(bank_id)  # returns override or default
+    """
+
+    def __init__(self, default: GraphRetriever) -> None:
+        self._default = default
+        self._overrides: dict[str, GraphRetriever] = {}
+
+    def register(self, bank_id: str, retriever: GraphRetriever) -> None:
+        """Register a bank-specific retriever override."""
+        self._overrides[bank_id] = retriever
+
+    def get(self, bank_id: str) -> GraphRetriever:
+        """Return the retriever for bank_id, or the default if not registered."""
+        return self._overrides.get(bank_id, self._default)
+
+
+def build_retriever_registry(
+    default: GraphRetriever | None = None,
+    overrides: dict[str, GraphRetriever] | None = None,
+) -> RetrieverRegistry:
+    """
+    Build a RetrieverRegistry with an optional set of bank-specific overrides.
+
+    Args:
+        default: Default retriever (falls back to get_default_graph_retriever()).
+        overrides: Dict of {bank_id: retriever} for explicit routing.
+
+    Returns:
+        Configured RetrieverRegistry.
+    """
+    registry = RetrieverRegistry(default=default or get_default_graph_retriever())
+    for bank_id, retriever in (overrides or {}).items():
+        registry.register(bank_id, retriever)
+    return registry
