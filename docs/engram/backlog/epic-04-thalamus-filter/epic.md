@@ -40,5 +40,5 @@ Implementierung des Thalamus Filters als Relevance Scoring Gate vor der Retain P
 
 ## Stories
 
-1. [Thalamus Scoring Engine](story-01-scoring-engine.md)
-2. [Retain Pipeline Integration](story-02-pipeline-integration.md)
+1. [x] [Thalamus Scoring Engine](story-01-scoring-engine.md)
+2. [x] [Retain Pipeline Integration](story-02-pipeline-integration.md)

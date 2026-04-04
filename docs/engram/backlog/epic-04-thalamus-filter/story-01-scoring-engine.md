@@ -18,21 +18,21 @@ Der Thalamus Filter ist das biologische Äquivalent des sensorischen Gatings —
 
 ## Akzeptanzkriterien
 
-- [ ] ThalamFilter Klasse mit `score(episode, session) → ThalamusScores` Methode
-- [ ] Novelty Score: basierend auf Qdrant Similarity (niedriger Similarity = höhere Novelty)
-- [ ] Surprise Score: Abweichung von Session.current_expectation (LLM-basiert oder heuristisch)
-- [ ] Task-Relevance Score: Relevanz zum Session.task_context (Embedding Similarity)
-- [ ] Emotional Valence Score: LLM-basierte Einschätzung (Small-Tier)
-- [ ] Overall Score: gewichtete Kombination, mode-abhängig
-- [ ] Mode-abhängige Thresholds definiert
+- [x] ThalamFilter Klasse mit `score(episode, session) → ThalamusScores` Methode
+- [x] Novelty Score: basierend auf Qdrant Similarity (niedriger Similarity = höhere Novelty)
+- [x] Surprise Score: Abweichung von Session.current_expectation (LLM-basiert oder heuristisch)
+- [x] Task-Relevance Score: Relevanz zum Session.task_context (Embedding Similarity)
+- [x] Emotional Valence Score: LLM-basierte Einschätzung (Small-Tier)
+- [x] Overall Score: gewichtete Kombination, mode-abhängig
+- [x] Mode-abhängige Thresholds definiert
 
 ## Tasks
 
-- [ ] **T1 — ThalamusFilter Klasse erstellen:** Neues Modul `hindsight_api/engine/thalamus.py`. Klasse `ThalamusFilter` mit Dependency auf Qdrant Client, Embedding Provider, LLM (Small-Tier). Hauptmethode: `async score(text: str, session: Session) → ThalamusScores`.
-- [ ] **T2 — Novelty Score implementieren:** Embedding des Input-Texts generieren → Qdrant `search_similar(embedding, limit=5)` → Höchste Similarity als Basis: `novelty = 1.0 - max_similarity`. Kein Match in Qdrant → novelty = 1.0. Sehr ähnlich (>0.95) → novelty ≈ 0.0.
-- [ ] **T3 — Surprise Score implementieren:** Wenn `session.current_expectation` gesetzt: Embedding-Similarity zwischen Input und Expectation berechnen. Hohe Similarity = niedrige Surprise (erwartet). Niedrige Similarity = hohe Surprise. Wenn keine Expectation: surprise = 0.5 (neutral).
-- [ ] **T4 — Task-Relevance Score implementieren:** Wenn `session.task_context` gesetzt: Embedding-Similarity zwischen Input und Task Context. Hohe Similarity = hohe Relevance. Wenn kein Task Context: relevance = 0.5 (neutral).
-- [ ] **T5 — Emotional Valence Score implementieren:** LLM-Call (Small-Tier via LLM Routing): "Rate the emotional significance of this text on a scale of 0.0-1.0". Einfacher Prompt, kurze Response. Fallback auf 0.3 bei LLM-Fehler.
-- [ ] **T6 — Mode-abhängige Gewichtung:** In `thalamus.py` Dictionary `MODE_WEIGHTS: Dict[RetrievalMode, Dict[str, float]]`. Exploration: {novelty: 0.4, surprise: 0.2, relevance: 0.2, emotion: 0.2}. Precision: {novelty: 0.1, surprise: 0.2, relevance: 0.5, emotion: 0.2}. Validation: {novelty: 0.2, surprise: 0.4, relevance: 0.2, emotion: 0.2}. Analogy: {novelty: 0.3, surprise: 0.2, relevance: 0.3, emotion: 0.2}. Overall = gewichtete Summe.
-- [ ] **T7 — Threshold-Konfiguration:** Mode-abhängige Thresholds: Exploration: 0.2 (niedriger, mehr durchlassen), Precision: 0.4 (höher, nur Relevantes), Validation: 0.3, Analogy: 0.3. Konfigurierbar über Env-Vars mit Defaults.
-- [ ] **T8 — Unit Tests:** Score-Berechnung mit bekannten Inputs. Mode-abhängige Gewichtung. Threshold-Filtering. Fallback bei fehlendem Session Context.
+- [x] **T1 — ThalamusFilter Klasse erstellen:** Neues Modul `hindsight_api/engine/thalamus.py`. Klasse `ThalamusFilter` mit Dependency auf Qdrant Client, Embedding Provider, LLM (Small-Tier). Hauptmethode: `async score(text: str, session: Session) → ThalamusScores`.
+- [x] **T2 — Novelty Score implementieren:** Embedding des Input-Texts generieren → Qdrant `search_similar(embedding, limit=5)` → Höchste Similarity als Basis: `novelty = 1.0 - max_similarity`. Kein Match in Qdrant → novelty = 1.0. Sehr ähnlich (>0.95) → novelty ≈ 0.0.
+- [x] **T3 — Surprise Score implementieren:** Wenn `session.current_expectation` gesetzt: Embedding-Similarity zwischen Input und Expectation berechnen. Hohe Similarity = niedrige Surprise (erwartet). Niedrige Similarity = hohe Surprise. Wenn keine Expectation: surprise = 0.5 (neutral).
+- [x] **T4 — Task-Relevance Score implementieren:** Wenn `session.task_context` gesetzt: Embedding-Similarity zwischen Input und Task Context. Hohe Similarity = hohe Relevance. Wenn kein Task Context: relevance = 0.5 (neutral).
+- [x] **T5 — Emotional Valence Score implementieren:** LLM-Call (Small-Tier via LLM Routing): "Rate the emotional significance of this text on a scale of 0.0-1.0". Einfacher Prompt, kurze Response. Fallback auf 0.3 bei LLM-Fehler.
+- [x] **T6 — Mode-abhängige Gewichtung:** In `thalamus.py` Dictionary `MODE_WEIGHTS: Dict[RetrievalMode, Dict[str, float]]`. Exploration: {novelty: 0.4, surprise: 0.2, relevance: 0.2, emotion: 0.2}. Precision: {novelty: 0.1, surprise: 0.2, relevance: 0.5, emotion: 0.2}. Validation: {novelty: 0.2, surprise: 0.4, relevance: 0.2, emotion: 0.2}. Analogy: {novelty: 0.3, surprise: 0.2, relevance: 0.3, emotion: 0.2}. Overall = gewichtete Summe.
+- [x] **T7 — Threshold-Konfiguration:** Mode-abhängige Thresholds: Exploration: 0.2 (niedriger, mehr durchlassen), Precision: 0.4 (höher, nur Relevantes), Validation: 0.3, Analogy: 0.3. Konfigurierbar über Env-Vars mit Defaults.
+- [x] **T8 — Unit Tests:** Score-Berechnung mit bekannten Inputs. Mode-abhängige Gewichtung. Threshold-Filtering. Fallback bei fehlendem Session Context.
