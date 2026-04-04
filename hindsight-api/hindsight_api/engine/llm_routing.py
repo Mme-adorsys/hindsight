@@ -79,6 +79,7 @@ PROVIDER_TIER_MODELS: Final[dict[str, dict[ModelTier, str]]] = {
         ModelTier.LARGE: "gpt-4o",
     },
     "groq": {
+        # No stronger model available on Groq; LARGE falls back to same as MEDIUM.
         ModelTier.SMALL: "llama-3.1-8b-instant",
         ModelTier.MEDIUM: "llama-3.3-70b-versatile",
         ModelTier.LARGE: "llama-3.3-70b-versatile",

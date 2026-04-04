@@ -56,6 +56,19 @@ class TestThalamusScores:
         assert scores.novelty == 1.0
         assert scores.surprise == 0.0
 
+    def test_rejects_value_above_one(self):
+        with pytest.raises(ValueError, match="must be in range"):
+            ThalamusScores(novelty=1.5)
+
+    def test_rejects_negative_value(self):
+        with pytest.raises(ValueError, match="must be in range"):
+            ThalamusScores(surprise=-0.1)
+
+    def test_boundary_values_accepted(self):
+        scores = ThalamusScores(novelty=0.0, surprise=1.0, overall=0.0)
+        assert scores.novelty == 0.0
+        assert scores.surprise == 1.0
+
 
 # =============================================================================
 # ExtractedFact — backwards-compatibility

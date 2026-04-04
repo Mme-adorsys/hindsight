@@ -159,7 +159,7 @@ class EngramStorageService(EngramStorageInterface):
 
         # --- Step 2: Qdrant ---
         embedding = data.get("embedding", [])
-        payload = {k: v for k, v in data.items() if k not in {"embedding", "bank_id"}}
+        payload = {k: v for k, v in data.items() if k not in {"embedding"}}
         try:
             await self._qdrant.upsert_point(
                 engram_id=engram_id,

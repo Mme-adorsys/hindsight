@@ -27,3 +27,9 @@ class ThalamusScores:
     task_relevance: float = 0.0
     emotional_valence: float = 0.0
     overall: float = 0.0
+
+    def __post_init__(self) -> None:
+        for field_name in ("novelty", "surprise", "task_relevance", "emotional_valence", "overall"):
+            value = getattr(self, field_name)
+            if not (0.0 <= value <= 1.0):
+                raise ValueError(f"ThalamusScores.{field_name} must be in range 0.0–1.0, got {value}")

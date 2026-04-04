@@ -121,7 +121,7 @@ class QdrantEngineClient:
                 ),
             )
             # Payload indexes for efficient filtering
-            for field_name in ("engram_id", "tags", "source"):
+            for field_name in ("engram_id", "bank_id", "tags", "source"):
                 await client.create_payload_index(
                     collection_name=self._collection,
                     field_name=field_name,

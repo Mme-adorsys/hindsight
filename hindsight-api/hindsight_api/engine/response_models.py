@@ -6,7 +6,7 @@ API response models should be kept separate and convert from these core models t
 API stability even if internal models change.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -433,7 +433,7 @@ class Session(BaseModel):
         default=None, description="Current expectation for Prediction Error Detection"
     )
     task_context: str | None = Field(default=None, description="Current task context")
-    started_at: datetime = Field(default_factory=datetime.utcnow)
+    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     @classmethod
     def default(cls) -> "Session":
