@@ -66,7 +66,7 @@ def set_default_graph_retriever(retriever: GraphRetriever) -> None:
 
 
 async def retrieve_semantic(
-    conn, query_emb_str: str, bank_id: str, fact_type: str, limit: int
+    conn, query_emb_str: str, bank_id: str, limit: int, tags: list[str] | None = None
 ) -> list[RetrievalResult]:
     """
     Semantic retrieval via vector similarity.
@@ -74,43 +74,53 @@ async def retrieve_semantic(
     Args:
         conn: Database connection
         query_emb_str: Query embedding as string
-        agent_id: bank ID
-        fact_type: Fact type to filter
+        bank_id: bank ID
         limit: Maximum results to return
+        tags: Optional tag filter — only return Engrams whose tags contain all given values.
 
     Returns:
         List of RetrievalResult objects
     """
+    params = [query_emb_str, bank_id]
+    join_clause = ""
+    tag_filter = ""
+    if tags:
+        params.append(tags)
+        join_clause = f"JOIN {fq_table('engram_dictionary')} ed ON ed.engram_id = mu.id"
+        tag_filter = "AND ed.tags @> $3::jsonb"
+    params.append(limit)
+
     results = await conn.fetch(
         f"""
-        SELECT id, text, context, event_date, occurred_start, occurred_end, mentioned_at, access_count, embedding, fact_type, document_id, chunk_id,
-               1 - (embedding <=> $1::vector) AS similarity
-        FROM {fq_table("memory_units")}
-        WHERE bank_id = $2
-          AND embedding IS NOT NULL
-          AND fact_type = $3
-          AND (1 - (embedding <=> $1::vector)) >= 0.3
-        ORDER BY embedding <=> $1::vector
-        LIMIT $4
+        SELECT mu.id, mu.text, mu.context, mu.event_date, mu.occurred_start, mu.occurred_end,
+               mu.mentioned_at, mu.access_count, mu.embedding, mu.fact_type, mu.document_id, mu.chunk_id,
+               1 - (mu.embedding <=> $1::vector) AS similarity
+        FROM {fq_table("memory_units")} mu
+        {join_clause}
+        WHERE mu.bank_id = $2
+          AND mu.embedding IS NOT NULL
+          {tag_filter}
+          AND (1 - (mu.embedding <=> $1::vector)) >= 0.3
+        ORDER BY mu.embedding <=> $1::vector
+        LIMIT ${len(params)}
         """,
-        query_emb_str,
-        bank_id,
-        fact_type,
-        limit,
+        *params,
     )
     return [RetrievalResult.from_db_row(dict(r)) for r in results]
 
 
-async def retrieve_bm25(conn, query_text: str, bank_id: str, fact_type: str, limit: int) -> list[RetrievalResult]:
+async def retrieve_bm25(
+    conn, query_text: str, bank_id: str, limit: int, tags: list[str] | None = None
+) -> list[RetrievalResult]:
     """
     BM25 keyword retrieval via full-text search.
 
     Args:
         conn: Database connection
         query_text: Query text
-        agent_id: bank ID
-        fact_type: Fact type to filter
+        bank_id: bank ID
         limit: Maximum results to return
+        tags: Optional tag filter — only return Engrams whose tags contain all given values.
 
     Returns:
         List of RetrievalResult objects
@@ -132,21 +142,29 @@ async def retrieve_bm25(conn, query_text: str, bank_id: str, fact_type: str, lim
     # This prevents empty results when some terms are missing
     query_tsquery = " | ".join(tokens)
 
+    params = [query_tsquery, bank_id]
+    join_clause = ""
+    tag_filter = ""
+    if tags:
+        params.append(tags)
+        join_clause = f"JOIN {fq_table('engram_dictionary')} ed ON ed.engram_id = mu.id"
+        tag_filter = "AND ed.tags @> $3::jsonb"
+    params.append(limit)
+
     results = await conn.fetch(
         f"""
-        SELECT id, text, context, event_date, occurred_start, occurred_end, mentioned_at, access_count, embedding, fact_type, document_id, chunk_id,
-               ts_rank_cd(search_vector, to_tsquery('english', $1)) AS bm25_score
-        FROM {fq_table("memory_units")}
-        WHERE bank_id = $2
-          AND fact_type = $3
-          AND search_vector @@ to_tsquery('english', $1)
+        SELECT mu.id, mu.text, mu.context, mu.event_date, mu.occurred_start, mu.occurred_end,
+               mu.mentioned_at, mu.access_count, mu.embedding, mu.fact_type, mu.document_id, mu.chunk_id,
+               ts_rank_cd(mu.search_vector, to_tsquery('english', $1)) AS bm25_score
+        FROM {fq_table("memory_units")} mu
+        {join_clause}
+        WHERE mu.bank_id = $2
+          {tag_filter}
+          AND mu.search_vector @@ to_tsquery('english', $1)
         ORDER BY bm25_score DESC
-        LIMIT $4
+        LIMIT ${len(params)}
         """,
-        query_tsquery,
-        bank_id,
-        fact_type,
-        limit,
+        *params,
     )
     return [RetrievalResult.from_db_row(dict(r)) for r in results]
 
@@ -155,11 +173,11 @@ async def retrieve_temporal(
     conn,
     query_emb_str: str,
     bank_id: str,
-    fact_type: str,
     start_date: datetime,
     end_date: datetime,
     budget: int,
     semantic_threshold: float = 0.1,
+    tags: list[str] | None = None,
 ) -> list[RetrievalResult]:
     """
     Temporal retrieval with spreading activation.
@@ -189,37 +207,42 @@ async def retrieve_temporal(
     if end_date.tzinfo is None:
         end_date = end_date.replace(tzinfo=UTC)
 
+    ep_params = [query_emb_str, bank_id, start_date, end_date, semantic_threshold]
+    ep_join = ""
+    ep_tag_filter = ""
+    if tags:
+        ep_params.insert(2, tags)
+        ep_join = f"JOIN {fq_table('engram_dictionary')} ed ON ed.engram_id = mu.id"
+        ep_tag_filter = "AND ed.tags @> $3::jsonb"
+        # With tags: $3=tags, $4=start, $5=end, $6=threshold
+        sd_idx, ed_idx, st_idx = 4, 5, 6
+    else:
+        # Without tags: $3=start, $4=end, $5=threshold
+        sd_idx, ed_idx, st_idx = 3, 4, 5
+
     entry_points = await conn.fetch(
         f"""
-        SELECT id, text, context, event_date, occurred_start, occurred_end, mentioned_at, access_count, embedding, fact_type, document_id, chunk_id,
-               1 - (embedding <=> $1::vector) AS similarity
-        FROM {fq_table("memory_units")}
-        WHERE bank_id = $2
-          AND fact_type = $3
-          AND embedding IS NOT NULL
+        SELECT mu.id, mu.text, mu.context, mu.event_date, mu.occurred_start, mu.occurred_end,
+               mu.mentioned_at, mu.access_count, mu.embedding, mu.fact_type, mu.document_id, mu.chunk_id,
+               1 - (mu.embedding <=> $1::vector) AS similarity
+        FROM {fq_table("memory_units")} mu
+        {ep_join}
+        WHERE mu.bank_id = $2
+          {ep_tag_filter}
+          AND mu.embedding IS NOT NULL
           AND (
-              -- Match if occurred range overlaps with query range
-              (occurred_start IS NOT NULL AND occurred_end IS NOT NULL
-               AND occurred_start <= $5 AND occurred_end >= $4)
-              OR
-              -- Match if mentioned_at falls within query range
-              (mentioned_at IS NOT NULL AND mentioned_at BETWEEN $4 AND $5)
-              OR
-              -- Match if any occurred date is set and overlaps (even if only start or end is set)
-              (occurred_start IS NOT NULL AND occurred_start BETWEEN $4 AND $5)
-              OR
-              (occurred_end IS NOT NULL AND occurred_end BETWEEN $4 AND $5)
+              (mu.occurred_start IS NOT NULL AND mu.occurred_end IS NOT NULL
+               AND mu.occurred_start <= ${ed_idx} AND mu.occurred_end >= ${sd_idx})
+              OR (mu.mentioned_at IS NOT NULL AND mu.mentioned_at BETWEEN ${sd_idx} AND ${ed_idx})
+              OR (mu.occurred_start IS NOT NULL AND mu.occurred_start BETWEEN ${sd_idx} AND ${ed_idx})
+              OR (mu.occurred_end IS NOT NULL AND mu.occurred_end BETWEEN ${sd_idx} AND ${ed_idx})
           )
-          AND (1 - (embedding <=> $1::vector)) >= $6
-        ORDER BY COALESCE(occurred_start, mentioned_at, occurred_end) DESC, (embedding <=> $1::vector) ASC
+          AND (1 - (mu.embedding <=> $1::vector)) >= ${st_idx}
+        ORDER BY COALESCE(mu.occurred_start, mu.mentioned_at, mu.occurred_end) DESC,
+                 (mu.embedding <=> $1::vector) ASC
         LIMIT 10
         """,
-        query_emb_str,
-        bank_id,
-        fact_type,
-        start_date,
-        end_date,
-        semantic_threshold,
+        *ep_params,
     )
 
     if not entry_points:
@@ -273,28 +296,37 @@ async def retrieve_temporal(
         batch_ids = frontier[:batch_size]
         frontier = frontier[batch_size:]
 
-        # Batch fetch all neighbors for this batch of nodes
+        # Batch fetch all neighbors (optional tag filter via engram_dictionary JOIN)
+        n_params = [query_emb_str, batch_ids, semantic_threshold]
+        n_ed_join = ""
+        n_tag_filter = ""
+        if tags:
+            n_params.append(tags)
+            n_ed_join = f"JOIN {fq_table('engram_dictionary')} ed ON ed.engram_id = mu.id"
+            n_tag_filter = "AND ed.tags @> $4::jsonb"
+            n_sim_idx, n_limit_idx = 3, 5
+        else:
+            n_sim_idx, n_limit_idx = 3, 4
+        n_params.append(batch_size * 10)
         neighbors = await conn.fetch(
             f"""
-            SELECT mu.id, mu.text, mu.context, mu.event_date, mu.occurred_start, mu.occurred_end, mu.mentioned_at, mu.access_count, mu.embedding, mu.fact_type, mu.document_id, mu.chunk_id,
+            SELECT mu.id, mu.text, mu.context, mu.event_date, mu.occurred_start, mu.occurred_end,
+                   mu.mentioned_at, mu.access_count, mu.embedding, mu.fact_type, mu.document_id, mu.chunk_id,
                    ml.weight, ml.link_type, ml.from_unit_id,
                    1 - (mu.embedding <=> $1::vector) AS similarity
             FROM {fq_table("memory_links")} ml
             JOIN {fq_table("memory_units")} mu ON ml.to_unit_id = mu.id
+            {n_ed_join}
             WHERE ml.from_unit_id = ANY($2::uuid[])
               AND ml.link_type IN ('temporal', 'causes', 'caused_by', 'enables', 'prevents')
               AND ml.weight >= 0.1
-              AND mu.fact_type = $3
+              {n_tag_filter}
               AND mu.embedding IS NOT NULL
-              AND (1 - (mu.embedding <=> $1::vector)) >= $4
+              AND (1 - (mu.embedding <=> $1::vector)) >= ${n_sim_idx}
             ORDER BY ml.weight DESC
-            LIMIT $5
+            LIMIT ${n_limit_idx}
             """,
-            query_emb_str,
-            batch_ids,
-            fact_type,
-            semantic_threshold,
-            batch_size * 10,  # Allow up to 10 neighbors per node in batch
+            *n_params,
         )
 
         for n in neighbors:
@@ -365,12 +397,12 @@ async def retrieve_parallel(
     query_text: str,
     query_embedding_str: str,
     bank_id: str,
-    fact_type: str,
     thinking_budget: int,
     question_date: datetime | None = None,
     query_analyzer: Optional["QueryAnalyzer"] = None,
     graph_retriever: GraphRetriever | None = None,
     temporal_constraint: tuple | None = None,  # Pre-extracted temporal constraint
+    tags: list[str] | None = None,
 ) -> ParallelRetrievalResult:
     """
     Run 3-way or 4-way parallel retrieval (adds temporal if detected).
@@ -380,12 +412,12 @@ async def retrieve_parallel(
         query_text: Query text
         query_embedding_str: Query embedding as string
         bank_id: Bank ID
-        fact_type: Fact type to filter
         thinking_budget: Budget for graph traversal and retrieval limits
         question_date: Optional date when question was asked (for temporal filtering)
         query_analyzer: Query analyzer to use (defaults to TransformerQueryAnalyzer)
         graph_retriever: Graph retrieval strategy (defaults to configured retriever)
         temporal_constraint: Pre-extracted temporal constraint (optional)
+        tags: Optional tag filter — only return Engrams whose tags contain all given values.
 
     Returns:
         ParallelRetrievalResult with semantic, bm25, graph, temporal results and timings
@@ -406,14 +438,14 @@ async def retrieve_parallel(
             query_text,
             query_embedding_str,
             bank_id,
-            fact_type,
             thinking_budget,
             temporal_constraint,
             retriever,
+            tags=tags,
         )
     else:
         return await _retrieve_parallel_bfs(
-            pool, query_text, query_embedding_str, bank_id, fact_type, thinking_budget, temporal_constraint, retriever
+            pool, query_text, query_embedding_str, bank_id, thinking_budget, temporal_constraint, retriever, tags=tags
         )
 
 
@@ -430,10 +462,10 @@ async def _retrieve_parallel_mpfp(
     query_text: str,
     query_embedding_str: str,
     bank_id: str,
-    fact_type: str,
     thinking_budget: int,
     temporal_constraint: tuple | None,
     retriever: GraphRetriever,
+    tags: list[str] | None = None,
 ) -> ParallelRetrievalResult:
     """
     MPFP retrieval with true parallelization.
@@ -452,14 +484,14 @@ async def _retrieve_parallel_mpfp(
         """Independent semantic retrieval."""
         start = time.time()
         async with acquire_with_retry(pool) as conn:
-            results = await retrieve_semantic(conn, query_embedding_str, bank_id, fact_type, limit=thinking_budget)
+            results = await retrieve_semantic(conn, query_embedding_str, bank_id, limit=thinking_budget, tags=tags)
         return _TimedResult(results, time.time() - start)
 
     async def run_bm25() -> _TimedResult:
         """Independent BM25 retrieval."""
         start = time.time()
         async with acquire_with_retry(pool) as conn:
-            results = await retrieve_bm25(conn, query_text, bank_id, fact_type, limit=thinking_budget)
+            results = await retrieve_bm25(conn, query_text, bank_id, limit=thinking_budget, tags=tags)
         return _TimedResult(results, time.time() - start)
 
     async def run_graph() -> tuple[list[RetrievalResult], float, MPFPTimings | None]:
@@ -472,7 +504,7 @@ async def _retrieve_parallel_mpfp(
             tc_start, tc_end = temporal_constraint
             async with acquire_with_retry(pool) as conn:
                 temporal_seeds = await _get_temporal_entry_points(
-                    conn, query_embedding_str, bank_id, fact_type, tc_start, tc_end, limit=20
+                    conn, query_embedding_str, bank_id, tc_start, tc_end, limit=20, tags=tags
                 )
 
         # MPFP does its own semantic seeds via _find_semantic_seeds
@@ -480,7 +512,7 @@ async def _retrieve_parallel_mpfp(
             pool=pool,
             query_embedding_str=query_embedding_str,
             bank_id=bank_id,
-            fact_type=fact_type,
+            tags=tags,
             budget=thinking_budget,
             query_text=query_text,
             semantic_seeds=None,  # Let MPFP find its own seeds
@@ -496,11 +528,11 @@ async def _retrieve_parallel_mpfp(
                 conn,
                 query_embedding_str,
                 bank_id,
-                fact_type,
                 tc_start,
                 tc_end,
                 budget=thinking_budget,
                 semantic_threshold=0.1,
+                tags=tags,
             )
         return _TimedResult(results, time.time() - start)
 
@@ -554,11 +586,11 @@ async def _get_temporal_entry_points(
     conn,
     query_embedding_str: str,
     bank_id: str,
-    fact_type: str,
     start_date: datetime,
     end_date: datetime,
     limit: int = 20,
     semantic_threshold: float = 0.1,
+    tags: list[str] | None = None,
 ) -> list[RetrievalResult]:
     """Get temporal entry points (facts in date range with semantic relevance)."""
 
@@ -567,34 +599,42 @@ async def _get_temporal_entry_points(
     if end_date.tzinfo is None:
         end_date = end_date.replace(tzinfo=UTC)
 
+    params = [query_embedding_str, bank_id, start_date, end_date, semantic_threshold, limit]
+    join_clause = ""
+    tag_filter = ""
+    if tags:
+        params.insert(2, tags)
+        join_clause = f"JOIN {fq_table('engram_dictionary')} ed ON ed.engram_id = mu.id"
+        tag_filter = "AND ed.tags @> $3::jsonb"
+        # With tags: $3=tags, $4=start, $5=end, $6=threshold, $7=limit
+        sd_idx, ed_idx, st_idx, lim_idx = 4, 5, 6, 7
+    else:
+        # Without tags: $3=start, $4=end, $5=threshold, $6=limit
+        sd_idx, ed_idx, st_idx, lim_idx = 3, 4, 5, 6
+
     rows = await conn.fetch(
         f"""
-        SELECT id, text, context, event_date, occurred_start, occurred_end, mentioned_at,
-               access_count, embedding, fact_type, document_id, chunk_id,
-               1 - (embedding <=> $1::vector) AS similarity
-        FROM {fq_table("memory_units")}
-        WHERE bank_id = $2
-          AND fact_type = $3
-          AND embedding IS NOT NULL
+        SELECT mu.id, mu.text, mu.context, mu.event_date, mu.occurred_start, mu.occurred_end,
+               mu.mentioned_at, mu.access_count, mu.embedding, mu.fact_type, mu.document_id, mu.chunk_id,
+               1 - (mu.embedding <=> $1::vector) AS similarity
+        FROM {fq_table("memory_units")} mu
+        {join_clause}
+        WHERE mu.bank_id = $2
+          {tag_filter}
+          AND mu.embedding IS NOT NULL
           AND (
-              (occurred_start IS NOT NULL AND occurred_end IS NOT NULL
-               AND occurred_start <= $5 AND occurred_end >= $4)
-              OR (mentioned_at IS NOT NULL AND mentioned_at BETWEEN $4 AND $5)
-              OR (occurred_start IS NOT NULL AND occurred_start BETWEEN $4 AND $5)
-              OR (occurred_end IS NOT NULL AND occurred_end BETWEEN $4 AND $5)
+              (mu.occurred_start IS NOT NULL AND mu.occurred_end IS NOT NULL
+               AND mu.occurred_start <= ${ed_idx} AND mu.occurred_end >= ${sd_idx})
+              OR (mu.mentioned_at IS NOT NULL AND mu.mentioned_at BETWEEN ${sd_idx} AND ${ed_idx})
+              OR (mu.occurred_start IS NOT NULL AND mu.occurred_start BETWEEN ${sd_idx} AND ${ed_idx})
+              OR (mu.occurred_end IS NOT NULL AND mu.occurred_end BETWEEN ${sd_idx} AND ${ed_idx})
           )
-          AND (1 - (embedding <=> $1::vector)) >= $6
-        ORDER BY COALESCE(occurred_start, mentioned_at, occurred_end) DESC,
-                 (embedding <=> $1::vector) ASC
-        LIMIT $7
+          AND (1 - (mu.embedding <=> $1::vector)) >= ${st_idx}
+        ORDER BY COALESCE(mu.occurred_start, mu.mentioned_at, mu.occurred_end) DESC,
+                 (mu.embedding <=> $1::vector) ASC
+        LIMIT ${lim_idx}
         """,
-        query_embedding_str,
-        bank_id,
-        fact_type,
-        start_date,
-        end_date,
-        semantic_threshold,
-        limit,
+        *params,
     )
 
     results = []
@@ -632,10 +672,10 @@ async def _retrieve_parallel_bfs(
     query_text: str,
     query_embedding_str: str,
     bank_id: str,
-    fact_type: str,
     thinking_budget: int,
     temporal_constraint: tuple | None,
     retriever: GraphRetriever,
+    tags: list[str] | None = None,
 ) -> ParallelRetrievalResult:
     """BFS retrieval: all methods run in parallel (original behavior)."""
     import time
@@ -643,13 +683,13 @@ async def _retrieve_parallel_bfs(
     async def run_semantic() -> _TimedResult:
         start = time.time()
         async with acquire_with_retry(pool) as conn:
-            results = await retrieve_semantic(conn, query_embedding_str, bank_id, fact_type, limit=thinking_budget)
+            results = await retrieve_semantic(conn, query_embedding_str, bank_id, limit=thinking_budget, tags=tags)
         return _TimedResult(results, time.time() - start)
 
     async def run_bm25() -> _TimedResult:
         start = time.time()
         async with acquire_with_retry(pool) as conn:
-            results = await retrieve_bm25(conn, query_text, bank_id, fact_type, limit=thinking_budget)
+            results = await retrieve_bm25(conn, query_text, bank_id, limit=thinking_budget, tags=tags)
         return _TimedResult(results, time.time() - start)
 
     async def run_graph() -> _TimedResult:
@@ -658,7 +698,7 @@ async def _retrieve_parallel_bfs(
             pool=pool,
             query_embedding_str=query_embedding_str,
             bank_id=bank_id,
-            fact_type=fact_type,
+            tags=tags,
             budget=thinking_budget,
             query_text=query_text,
         )
@@ -671,11 +711,11 @@ async def _retrieve_parallel_bfs(
                 conn,
                 query_embedding_str,
                 bank_id,
-                fact_type,
                 tc_start,
                 tc_end,
                 budget=thinking_budget,
                 semantic_threshold=0.1,
+                tags=tags,
             )
         return _TimedResult(results, time.time() - start)
 

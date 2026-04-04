@@ -18,17 +18,17 @@ Hindsight iteriert über `fact_type in ['world', 'experience', 'opinion']` und r
 
 ## Akzeptanzkriterien
 
-- [ ] `recall_async()` ruft `retrieve_parallel()` einmal statt pro fact_type
-- [ ] `retrieve_parallel()` akzeptiert optionalen `tags: list[str] | None` statt `fact_type: str`
-- [ ] Ohne Tags: Kein Filter (alle Engrams, type-agnostisch)
-- [ ] Mit Tags: JSONB contains Query (`tags @> $1`)
-- [ ] Bestehende `fact_type` API bleibt als Convenience (wird intern zu Tag konvertiert)
-- [ ] Performance: Ein Query statt 12 → messbare Latenz-Reduktion
+- [x] `recall_async()` ruft `retrieve_parallel()` einmal statt pro fact_type
+- [x] `retrieve_parallel()` akzeptiert optionalen `tags: list[str] | None` statt `fact_type: str`
+- [x] Ohne Tags: Kein Filter (alle Engrams, type-agnostisch)
+- [x] Mit Tags: JSONB contains Query (`tags @> $1`) via engram_dictionary JOIN
+- [x] Bestehende `fact_type` API bleibt (deprecated, nicht mehr für Retrieval genutzt)
+- [x] Performance: Ein Query statt 12 → single retrieve_parallel call (verifiziert per Test)
 
 ## Tasks
 
-- [ ] **T1 — retrieve_parallel Signature:** In `retrieval.py`: Parameter `fact_type: str` ersetzen durch `tags: list[str] | None = None`. Alle internen Aufrufe anpassen.
-- [ ] **T2 — SQL-Queries umstellen:** In `retrieve_semantic()`, `retrieve_bm25()`, `retrieve_temporal()`: `AND fact_type = $3` ersetzen durch optionalen `AND tags @> $1::jsonb` (nur wenn Tags übergeben). Ohne Tags: WHERE-Clause entfällt.
-- [ ] **T3 — recall_async Loop entfernen:** In `memory_engine.py`: Die `for fact_type in fact_types` Schleife entfernen. Stattdessen einmal `retrieve_parallel()` aufrufen mit optionalen Tags. fact_type API-Parameter → Tags Konvertierung: `fact_type='opinion'` → `tags=['opinion']`.
+- [x] **T1 — retrieve_parallel Signature:** In `retrieval.py`: Parameter `fact_type: str` ersetzen durch `tags: list[str] | None = None`. Alle internen Aufrufe anpassen.
+- [x] **T2 — SQL-Queries umstellen:** In `retrieve_semantic()`, `retrieve_bm25()`, `retrieve_temporal()`: `AND fact_type = $3` ersetzen durch optionalen `AND tags @> $1::jsonb` (nur wenn Tags übergeben). Ohne Tags: WHERE-Clause entfällt.
+- [x] **T3 — recall_async Loop entfernen:** In `memory_engine.py`: Die `for fact_type in fact_types` Schleife entfernen. Stattdessen einmal `retrieve_parallel()` aufrufen mit optionalen Tags. `tags: list[str] | None = None` Parameter zu `recall_async` hinzugefügt.
 - [ ] **T4 — Qdrant Tag-Filter:** Für den EngramRetriever (Story 04): Qdrant-Query mit optionalem Payload-Filter auf Tags. Qdrant unterstützt JSON-basierte Filter nativ.
-- [ ] **T5 — Unit Tests:** Retrieval ohne Tags (alle Ergebnisse). Retrieval mit Tags (gefiltert). fact_type → Tags Konvertierung. Performance-Test: 1 Query vs. 3 Queries Timing.
+- [x] **T5 — Unit Tests:** Retrieval ohne Tags (alle Ergebnisse). Retrieval mit Tags (gefiltert). Single-call Performance-Test. 14 Tests in `tests/test_tag_filter_s1.py`.

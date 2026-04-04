@@ -1479,12 +1479,13 @@ class MemoryEngine(MemoryEngineInterface):
         max_chunk_tokens: int = 8192,
         session: "Session | None" = None,
         request_context: "RequestContext",
+        tags: list[str] | None = None,
     ) -> RecallResultModel:
         """
-        Recall memories using N*4-way parallel retrieval (N fact types × 4 retrieval methods).
+        Recall memories using 4-way parallel retrieval with optional Engram tag filtering.
 
         This implements the core RECALL operation:
-        1. Retrieval: For each fact type, run 4 parallel retrievals (semantic vector, BM25 keyword, graph activation, temporal graph)
+        1. Retrieval: Single 4-way parallel retrieval (semantic vector, BM25 keyword, graph activation, temporal graph)
         2. Merge: Combine using Reciprocal Rank Fusion (RRF)
         3. Rerank: Score using selected reranker (heuristic or cross-encoder)
         4. Diversify: Apply MMR for diversity
@@ -1584,6 +1585,7 @@ class MemoryEngine(MemoryEngineInterface):
                         include_chunks,
                         max_chunk_tokens,
                         request_context,
+                        tags=tags,
                     )
                     break  # Success - exit retry loop
                 except Exception as e:
@@ -1701,6 +1703,7 @@ class MemoryEngine(MemoryEngineInterface):
         include_chunks: bool = False,
         max_chunk_tokens: int = 8192,
         request_context: "RequestContext" = None,
+        tags: list[str] | None = None,
     ) -> RecallResultModel:
         """
         Search implementation with modular retrieval and reranking.
@@ -1715,7 +1718,7 @@ class MemoryEngine(MemoryEngineInterface):
         Args:
             bank_id: bank IDentifier
             query: Search query
-            fact_type: Type of facts to search
+            fact_type: Deprecated — kept for backward compat, no longer used for retrieval filtering
             thinking_budget: Nodes to explore in graph traversal
             max_tokens: Maximum tokens to return (counts only 'text' field)
             enable_trace: Whether to return search trace (deprecated)
@@ -1723,6 +1726,7 @@ class MemoryEngine(MemoryEngineInterface):
             max_entity_tokens: Maximum tokens for entity observations
             include_chunks: Whether to include raw chunks
             max_chunk_tokens: Maximum tokens for chunks
+            tags: Optional Engram tag filter — only return Engrams whose tags contain all given values.
 
         Returns:
             RecallResultModel with results, trace, optional entities, and optional chunks
@@ -1772,69 +1776,44 @@ class MemoryEngine(MemoryEngineInterface):
             )
             tc_duration = time.time() - tc_start
 
-            # Run retrieval for each fact type in parallel
-            # MPFP does lazy edge loading internally, no need to pre-load adjacency
-            retrieval_tasks = [
-                retrieve_parallel(
-                    pool,
-                    query,
-                    query_embedding_str,
-                    bank_id,
-                    ft,
-                    thinking_budget,
-                    question_date,
-                    self.query_analyzer,
-                    temporal_constraint=temporal_constraint,
-                )
-                for ft in fact_type
-            ]
+            # Single type-agnostic 4-way parallel retrieval with optional tag filter
             parallel_start = time.time()
-            all_retrievals = await asyncio.gather(*retrieval_tasks)
+            rr = await retrieve_parallel(
+                pool,
+                query,
+                query_embedding_str,
+                bank_id,
+                thinking_budget,
+                question_date,
+                self.query_analyzer,
+                temporal_constraint=temporal_constraint,
+                tags=tags,
+            )
             parallel_duration = time.time() - parallel_start
 
-            # Combine all results from all fact types and aggregate timings
-            semantic_results = []
-            bm25_results = []
-            graph_results = []
-            temporal_results = []
-            aggregated_timings = {"semantic": 0.0, "bm25": 0.0, "graph": 0.0, "temporal": 0.0}
-            all_mpfp_timings = []
+            semantic_results = rr.semantic
+            bm25_results = rr.bm25
+            graph_results = rr.graph
+            temporal_results = rr.temporal
+            aggregated_timings = rr.timings
+            all_mpfp_timings = rr.mpfp_timings
+            detected_temporal_constraint = rr.temporal_constraint
 
-            detected_temporal_constraint = None
-            for idx, retrieval_result in enumerate(all_retrievals):
-                # Log fact types in this retrieval batch
-                ft_name = fact_type[idx] if idx < len(fact_type) else "unknown"
-                logger.debug(
-                    f"[RECALL {recall_id}] Fact type '{ft_name}': semantic={len(retrieval_result.semantic)}, bm25={len(retrieval_result.bm25)}, graph={len(retrieval_result.graph)}, temporal={len(retrieval_result.temporal) if retrieval_result.temporal else 0}"
-                )
+            logger.debug(
+                "[RECALL %s] Retrieval: semantic=%d, bm25=%d, graph=%d, temporal=%d",
+                recall_id,
+                len(semantic_results),
+                len(bm25_results),
+                len(graph_results),
+                len(temporal_results) if temporal_results else 0,
+            )
 
-                semantic_results.extend(retrieval_result.semantic)
-                bm25_results.extend(retrieval_result.bm25)
-                graph_results.extend(retrieval_result.graph)
-                if retrieval_result.temporal:
-                    temporal_results.extend(retrieval_result.temporal)
-                # Track max timing for each method (since they run in parallel across fact types)
-                for method, duration in retrieval_result.timings.items():
-                    aggregated_timings[method] = max(aggregated_timings.get(method, 0.0), duration)
-                # Capture temporal constraint (same across all fact types)
-                if retrieval_result.temporal_constraint:
-                    detected_temporal_constraint = retrieval_result.temporal_constraint
-                # Collect MPFP timings
-                all_mpfp_timings.extend(retrieval_result.mpfp_timings)
-
-            # If no temporal results from any fact type, set to None
-            if not temporal_results:
-                temporal_results = None
-
-            # Sort combined results by score (descending) so higher-scored results
-            # get better ranks in the trace, regardless of fact type
-            semantic_results.sort(key=lambda r: r.similarity if hasattr(r, "similarity") else 0, reverse=True)
-            bm25_results.sort(key=lambda r: r.bm25_score if hasattr(r, "bm25_score") else 0, reverse=True)
-            graph_results.sort(key=lambda r: r.activation if hasattr(r, "activation") else 0, reverse=True)
+            # Sort by score (descending) for stable RRF input ordering
+            semantic_results.sort(key=lambda r: r.similarity or 0.0, reverse=True)
+            bm25_results.sort(key=lambda r: r.bm25_score or 0.0, reverse=True)
+            graph_results.sort(key=lambda r: r.activation or 0.0, reverse=True)
             if temporal_results:
-                temporal_results.sort(
-                    key=lambda r: r.combined_score if hasattr(r, "combined_score") else 0, reverse=True
-                )
+                temporal_results.sort(key=lambda r: r.temporal_score or 0.0, reverse=True)
 
             retrieval_duration = time.time() - retrieval_start
 
@@ -1854,7 +1833,7 @@ class MemoryEngine(MemoryEngineInterface):
             # Only tc is sequential setup now (adjacency loads in parallel with retrieval)
             setup_info = f", tc={tc_duration:.3f}s" if tc_duration > 0.01 else ""
             log_buffer.append(
-                f"  [2] Parallel retrieval ({len(fact_type)} fact_types): {', '.join(timing_parts)} in {parallel_duration:.3f}s{setup_info}{temporal_info}"
+                f"  [2] Parallel retrieval: {', '.join(timing_parts)} in {parallel_duration:.3f}s{setup_info}{temporal_info}"
             )
 
             # Log MPFP timing breakdown if available
@@ -1870,56 +1849,41 @@ class MemoryEngine(MemoryEngineInterface):
                     mpfp_parts.append(f"seeds={mpfp_total.seeds_time:.3f}s")
                 log_buffer.append(f"      [MPFP] {', '.join(mpfp_parts)}")
 
-            # Record retrieval results for tracer - per fact type
+            # Record retrieval results for tracer
             if tracer:
                 # Convert RetrievalResult to old tuple format for tracer
                 def to_tuple_format(results):
                     return [(r.id, r.__dict__) for r in results]
 
-                # Add retrieval results per fact type (to show parallel execution in UI)
-                for idx, rr in enumerate(all_retrievals):
-                    ft_name = fact_type[idx] if idx < len(fact_type) else "unknown"
-
-                    # Add semantic retrieval results for this fact type
+                tracer.add_retrieval_results(
+                    method_name="semantic",
+                    results=to_tuple_format(semantic_results),
+                    duration_seconds=aggregated_timings.get("semantic", 0.0),
+                    score_field="similarity",
+                    metadata={"limit": thinking_budget},
+                )
+                tracer.add_retrieval_results(
+                    method_name="bm25",
+                    results=to_tuple_format(bm25_results),
+                    duration_seconds=aggregated_timings.get("bm25", 0.0),
+                    score_field="bm25_score",
+                    metadata={"limit": thinking_budget},
+                )
+                tracer.add_retrieval_results(
+                    method_name="graph",
+                    results=to_tuple_format(graph_results),
+                    duration_seconds=aggregated_timings.get("graph", 0.0),
+                    score_field="activation",
+                    metadata={"budget": thinking_budget},
+                )
+                if temporal_results is not None:
                     tracer.add_retrieval_results(
-                        method_name="semantic",
-                        results=to_tuple_format(rr.semantic),
-                        duration_seconds=rr.timings.get("semantic", 0.0),
-                        score_field="similarity",
-                        metadata={"limit": thinking_budget},
-                        fact_type=ft_name,
-                    )
-
-                    # Add BM25 retrieval results for this fact type
-                    tracer.add_retrieval_results(
-                        method_name="bm25",
-                        results=to_tuple_format(rr.bm25),
-                        duration_seconds=rr.timings.get("bm25", 0.0),
-                        score_field="bm25_score",
-                        metadata={"limit": thinking_budget},
-                        fact_type=ft_name,
-                    )
-
-                    # Add graph retrieval results for this fact type
-                    tracer.add_retrieval_results(
-                        method_name="graph",
-                        results=to_tuple_format(rr.graph),
-                        duration_seconds=rr.timings.get("graph", 0.0),
-                        score_field="activation",
+                        method_name="temporal",
+                        results=to_tuple_format(temporal_results),
+                        duration_seconds=aggregated_timings.get("temporal", 0.0),
+                        score_field="temporal_score",
                         metadata={"budget": thinking_budget},
-                        fact_type=ft_name,
                     )
-
-                    # Add temporal retrieval results for this fact type (even if empty, to show it ran)
-                    if rr.temporal is not None:
-                        tracer.add_retrieval_results(
-                            method_name="temporal",
-                            results=to_tuple_format(rr.temporal),
-                            duration_seconds=rr.timings.get("temporal", 0.0),
-                            score_field="temporal_score",
-                            metadata={"budget": thinking_budget},
-                            fact_type=ft_name,
-                        )
 
                 # Record entry points (from semantic results) for legacy graph view
                 for rank, retrieval in enumerate(semantic_results[:10], start=1):  # Top 10 as entry points

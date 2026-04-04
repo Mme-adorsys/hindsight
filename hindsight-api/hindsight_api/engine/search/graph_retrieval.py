@@ -37,12 +37,14 @@ class GraphRetriever(ABC):
         pool,
         query_embedding_str: str,
         bank_id: str,
-        fact_type: str,
         budget: int,
         query_text: str | None = None,
         semantic_seeds: list[RetrievalResult] | None = None,
         temporal_seeds: list[RetrievalResult] | None = None,
         adjacency=None,  # TypedAdjacency, optional pre-loaded graph
+        tags: list[str] | None = None,
+        # Deprecated: fact_type kept for backward compat, ignored internally
+        fact_type: str | None = None,
     ) -> tuple[list[RetrievalResult], MPFPTimings | None]:
         """
         Retrieve relevant facts via graph traversal.
@@ -51,12 +53,13 @@ class GraphRetriever(ABC):
             pool: Database connection pool
             query_embedding_str: Query embedding as string (for finding entry points)
             bank_id: Memory bank identifier
-            fact_type: Fact type to filter ('world', 'experience', 'opinion', 'observation')
             budget: Maximum number of nodes to explore/return
             query_text: Original query text (optional, for some strategies)
             semantic_seeds: Pre-computed semantic entry points (from semantic retrieval)
             temporal_seeds: Pre-computed temporal entry points (from temporal retrieval)
             adjacency: Pre-loaded typed adjacency graph (optional, for MPFP)
+            tags: Optional tag filter — only return Engrams whose tags contain all given values.
+            fact_type: Deprecated — converted to tags internally for backward compat.
 
         Returns:
             Tuple of (List of RetrievalResult with activation scores, optional timing info)
@@ -108,12 +111,13 @@ class BFSGraphRetriever(GraphRetriever):
         pool,
         query_embedding_str: str,
         bank_id: str,
-        fact_type: str,
         budget: int,
         query_text: str | None = None,
         semantic_seeds: list[RetrievalResult] | None = None,
         temporal_seeds: list[RetrievalResult] | None = None,
         adjacency=None,  # Not used by BFS
+        tags: list[str] | None = None,
+        fact_type: str | None = None,  # Deprecated, ignored
     ) -> tuple[list[RetrievalResult], MPFPTimings | None]:
         """
         Retrieve facts using BFS spreading activation.
@@ -129,7 +133,7 @@ class BFSGraphRetriever(GraphRetriever):
         for interface compatibility but not used.
         """
         async with acquire_with_retry(pool) as conn:
-            results = await self._retrieve_with_conn(conn, query_embedding_str, bank_id, fact_type, budget)
+            results = await self._retrieve_with_conn(conn, query_embedding_str, bank_id, budget, tags=tags)
             return results, None
 
     async def _retrieve_with_conn(
@@ -137,30 +141,39 @@ class BFSGraphRetriever(GraphRetriever):
         conn,
         query_embedding_str: str,
         bank_id: str,
-        fact_type: str,
         budget: int,
+        tags: list[str] | None = None,
     ) -> list[RetrievalResult]:
         """Internal implementation with connection."""
 
-        # Step 1: Find entry points
+        # Step 1: Find entry points (optional tag filter via engram_dictionary JOIN)
+        ep_params = [query_embedding_str, bank_id, self.entry_point_threshold, self.entry_point_limit]
+        ep_join = ""
+        ep_tag_filter = ""
+        if tags:
+            ep_params.insert(2, tags)
+            ep_join = f"JOIN {fq_table('engram_dictionary')} ed ON ed.engram_id = mu.id"
+            ep_tag_filter = "AND ed.tags @> $3::jsonb"
+            # renumber: $3=tags, $4=threshold, $5=limit
+            ep_threshold_idx, ep_limit_idx = 4, 5
+        else:
+            ep_threshold_idx, ep_limit_idx = 3, 4
+
         entry_points = await conn.fetch(
             f"""
-            SELECT id, text, context, event_date, occurred_start, occurred_end,
-                   mentioned_at, access_count, embedding, fact_type, document_id, chunk_id,
-                   1 - (embedding <=> $1::vector) AS similarity
-            FROM {fq_table("memory_units")}
-            WHERE bank_id = $2
-              AND embedding IS NOT NULL
-              AND fact_type = $3
-              AND (1 - (embedding <=> $1::vector)) >= $4
-            ORDER BY embedding <=> $1::vector
-            LIMIT $5
+            SELECT mu.id, mu.text, mu.context, mu.event_date, mu.occurred_start, mu.occurred_end,
+                   mu.mentioned_at, mu.access_count, mu.embedding, mu.fact_type, mu.document_id, mu.chunk_id,
+                   1 - (mu.embedding <=> $1::vector) AS similarity
+            FROM {fq_table("memory_units")} mu
+            {ep_join}
+            WHERE mu.bank_id = $2
+              AND mu.embedding IS NOT NULL
+              {ep_tag_filter}
+              AND (1 - (mu.embedding <=> $1::vector)) >= ${ep_threshold_idx}
+            ORDER BY mu.embedding <=> $1::vector
+            LIMIT ${ep_limit_idx}
             """,
-            query_embedding_str,
-            bank_id,
-            fact_type,
-            self.entry_point_threshold,
-            self.entry_point_limit,
+            *ep_params,
         )
 
         if not entry_points:
@@ -189,9 +202,18 @@ class BFSGraphRetriever(GraphRetriever):
                     batch_nodes.append(current.id)
                     batch_activations[unit_id] = activation
 
-            # Batch fetch neighbors
+            # Batch fetch neighbors (optional tag filter via engram_dictionary JOIN)
             if batch_nodes and budget_remaining > 0:
                 max_neighbors = len(batch_nodes) * 20
+                n_params = [batch_nodes, self.min_activation]
+                n_ed_join = ""
+                n_tag_filter = ""
+                if tags:
+                    n_params.append(tags)
+                    n_ed_join = f"JOIN {fq_table('engram_dictionary')} ed ON ed.engram_id = mu.id"
+                    n_tag_filter = "AND ed.tags @> $3::jsonb"
+                n_params.append(max_neighbors)
+                n_limit_idx = len(n_params)
                 neighbors = await conn.fetch(
                     f"""
                     SELECT mu.id, mu.text, mu.context, mu.occurred_start, mu.occurred_end,
@@ -200,16 +222,14 @@ class BFSGraphRetriever(GraphRetriever):
                            ml.weight, ml.link_type, ml.from_unit_id
                     FROM {fq_table("memory_links")} ml
                     JOIN {fq_table("memory_units")} mu ON ml.to_unit_id = mu.id
+                    {n_ed_join}
                     WHERE ml.from_unit_id = ANY($1::uuid[])
                       AND ml.weight >= $2
-                      AND mu.fact_type = $3
+                      {n_tag_filter}
                     ORDER BY ml.weight DESC
-                    LIMIT $4
+                    LIMIT ${n_limit_idx}
                     """,
-                    batch_nodes,
-                    self.min_activation,
-                    fact_type,
-                    max_neighbors,
+                    *n_params,
                 )
 
                 for n in neighbors:

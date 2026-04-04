@@ -321,23 +321,37 @@ def rrf_fusion(
 async def fetch_memory_units_by_ids(
     pool,
     node_ids: list[str],
-    fact_type: str,
+    tags: list[str] | None = None,
 ) -> list[RetrievalResult]:
-    """Fetch full memory unit details for a list of node IDs."""
+    """Fetch full memory unit details for a list of node IDs.
+
+    Args:
+        pool: Database connection pool.
+        node_ids: Engram IDs to fetch.
+        tags: Optional tag filter — only return Engrams whose tags contain all given values.
+    """
     if not node_ids:
         return []
+
+    params = [node_ids]
+    join_clause = ""
+    tag_filter = ""
+    if tags:
+        params.append(tags)
+        join_clause = f"JOIN {fq_table('engram_dictionary')} ed ON ed.engram_id = mu.id"
+        tag_filter = "AND ed.tags @> $2::jsonb"
 
     async with acquire_with_retry(pool) as conn:
         rows = await conn.fetch(
             f"""
-            SELECT id, text, context, event_date, occurred_start, occurred_end,
-                   mentioned_at, access_count, embedding, fact_type, document_id, chunk_id
-            FROM {fq_table("memory_units")}
-            WHERE id = ANY($1::uuid[])
-              AND fact_type = $2
+            SELECT mu.id, mu.text, mu.context, mu.event_date, mu.occurred_start, mu.occurred_end,
+                   mu.mentioned_at, mu.access_count, mu.embedding, mu.fact_type, mu.document_id, mu.chunk_id
+            FROM {fq_table("memory_units")} mu
+            {join_clause}
+            WHERE mu.id = ANY($1::uuid[])
+              {tag_filter}
             """,
-            node_ids,
-            fact_type,
+            *params,
         )
 
     return [RetrievalResult.from_db_row(dict(r)) for r in rows]
@@ -374,12 +388,13 @@ class MPFPGraphRetriever(GraphRetriever):
         pool,
         query_embedding_str: str,
         bank_id: str,
-        fact_type: str,
         budget: int,
         query_text: str | None = None,
         semantic_seeds: list[RetrievalResult] | None = None,
         temporal_seeds: list[RetrievalResult] | None = None,
         adjacency=None,  # Ignored - kept for interface compatibility
+        tags: list[str] | None = None,
+        fact_type: str | None = None,  # Deprecated, ignored
     ) -> tuple[list[RetrievalResult], MPFPTimings | None]:
         """
         Retrieve facts using MPFP algorithm with lazy edge loading.
@@ -388,19 +403,20 @@ class MPFPGraphRetriever(GraphRetriever):
             pool: Database connection pool
             query_embedding_str: Query embedding (used for fallback seed finding)
             bank_id: Memory bank ID
-            fact_type: Fact type to filter
             budget: Maximum results to return
             query_text: Original query text (optional)
             semantic_seeds: Pre-computed semantic entry points
             temporal_seeds: Pre-computed temporal entry points
             adjacency: Ignored (kept for interface compatibility)
+            tags: Optional tag filter — only return Engrams whose tags contain all given values.
+            fact_type: Deprecated, ignored.
 
         Returns:
             Tuple of (List of RetrievalResult with activation scores, MPFPTimings)
         """
         import time
 
-        timings = MPFPTimings(fact_type=fact_type)
+        timings = MPFPTimings(tags=tags or [])
 
         # Convert seeds to SeedNode format
         semantic_seed_nodes = self._convert_seeds(semantic_seeds, "similarity")
@@ -409,7 +425,7 @@ class MPFPGraphRetriever(GraphRetriever):
         # If no semantic seeds provided, fall back to finding our own
         if not semantic_seed_nodes:
             seeds_start = time.time()
-            semantic_seed_nodes = await self._find_semantic_seeds(pool, query_embedding_str, bank_id, fact_type)
+            semantic_seed_nodes = await self._find_semantic_seeds(pool, query_embedding_str, bank_id, tags=tags)
             timings.seeds_time = time.time() - seeds_start
 
         # Collect all pattern jobs
@@ -459,7 +475,7 @@ class MPFPGraphRetriever(GraphRetriever):
 
         # Fetch full details
         step_start = time.time()
-        results = await fetch_memory_units_by_ids(pool, result_ids, fact_type)
+        results = await fetch_memory_units_by_ids(pool, result_ids, tags=tags)
         timings.fetch = time.time() - step_start
         timings.result_count = len(results)
 
@@ -496,28 +512,37 @@ class MPFPGraphRetriever(GraphRetriever):
         pool,
         query_embedding_str: str,
         bank_id: str,
-        fact_type: str,
         limit: int = 20,
         threshold: float = 0.3,
+        tags: list[str] | None = None,
     ) -> list[SeedNode]:
         """Fallback: find semantic seeds via embedding search."""
+        params = [query_embedding_str, bank_id, threshold, limit]
+        join_clause = ""
+        tag_filter = ""
+        if tags:
+            params.insert(2, tags)
+            join_clause = f"JOIN {fq_table('engram_dictionary')} ed ON ed.engram_id = mu.id"
+            tag_filter = "AND ed.tags @> $3::jsonb"
+            # renumber: $3=tags, $4=threshold, $5=limit
+            threshold_idx, limit_idx = 4, 5
+        else:
+            threshold_idx, limit_idx = 3, 4
+
         async with acquire_with_retry(pool) as conn:
             rows = await conn.fetch(
                 f"""
-                SELECT id, 1 - (embedding <=> $1::vector) AS similarity
-                FROM {fq_table("memory_units")}
-                WHERE bank_id = $2
-                  AND embedding IS NOT NULL
-                  AND fact_type = $3
-                  AND (1 - (embedding <=> $1::vector)) >= $4
-                ORDER BY embedding <=> $1::vector
-                LIMIT $5
+                SELECT mu.id, 1 - (mu.embedding <=> $1::vector) AS similarity
+                FROM {fq_table("memory_units")} mu
+                {join_clause}
+                WHERE mu.bank_id = $2
+                  AND mu.embedding IS NOT NULL
+                  {tag_filter}
+                  AND (1 - (mu.embedding <=> $1::vector)) >= ${threshold_idx}
+                ORDER BY mu.embedding <=> $1::vector
+                LIMIT ${limit_idx}
                 """,
-                query_embedding_str,
-                bank_id,
-                fact_type,
-                threshold,
-                limit,
+                *params,
             )
 
         return [SeedNode(node_id=str(r["id"]), score=r["similarity"]) for r in rows]
