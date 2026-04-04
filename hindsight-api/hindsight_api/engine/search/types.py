@@ -14,7 +14,7 @@ from typing import Any
 class MPFPTimings:
     """Timing breakdown for a single MPFP retrieval call."""
 
-    fact_type: str
+    tags: list[str] = field(default_factory=list)
     edge_count: int = 0  # Total edges loaded
     db_queries: int = 0  # Number of DB queries for edge loading
     edge_load_time: float = 0.0  # Time spent loading edges from DB
