@@ -83,6 +83,39 @@ class Entity(BaseModel):
     )
 
 
+class ThalamusScoresLLM(BaseModel):
+    """
+    4-dimensional relevance scores for a fact, estimated by the LLM during extraction.
+
+    All scores are relative estimates in range 0.0–1.0.
+    """
+
+    novelty: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="How new/unknown is this information relative to common knowledge? (0=well-known, 1=completely novel)",
+    )
+    surprise: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="How unexpected is this fact relative to the context? (0=expected, 1=highly surprising)",
+    )
+    task_relevance: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="How relevant is this fact to the current task/context? (0=irrelevant, 1=directly relevant)",
+    )
+    emotional_valence: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="How emotionally significant is this fact? (0=neutral/factual, 1=highly emotional)",
+    )
+
+
 class Fact(BaseModel):
     """
     Final fact model for storage - built from lenient parsing of LLM response.
@@ -108,6 +141,16 @@ class Fact(BaseModel):
     # Optional structured data
     entities: list[Entity] | None = None
     causal_relations: list["CausalRelation"] | None = None
+
+    # Engram extensions
+    tags: list[str] = Field(
+        default_factory=list,
+        description="Free-form tags for this fact (e.g. ['technical', 'decision', 'personal', 'error', 'goal']). Choose 1-3 relevant tags.",
+    )
+    thalamus_scores: ThalamusScoresLLM | None = Field(
+        default=None,
+        description="Relevance scores for this fact. Estimate novelty, surprise, task_relevance, emotional_valence (each 0.0-1.0).",
+    )
 
 
 class CausalRelation(BaseModel):
@@ -176,6 +219,14 @@ class ExtractedFact(BaseModel):
     entities: list[Entity] | None = Field(default=None, description="People, places, concepts")
     causal_relations: list[FactCausalRelation] | None = Field(
         default=None, description="Links to previous facts (target_index < this fact's index)"
+    )
+    tags: list[str] = Field(
+        default_factory=list,
+        description="Free-form tags (e.g. ['technical', 'decision', 'personal']). Choose 1-3.",
+    )
+    thalamus_scores: ThalamusScoresLLM | None = Field(
+        default=None,
+        description="Relevance scores: novelty, surprise, task_relevance, emotional_valence (0.0-1.0 each).",
     )
 
     @field_validator("entities", mode="before")
@@ -287,6 +338,14 @@ class ExtractedFactVerbose(BaseModel):
         description="Causal links to PREVIOUS facts only. target_index MUST be less than this fact's position. "
         "Example: fact #3 can only reference facts 0, 1, or 2. Max 2 relations per fact.",
     )
+    tags: list[str] = Field(
+        default_factory=list,
+        description="Free-form tags (e.g. ['technical', 'decision', 'personal']). Choose 1-3.",
+    )
+    thalamus_scores: ThalamusScoresLLM | None = Field(
+        default=None,
+        description="Relevance scores: novelty, surprise, task_relevance, emotional_valence (0.0-1.0 each).",
+    )
 
     @field_validator("entities", mode="before")
     @classmethod
@@ -329,6 +388,14 @@ class ExtractedFactNoCausal(BaseModel):
     entities: list[Entity] | None = Field(
         default=None,
         description="Named entities, objects, and concepts from the fact.",
+    )
+    tags: list[str] = Field(
+        default_factory=list,
+        description="Free-form tags (e.g. ['technical', 'decision', 'personal']). Choose 1-3.",
+    )
+    thalamus_scores: ThalamusScoresLLM | None = Field(
+        default=None,
+        description="Relevance scores: novelty, surprise, task_relevance, emotional_valence (0.0-1.0 each).",
     )
 
     @field_validator("entities", mode="before")
@@ -514,6 +581,26 @@ ENTITIES
 
 Include: people names, organizations, places, key objects, abstract concepts (career, friendship, etc.)
 Always include "user" when fact is about the user.
+
+══════════════════════════════════════════════════════════════════════════
+TAGS (Engram categorization)
+══════════════════════════════════════════════════════════════════════════
+
+Assign 1-3 free-form tags per fact. Tags help categorize and filter Engrams later.
+Examples: "technical", "decision", "personal", "goal", "error", "relationship", "health", "finance", "work", "emotion"
+No predefined list — choose what best describes the fact's domain and nature.
+
+══════════════════════════════════════════════════════════════════════════
+THALAMUS SCORES (Relevance estimation)
+══════════════════════════════════════════════════════════════════════════
+
+Estimate relevance scores for each fact (0.0-1.0):
+- novelty: How new/unknown is this? (0=common knowledge, 1=never heard before)
+- surprise: How unexpected given the context? (0=expected, 1=highly surprising)
+- task_relevance: How relevant to the current task/conversation? (0=off-topic, 1=directly relevant)
+- emotional_valence: How emotionally significant? (0=purely factual, 1=highly emotional)
+
+These scores influence how strongly the fact will be stored in long-term memory.
 
 ══════════════════════════════════════════════════════════════════════════
 EXAMPLES
@@ -935,6 +1022,24 @@ Text:
                     if validated_relations:
                         fact_data["causal_relations"] = validated_relations
 
+                # Extract tags (free-form, LLM-assigned)
+                tags_raw = llm_fact.get("tags")
+                if tags_raw and isinstance(tags_raw, list):
+                    fact_data["tags"] = [str(t) for t in tags_raw if t]
+
+                # Extract thalamus scores (optional — fallback to None if missing)
+                thalamus_raw = llm_fact.get("thalamus_scores")
+                if thalamus_raw and isinstance(thalamus_raw, dict):
+                    try:
+                        fact_data["thalamus_scores"] = ThalamusScoresLLM(
+                            novelty=float(thalamus_raw.get("novelty", 0.0)),
+                            surprise=float(thalamus_raw.get("surprise", 0.0)),
+                            task_relevance=float(thalamus_raw.get("task_relevance", 0.0)),
+                            emotional_valence=float(thalamus_raw.get("emotional_valence", 0.0)),
+                        )
+                    except Exception as e:
+                        logger.debug(f"Could not parse thalamus_scores for fact {i}: {e}")
+
                 # Always set mentioned_at to the event_date (when the conversation/document occurred)
                 fact_data["mentioned_at"] = event_date.isoformat()
 
@@ -1160,6 +1265,7 @@ async def extract_facts_from_text(
 
 # Import types for the orchestration layer (note: ExtractedFact here is different from the Pydantic model above)
 
+from ..engram_types import ThalamusScores
 from .types import CausalRelation as CausalRelationType
 from .types import ChunkMetadata, RetainContent
 from .types import ExtractedFact as ExtractedFactType
@@ -1248,6 +1354,17 @@ async def extract_facts_from_contents(
 
                     # Convert Fact model from LLM to ExtractedFactType dataclass
                     # mentioned_at is always the event_date (when the conversation/document occurred)
+                    # Convert ThalamusScoresLLM (Pydantic) → ThalamusScores (dataclass)
+                    thalamus_scores = None
+                    if fact_from_llm.thalamus_scores is not None:
+                        ts = fact_from_llm.thalamus_scores
+                        thalamus_scores = ThalamusScores(
+                            novelty=ts.novelty,
+                            surprise=ts.surprise,
+                            task_relevance=ts.task_relevance,
+                            emotional_valence=ts.emotional_valence,
+                        )
+
                     extracted_fact = ExtractedFactType(
                         fact_text=fact_from_llm.fact,
                         fact_type=fact_from_llm.fact_type,
@@ -1268,6 +1385,8 @@ async def extract_facts_from_contents(
                         # mentioned_at: always the event_date (when the conversation/document occurred)
                         mentioned_at=content.event_date,
                         metadata=content.metadata,
+                        tags=list(fact_from_llm.tags) if fact_from_llm.tags else [],
+                        thalamus_scores=thalamus_scores,
                     )
 
                     extracted_facts.append(extracted_fact)

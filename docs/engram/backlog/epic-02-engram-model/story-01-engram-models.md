@@ -18,20 +18,20 @@ Hindsight's aktuelles Modell kennt nur `fact_type` (world, experience, opinion, 
 
 ## Akzeptanzkriterien
 
-- [ ] ThalamusScores Modell definiert (novelty, surprise, task_relevance, emotional_valence, overall)
-- [ ] ExtractedFact hat optionale Felder `tags` und `thalamus_scores` (optional für Rückwärtskompatibilität)
-- [ ] ProcessedFact erbt die neuen Felder
-- [ ] Engram als eigenständiges Pydantic Model mit allen Feldern aus concept.md Abschnitt 4
-- [ ] FullEngram Felder konkretisiert (aus Epic 01 Story 04)
-- [ ] Fact Extraction LLM-Prompt extrahiert Tags + Thalamus-Scores
-- [ ] Bestehende Pipeline läuft weiter (neue Felder sind optional mit Defaults)
+- [x] ThalamusScores Modell definiert (novelty, surprise, task_relevance, emotional_valence, overall)
+- [x] ExtractedFact hat optionale Felder `tags` und `thalamus_scores` (optional für Rückwärtskompatibilität)
+- [x] ProcessedFact erbt die neuen Felder
+- [x] Engram als eigenständiges Pydantic Model mit allen Feldern aus concept.md Abschnitt 4
+- [x] FullEngram Felder konkretisiert (aus Epic 01 Story 04)
+- [x] Fact Extraction LLM-Prompt extrahiert Tags + Thalamus-Scores
+- [x] Bestehende Pipeline läuft weiter (neue Felder sind optional mit Defaults)
 
 ## Tasks
 
-- [ ] **T1 — ThalamusScores Dataclass definieren:** In `hindsight_api/engine/retain/types.py` neue Dataclass: `ThalamusScores { novelty: float = 0.0, surprise: float = 0.0, task_relevance: float = 0.0, emotional_valence: float = 0.0, overall: float = 0.0 }`. Alle Scores im Bereich 0.0-1.0.
-- [ ] **T2 — ExtractedFact erweitern:** Neue optionale Felder: `tags: List[str] = field(default_factory=list)`, `thalamus_scores: Optional[ThalamusScores] = None`. fact_type bleibt bestehen (Rückwärtskompatibilität), wird aber perspektivisch durch tags abgelöst.
-- [ ] **T3 — Engram Pydantic Model definieren:** In `hindsight_api/engine/response_models.py` neues Model: `Engram { engram_id: UUID, text: str, embedding: Optional[List[float]], tags: List[str], strength: float, layer: Literal['buffer', 'neocortex'], abstraction_level: float, thalamus_scores: ThalamusScores, created_at: datetime, last_accessed: Optional[datetime], access_count: int, session_ref: Optional[UUID], status: Literal['active', 'archived', 'decayed'], confidence_score: Optional[float] }`.
-- [ ] **T4 — FullEngram Felder konkretisieren:** Das in Epic 01 Story 04 vorbereitete FullEngram-Model mit konkreten Sub-Models verbinden: `EngramMetadata` nutzt Felder aus dem Dictionary, `EngramContent` nutzt text + embedding aus Qdrant, `EngramRelationship` nutzt Neo4j-Daten. Import-Referenzen zwischen den Models klären.
-- [ ] **T5 — Fact Extraction Prompt erweitern:** In `hindsight_api/engine/retain/fact_extraction.py` den LLM-Output-Schema um `tags` (List[str]) und `thalamus_scores` (Object mit novelty, surprise, task_relevance, emotional_valence) ergänzen. Prompt-Instruktionen anpassen: Tags sollen frei gewählt werden (keine vordefinierte Liste), Thalamus-Scores sollen relative Einschätzungen sein (0.0-1.0).
-- [ ] **T6 — Extraction Response Parsing anpassen:** In `fact_extraction.py` das Parsing der LLM-Response erweitern um tags und thalamus_scores. Fallback auf leere Tags und None für thalamus_scores wenn LLM die Felder nicht liefert.
-- [ ] **T7 — Unit Tests:** Tests für: ThalamusScores Defaults, ExtractedFact mit und ohne neue Felder, Engram Model Validierung, FullEngram Zusammensetzung. Bestehende Tests müssen weiterhin grün sein.
+- [x] **T1 — ThalamusScores Dataclass definieren:** In `hindsight_api/engine/engram_types.py` (circular import fix — nicht in retain/types.py). `ThalamusScores { novelty, surprise, task_relevance, emotional_valence, overall }` alle 0.0-1.0.
+- [x] **T2 — ExtractedFact erweitern:** `tags: list[str]` + `thalamus_scores: ThalamusScores | None` in ExtractedFact + ProcessedFact. from_extracted_fact() reicht neue Felder durch.
+- [x] **T3 — Engram Pydantic Model definieren:** `Engram` in `response_models.py` mit allen Feldern aus concept.md Abschnitt 4.
+- [x] **T4 — FullEngram Felder konkretisieren:** EngramMetadata hat bereits alle Thalamus-Felder aus Epic 01. Verifiziert — kein Refactoring nötig.
+- [x] **T5 — Fact Extraction Prompt erweitern:** `ThalamusScoresLLM` Pydantic Model + tags/thalamus_scores in alle ExtractedFact*-Varianten + TAGS/THALAMUS SCORES Prompt-Sektionen.
+- [x] **T6 — Extraction Response Parsing anpassen:** Parsing-Loop extrahiert tags + thalamus_scores aus raw JSON. Fallback auf leere Tags / None.
+- [x] **T7 — Unit Tests:** 23/23 Tests grün in `tests/test_engram_models.py`.

@@ -7,10 +7,12 @@ API stability even if internal models change.
 """
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from .engram_types import ThalamusScores
 
 # Valid fact types for recall operations (excludes 'observation' which is internal)
 VALID_RECALL_FACT_TYPES = frozenset(["world", "experience", "opinion"])
@@ -337,3 +339,30 @@ class FullEngram(BaseModel):
     metadata: EngramMetadata | None = None
     content: EngramContent | None = None
     relationships: list[EngramRelationship] = Field(default_factory=list)
+
+
+class Engram(BaseModel):
+    """
+    Flattened Engram — the central knowledge unit of the Engram architecture.
+
+    Represents a meaningful pattern with strength, context, and activation history.
+    Replaces the flat fact model: tags replace fact_type, thalamus_scores provide
+    4-dimensional relevance, strength encodes consolidation state.
+
+    Bio mapping: LTP Late-phase → consolidated Engram (after NCR).
+    """
+
+    engram_id: UUID
+    text: str
+    embedding: list[float] | None = None
+    tags: list[str] = Field(default_factory=list)
+    strength: float = Field(default=0.0, ge=0.0, le=1.0)
+    layer: Literal["buffer", "neocortex"] = "buffer"
+    abstraction_level: float = Field(default=0.0, ge=0.0, le=1.0)
+    thalamus_scores: ThalamusScores = Field(default_factory=ThalamusScores)
+    created_at: datetime
+    last_accessed: datetime | None = None
+    access_count: int = 0
+    session_ref: UUID | None = None
+    status: Literal["active", "archived", "decayed"] = "active"
+    confidence_score: float | None = None

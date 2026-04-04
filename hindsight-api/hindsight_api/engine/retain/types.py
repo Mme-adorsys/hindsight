@@ -10,6 +10,8 @@ from datetime import UTC, datetime
 from typing import TypedDict
 from uuid import UUID
 
+from ..engram_types import ThalamusScores
+
 
 class RetainContentDict(TypedDict, total=False):
     """Type definition for content items in retain_batch_async.
@@ -114,6 +116,10 @@ class ExtractedFact:
     mentioned_at: datetime | None = None
     metadata: dict[str, str] = field(default_factory=dict)
 
+    # Engram extensions (optional — backwards-compatible)
+    tags: list[str] = field(default_factory=list)
+    thalamus_scores: ThalamusScores | None = None
+
 
 @dataclass
 class ProcessedFact:
@@ -158,6 +164,10 @@ class ProcessedFact:
     # Track which content this fact came from (for user entity merging)
     content_index: int = 0
 
+    # Engram extensions (optional — backwards-compatible)
+    tags: list[str] = field(default_factory=list)
+    thalamus_scores: ThalamusScores | None = None
+
     @property
     def is_duplicate(self) -> bool:
         """Check if this fact was marked as a duplicate."""
@@ -201,6 +211,8 @@ class ProcessedFact:
             causal_relations=extracted_fact.causal_relations,
             chunk_id=chunk_id,
             content_index=extracted_fact.content_index,
+            tags=extracted_fact.tags,
+            thalamus_scores=extracted_fact.thalamus_scores,
         )
 
 
