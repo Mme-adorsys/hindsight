@@ -166,7 +166,9 @@ async def create_temporal_proximity_links_batch(
         for cand in candidates:
             diff_min = abs((unit_time - cand["mentioned_at"]).total_seconds() / 60)
             if diff_min <= time_window_minutes:
-                weight = max(0.1, 1.0 - diff_min / time_window_minutes)
+                weight = max(0.0, 1.0 - diff_min / time_window_minutes)
+                if weight <= 0.0:
+                    continue
                 cand_id = str(cand["id"])
                 links.append((unit_id, cand_id, "temporal_proximity", weight, None))
                 links.append((cand_id, unit_id, "temporal_proximity", weight, None))
@@ -178,7 +180,9 @@ async def create_temporal_proximity_links_batch(
             oid, otime = items[j]
             diff_min = abs((utime - otime).total_seconds() / 60)
             if diff_min <= time_window_minutes:
-                weight = max(0.1, 1.0 - diff_min / time_window_minutes)
+                weight = max(0.0, 1.0 - diff_min / time_window_minutes)
+                if weight <= 0.0:
+                    continue
                 links.append((uid, oid, "temporal_proximity", weight, None))
                 links.append((oid, uid, "temporal_proximity", weight, None))
 

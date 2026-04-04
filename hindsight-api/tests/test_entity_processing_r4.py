@@ -29,10 +29,10 @@ from uuid import UUID
 # Helpers
 # ---------------------------------------------------------------------------
 
-_ENTITY_APPLE_INC = {"entity_id": "aaa", "canonical_name": "Apple Inc.", "type": "ORG"}
-_ENTITY_APPLE_FRUIT = {"entity_id": "bbb", "canonical_name": "Apple (fruit)", "type": "CONCEPT"}
-_ENTITY_PARIS_CITY = {"entity_id": "ccc", "canonical_name": "Paris (city)", "type": "LOCATION"}
-_ENTITY_PARIS_PERSON = {"entity_id": "ddd", "canonical_name": "Paris (person)", "type": "PERSON"}
+_ENTITY_APPLE_INC = {"entity_id": "aaa", "canonical_name": "Apple Inc.", "text": "Apple", "type": "ORG"}
+_ENTITY_APPLE_FRUIT = {"entity_id": "bbb", "canonical_name": "Apple (fruit)", "text": "Apple", "type": "CONCEPT"}
+_ENTITY_PARIS_CITY = {"entity_id": "ccc", "canonical_name": "Paris (city)", "text": "Paris", "type": "LOCATION"}
+_ENTITY_PARIS_PERSON = {"entity_id": "ddd", "canonical_name": "Paris (person)", "text": "Paris", "type": "PERSON"}
 _ENTITY_GOOGLE = {"entity_id": "eee", "canonical_name": "Google", "type": "ORG"}
 
 
@@ -86,6 +86,15 @@ class TestDetectAmbiguousEntities:
         assert len(result) == 1
         candidate_ids = {c["entity_id"] for c in result[0].candidates}
         assert candidate_ids == {"ccc", "ddd"}
+
+    def test_substring_does_not_create_false_ambiguity(self):
+        """'Apple' must NOT match 'Pineapple' — exact match only."""
+        known = [
+            {"canonical_name": "Apple Inc.", "text": "Apple", "entity_id": "1"},
+            {"canonical_name": "Pineapple", "text": "Pineapple", "entity_id": "2"},
+        ]
+        result = detect_ambiguous_entities(["Apple"], known)
+        assert len(result) == 0
 
 
 # ---------------------------------------------------------------------------

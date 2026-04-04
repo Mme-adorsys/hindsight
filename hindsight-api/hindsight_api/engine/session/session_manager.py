@@ -19,13 +19,15 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from uuid import UUID
 
 from ..response_models import Episode, RetrievalMode, Session
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_SESSION_TTL = timedelta(hours=24)
 
 
 # ---------------------------------------------------------------------------
@@ -131,12 +133,23 @@ class SessionManager:
         await manager.end_session(session.session_id)
     """
 
-    def __init__(self) -> None:
+    def __init__(self, session_ttl: timedelta = DEFAULT_SESSION_TTL) -> None:
         self._sessions: dict[UUID, SessionState] = {}
+        self._session_ttl = session_ttl
 
     # ------------------------------------------------------------------
     # Lifecycle (T1)
     # ------------------------------------------------------------------
+
+    def _cleanup_expired(self) -> int:
+        """Remove sessions that have exceeded their TTL. Returns count of removed sessions."""
+        now = datetime.now(UTC)
+        expired = [sid for sid, state in self._sessions.items() if (now - state.session.started_at) > self._session_ttl]
+        for sid in expired:
+            del self._sessions[sid]
+        if expired:
+            logger.info("SessionManager: cleaned up %d expired sessions", len(expired))
+        return len(expired)
 
     async def create_session(
         self,
@@ -155,6 +168,7 @@ class SessionManager:
         Returns:
             The newly created Session.
         """
+        self._cleanup_expired()
         session = Session(
             mode=mode,
             task_context=task_context,

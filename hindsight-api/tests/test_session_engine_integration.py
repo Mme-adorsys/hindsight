@@ -30,11 +30,14 @@ class TestResolveSessionConfig:
 
     def _make_minimal_engine(self):
         """Create a minimal MemoryEngine-like object with just the helper method."""
+        import threading
+
         from hindsight_api.engine.memory_engine import MemoryEngine
         # Patch __init__ to avoid full DB setup
         engine = object.__new__(MemoryEngine)
         engine._session_manager = None
         engine._session_manager_lazy_init = True
+        engine._session_manager_lock = threading.Lock()
         return engine
 
     def test_none_session_returns_precision_config(self):
@@ -90,10 +93,13 @@ class TestResolveSessionConfig:
 
 class TestGetSessionManager:
     def _make_minimal_engine(self, session_manager=None):
+        import threading
+
         from hindsight_api.engine.memory_engine import MemoryEngine
         engine = object.__new__(MemoryEngine)
         engine._session_manager = session_manager
         engine._session_manager_lazy_init = session_manager is None
+        engine._session_manager_lock = threading.Lock()
         return engine
 
     def test_lazy_creates_session_manager_on_first_call(self):

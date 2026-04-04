@@ -12,6 +12,7 @@ This implements a sophisticated memory architecture that combines:
 import asyncio
 import contextvars
 import logging
+import threading
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -337,6 +338,7 @@ class MemoryEngine(MemoryEngineInterface):
         # Lazy-imported to avoid circular imports; injected or created on first use.
         self._session_manager: "SessionManager | None" = session_manager if session_manager is not None else None
         self._session_manager_lazy_init = session_manager is None  # True = create on first use
+        self._session_manager_lock = threading.Lock()  # Guards lazy init against concurrent access
 
         # Initialize embeddings (from env vars if not provided)
         if embeddings is not None:
@@ -472,11 +474,13 @@ class MemoryEngine(MemoryEngineInterface):
             raise OperationValidationError(result.reason or "Operation not allowed", result.status_code)
 
     def _get_session_manager(self) -> "SessionManager":
-        """Return the SessionManager, creating a default instance on first use."""
+        """Return the SessionManager, creating a default instance on first use (thread-safe)."""
         if self._session_manager is None:
-            from .session.session_manager import SessionManager
+            with self._session_manager_lock:
+                if self._session_manager is None:
+                    from .session.session_manager import SessionManager
 
-            self._session_manager = SessionManager()
+                    self._session_manager = SessionManager()
         return self._session_manager
 
     def _resolve_session_config(self, session: "Session | None"):

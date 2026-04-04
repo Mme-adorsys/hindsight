@@ -91,11 +91,19 @@ async def check_duplicates_batch(
     return all_results
 
 
+# Strength bonus multiplier for existing Engrams during deduplication.
+# A consolidated Engram (strength=1.0) gets +0.1 added to its effective score,
+# making it harder to replace. This models the biological principle that
+# well-consolidated memories (LTP Late) are more resistant to overwriting.
+# Bio mapping: reconsolidation resistance ∝ consolidation state.
+STRENGTH_BONUS_MULTIPLIER: float = 0.1
+
+
 def resolve_duplicate(new_fact: ProcessedFact, dup_result: DuplicateResult) -> DuplicateResolution:
     """Determine whether a duplicate fact should be kept, dropped, or replace the existing one.
 
     Score comparison: new_score >= effective_existing → REPLACE (frischer gewinnt bei Gleichstand).
-    effective_existing = thalamus_overall + strength * 0.1 (strength bonus protects consolidated Engrams).
+    effective_existing = thalamus_overall + strength * STRENGTH_BONUS_MULTIPLIER (protects consolidated Engrams).
 
     Args:
         new_fact: The incoming fact candidate.
@@ -108,7 +116,7 @@ def resolve_duplicate(new_fact: ProcessedFact, dup_result: DuplicateResult) -> D
         return DuplicateResolution.KEEP
 
     new_score = new_fact.thalamus_scores.overall if new_fact.thalamus_scores else 0.0
-    strength_bonus = (dup_result.existing_strength or 0.0) * 0.1
+    strength_bonus = (dup_result.existing_strength or 0.0) * STRENGTH_BONUS_MULTIPLIER
     effective_existing = (dup_result.existing_score or 0.0) + strength_bonus
 
     if new_score >= effective_existing:

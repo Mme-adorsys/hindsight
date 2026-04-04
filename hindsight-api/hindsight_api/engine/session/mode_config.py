@@ -66,6 +66,16 @@ class ScoringWeights:
     thalamus_weighted: float
     """Thalamus composite score weight (novelty/surprise/relevance blend)."""
 
+    def __post_init__(self) -> None:
+        total = self.ce + self.rrf + self.temporal + self.recency + self.engram_strength + self.thalamus_weighted
+        if abs(total - 1.0) > 1e-6:
+            raise ValueError(
+                f"ScoringWeights must sum to 1.0, got {total:.6f} "
+                f"(ce={self.ce}, rrf={self.rrf}, temporal={self.temporal}, "
+                f"recency={self.recency}, engram_strength={self.engram_strength}, "
+                f"thalamus_weighted={self.thalamus_weighted})"
+            )
+
 
 # ---------------------------------------------------------------------------
 # ModeConfig — T1

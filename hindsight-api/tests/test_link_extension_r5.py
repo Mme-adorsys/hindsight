@@ -78,11 +78,14 @@ class TestWriteLinksToNeo4j:
         await write_links_to_neo4j(client, [link])
         client.run_cypher.assert_called_once()
         call_args = client.run_cypher.call_args
-        # Cypher contains the rel type
+        # Cypher uses UNWIND batch format
         assert "SEMANTIC" in call_args[0][0]
-        assert call_args[0][1]["from_id"] == "u1"
-        assert call_args[0][1]["to_id"] == "u2"
-        assert call_args[0][1]["weight"] == 0.8
+        assert "UNWIND" in call_args[0][0]
+        links_param = call_args[0][1]["links"]
+        assert len(links_param) == 1
+        assert links_param[0]["from_id"] == "u1"
+        assert links_param[0]["to_id"] == "u2"
+        assert links_param[0]["weight"] == 0.8
 
     @pytest.mark.asyncio
     async def test_skips_unknown_rel_type(self):
@@ -108,6 +111,17 @@ class TestWriteLinksToNeo4j:
         ]
         await write_links_to_neo4j(client, links)
         assert client.run_cypher.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_batch_write_uses_single_query_per_type(self):
+        """Links of the same rel_type must be sent in one UNWIND query, not N individual ones."""
+        client = _neo4j_mock()
+        links = [LinkRecord(from_id=f"a{i}", to_id=f"b{i}", rel_type="semantic", weight=0.5) for i in range(10)]
+        await write_links_to_neo4j(client, links)
+        assert client.run_cypher.call_count == 1
+        call_args = client.run_cypher.call_args
+        assert "UNWIND" in call_args[0][0]
+        assert len(call_args[0][1]["links"]) == 10
 
     @pytest.mark.asyncio
     async def test_all_valid_rel_types_accepted(self):

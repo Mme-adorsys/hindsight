@@ -59,6 +59,10 @@ class TestModeConfigStructure:
             total = _weights_sum(config.scoring_weights)
             assert abs(total - 1.0) < 1e-9, f"{mode}: weights sum to {total}, expected 1.0"
 
+    def test_invalid_weights_sum_raises(self):
+        with pytest.raises(ValueError, match="must sum to 1.0"):
+            ScoringWeights(ce=0.5, rrf=0.5, temporal=0.5, recency=0.0, engram_strength=0.0, thalamus_weighted=0.0)
+
 
 # ---------------------------------------------------------------------------
 # T3 — Default profiles match concept.md § 7

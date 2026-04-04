@@ -16,7 +16,10 @@ import asyncio
 import pytest
 
 from hindsight_api.engine.response_models import Episode, RetrievalMode, Session
+from datetime import timedelta
+
 from hindsight_api.engine.session.session_manager import (
+    DEFAULT_SESSION_TTL,
     ModeSignal,
     ModeTransition,
     SessionManager,
@@ -81,6 +84,18 @@ class TestSessionLifecycle:
         from uuid import uuid4
         with pytest.raises(KeyError):
             await manager.end_session(uuid4())
+
+    async def test_expired_sessions_are_cleaned_up(self):
+        """Sessions past their TTL must be removed on the next create_session() call."""
+        manager = SessionManager(session_ttl=timedelta(seconds=0))
+        session = await manager.create_session()
+        # TTL=0 means the session is already expired; next create_session triggers cleanup
+        _ = await manager.create_session()
+        with pytest.raises(KeyError):
+            manager.get_session(session.session_id)
+
+    async def test_default_session_ttl_is_24h(self):
+        assert DEFAULT_SESSION_TTL.total_seconds() == 86400
 
     async def test_multiple_sessions_are_independent(self, manager: SessionManager):
         s1 = await manager.create_session(mode=RetrievalMode.PRECISION)

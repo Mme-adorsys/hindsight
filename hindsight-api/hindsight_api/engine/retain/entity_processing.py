@@ -40,11 +40,11 @@ def detect_ambiguous_entities(
     entity_names: list[str],
     known_entities: list[dict],
 ) -> list[AmbiguousEntity]:
-    """Detect entity names that match more than one known entity (case-insensitive substring).
+    """Detect entity names that match more than one known entity (case-insensitive exact match).
 
-    A name is considered ambiguous when two or more entries in *known_entities* contain
-    it as a case-insensitive substring of their ``canonical_name``.  For example, the
-    extracted name ``"Apple"`` would match both ``"Apple Inc."`` and ``"Apple (fruit)"``.
+    A name is considered ambiguous when two or more entries in *known_entities* exactly
+    match it (case-insensitive) via ``canonical_name`` or ``text``.  Substring matching
+    is intentionally avoided to prevent false positives (e.g. "Apple" matching "Pineapple").
 
     Args:
         entity_names: Raw entity names extracted from fact text.
@@ -57,7 +57,11 @@ def detect_ambiguous_entities(
     ambiguous: list[AmbiguousEntity] = []
     for name in entity_names:
         name_lower = name.lower()
-        matches = [e for e in known_entities if name_lower in e.get("canonical_name", "").lower()]
+        matches = [
+            e
+            for e in known_entities
+            if e.get("canonical_name", "").lower() == name_lower or e.get("text", "").lower() == name_lower
+        ]
         if len(matches) > 1:
             ambiguous.append(AmbiguousEntity(name=name, candidates=matches))
     return ambiguous

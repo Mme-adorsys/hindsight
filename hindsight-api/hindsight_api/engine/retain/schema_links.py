@@ -86,10 +86,17 @@ async def check_schema_fit_batch(
         return []
 
     schema_matrix = np.array(schema_embs, dtype=np.float32)
+    # L2-normalize schema rows so dot product equals cosine similarity
+    norms = np.linalg.norm(schema_matrix, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    schema_matrix = schema_matrix / norms
 
     schema_links: list[SchemaLink] = []
     for unit_id, emb in zip(unit_ids, embeddings):
         emb_arr = np.array(emb, dtype=np.float32)
+        emb_norm = np.linalg.norm(emb_arr)
+        if emb_norm > 0:
+            emb_arr = emb_arr / emb_norm
         similarities = np.dot(schema_matrix, emb_arr)
         for i, sim in enumerate(similarities):
             if float(sim) >= threshold:
