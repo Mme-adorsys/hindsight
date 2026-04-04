@@ -16,6 +16,7 @@ import uuid
 
 import asyncpg
 import pytest
+import pytest_asyncio
 
 from hindsight_api.engine.engram_storage import EngramStorageService
 from hindsight_api.engine.neo4j_client import Neo4jEngineClient
@@ -23,14 +24,12 @@ from hindsight_api.engine.qdrant_client import QdrantEngineClient
 
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY") or None
-QDRANT_COLLECTION = "engrams_test_lifecycle"
 
 NEO4J_BOLT_URL = os.getenv("NEO4J_BOLT_URL", "bolt://localhost:7687")
 NEO4J_USERNAME = os.getenv("NEO4J_USERNAME", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "hindsight")
 NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "neo4j")
 
-TEST_BANK_ID = "test_lifecycle_bank"
 EMBEDDING_DIM = 384
 
 
@@ -42,19 +41,23 @@ def _random_embedding() -> list[float]:
     return [x / norm for x in vec]
 
 
-@pytest.fixture(scope="module")
+@pytest_asyncio.fixture
 async def storage(pg0_db_url):
     """Fully wired EngramStorageService for lifecycle tests."""
+    # Unique collection + bank per test to avoid parallel-worker conflicts
+    collection = f"engrams_test_lc_{uuid.uuid4().hex[:8]}"
+    bank_id = f"test_lifecycle_{uuid.uuid4().hex[:8]}"
+
     # PostgreSQL pool
     pool = await asyncpg.create_pool(pg0_db_url, min_size=1, max_size=5)
     async with pool.acquire() as conn:
         await conn.execute(
             "INSERT INTO banks (bank_id) VALUES ($1) ON CONFLICT DO NOTHING",
-            TEST_BANK_ID,
+            bank_id,
         )
 
     # Qdrant
-    qdrant = QdrantEngineClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, collection=QDRANT_COLLECTION)
+    qdrant = QdrantEngineClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, collection=collection)
     await qdrant.connect()
     await qdrant.ensure_collection()
 
@@ -69,18 +72,19 @@ async def storage(pg0_db_url):
     await neo4j.ensure_schema()
 
     service = EngramStorageService(pool=pool, qdrant=qdrant, neo4j=neo4j)
+    service._test_bank_id = bank_id  # type: ignore[attr-defined]
 
     yield service
 
     # Cleanup
     async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM engram_dictionary WHERE bank_id = $1", TEST_BANK_ID)
-        await conn.execute("DELETE FROM banks WHERE bank_id = $1", TEST_BANK_ID)
+        await conn.execute("DELETE FROM engram_dictionary WHERE bank_id = $1", bank_id)
+        await conn.execute("DELETE FROM banks WHERE bank_id = $1", bank_id)
 
     from qdrant_client import AsyncQdrantClient
 
     raw = AsyncQdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
-    await raw.delete_collection(QDRANT_COLLECTION)
+    await raw.delete_collection(collection)
     await raw.close()
 
     await qdrant.close()
@@ -96,11 +100,12 @@ async def test_full_crud_lifecycle(storage: EngramStorageService):
     create → read all → update metadata → update content →
     add relationship → read verify → delete → read confirm gone
     """
+    bank_id = storage._test_bank_id  # type: ignore[attr-defined]
     embedding = _random_embedding()
 
     # --- Create ---
     engram_id = await storage.create_engram({
-        "bank_id": TEST_BANK_ID,
+        "bank_id": bank_id,
         "text": "The Engram lifecycle test stores a fact.",
         "embedding": embedding,
         "strength": 0.6,
@@ -146,7 +151,7 @@ async def test_full_crud_lifecycle(storage: EngramStorageService):
 
     # --- Add relationship (needs a second Engram) ---
     engram_id_b = await storage.create_engram({
-        "bank_id": TEST_BANK_ID,
+        "bank_id": bank_id,
         "text": "Related Engram for relationship test.",
         "embedding": _random_embedding(),
         "strength": 0.5,
@@ -182,8 +187,9 @@ async def test_full_crud_lifecycle(storage: EngramStorageService):
 @pytest.mark.asyncio
 async def test_exists(storage: EngramStorageService):
     """exists() returns True for present and False for absent engram_ids."""
+    bank_id = storage._test_bank_id  # type: ignore[attr-defined]
     engram_id = await storage.create_engram({
-        "bank_id": TEST_BANK_ID,
+        "bank_id": bank_id,
         "text": "exists test",
         "embedding": _random_embedding(),
     })
@@ -198,8 +204,9 @@ async def test_exists(storage: EngramStorageService):
 @pytest.mark.asyncio
 async def test_batch_create(storage: EngramStorageService):
     """batch_create returns all engram_ids and creates entries in all systems."""
+    bank_id = storage._test_bank_id  # type: ignore[attr-defined]
     engrams = [
-        {"bank_id": TEST_BANK_ID, "text": f"Batch engram {i}", "embedding": _random_embedding()}
+        {"bank_id": bank_id, "text": f"Batch engram {i}", "embedding": _random_embedding()}
         for i in range(3)
     ]
     ids = await storage.batch_create(engrams)
@@ -213,8 +220,9 @@ async def test_batch_create(storage: EngramStorageService):
 @pytest.mark.asyncio
 async def test_metadata_only_read(storage: EngramStorageService):
     """read_metadata returns metadata without querying Qdrant or Neo4j."""
+    bank_id = storage._test_bank_id  # type: ignore[attr-defined]
     engram_id = await storage.create_engram({
-        "bank_id": TEST_BANK_ID,
+        "bank_id": bank_id,
         "text": "metadata only",
         "embedding": _random_embedding(),
         "strength": 0.42,

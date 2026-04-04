@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 
 import asyncpg
 import pytest
+import pytest_asyncio
 
 from hindsight_api.engine.engram_dictionary import (
     batch_insert,
@@ -28,7 +29,7 @@ from hindsight_api.engine.engram_dictionary import (
 TEST_BANK_ID = "test_dictionary_bank"
 
 
-@pytest.fixture(scope="module")
+@pytest_asyncio.fixture
 async def pool(pg0_db_url):
     """Async connection pool for dictionary tests."""
     db_pool = await asyncpg.create_pool(pg0_db_url, min_size=1, max_size=5)

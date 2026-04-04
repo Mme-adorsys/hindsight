@@ -280,10 +280,10 @@ class EngramStorageService(EngramStorageInterface):
         neo4j_mirror = {"strength", "layer", "abstraction_level", "status", "thalamus_overall"}
         neo4j_updates = {k: v for k, v in updates.items() if k in neo4j_mirror}
         if neo4j_updates:
-            set_clause = ", ".join(f"e.{k} = ${i + 2}" for i, k in enumerate(neo4j_updates))
+            set_clause = ", ".join(f"e.{k} = $p_{k}" for k in neo4j_updates)
             await self._neo4j.run_cypher(
                 f"MATCH (e:Engram {{engram_id: $engram_id}}) SET {set_clause}",
-                params={"engram_id": engram_id, **{f"p{i}": v for i, v in enumerate(neo4j_updates.values())}},
+                params={"engram_id": engram_id, **{f"p_{k}": v for k, v in neo4j_updates.items()}},
             )
 
     async def update_content(self, engram_id: str, text: str, embedding: list[float]) -> None:

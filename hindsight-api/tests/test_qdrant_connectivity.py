@@ -7,10 +7,12 @@ Start with: docker compose -f docker/docker-compose.yml up -d qdrant
 Test flow: connect → ensure_collection → upsert → search → get_by_id → delete → verify gone.
 """
 
+import asyncio
 import os
 import uuid
 
 import pytest
+import pytest_asyncio
 
 from hindsight_api.engine.qdrant_client import QdrantEngineClient
 
@@ -28,13 +30,33 @@ def _random_embedding() -> list[float]:
     return [x / norm for x in vec]
 
 
-@pytest.fixture
-async def qdrant_client():
-    """Create and connect a QdrantEngineClient pointing at the test collection."""
+async def _wait_for_qdrant(url: str, max_wait: int = 30) -> None:
+    """Poll Qdrant /healthz until ready or timeout."""
+    import httpx
+
+    deadline = asyncio.get_event_loop().time() + max_wait
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            async with httpx.AsyncClient() as http:
+                r = await http.get(f"{url}/healthz", timeout=2.0)
+                if r.status_code == 200:
+                    return
+        except Exception:
+            pass
+        await asyncio.sleep(1)
+    raise RuntimeError(f"Qdrant not ready after {max_wait}s at {url}")
+
+
+@pytest_asyncio.fixture
+async def qdrant_client(request: pytest.FixtureRequest):
+    """Create and connect a QdrantEngineClient with a test-unique collection."""
+    await _wait_for_qdrant(QDRANT_URL)
+    # Unique collection per test to avoid parallel-worker conflicts
+    collection = f"engrams_test_{uuid.uuid4().hex[:8]}"
     client = QdrantEngineClient(
         url=QDRANT_URL,
         api_key=QDRANT_API_KEY,
-        collection=TEST_COLLECTION,
+        collection=collection,
     )
     await client.connect()
     await client.ensure_collection()
@@ -44,7 +66,7 @@ async def qdrant_client():
         from qdrant_client import AsyncQdrantClient
 
         raw = AsyncQdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
-        await raw.delete_collection(TEST_COLLECTION)
+        await raw.delete_collection(collection)
         await raw.close()
     except Exception:
         pass

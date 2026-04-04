@@ -183,9 +183,9 @@ class QdrantEngineClient:
         qdrant_filter = qdrant_models.Filter(**filters) if filters else None
 
         async def _search():
-            results = await client.search(  # type: ignore[attr-defined]
+            response = await client.query_points(
                 collection_name=self._collection,
-                query_vector=embedding,
+                query=embedding,
                 limit=limit,
                 query_filter=qdrant_filter,
                 with_payload=True,
@@ -196,7 +196,7 @@ class QdrantEngineClient:
                     "score": hit.score,
                     "payload": hit.payload,
                 }
-                for hit in results
+                for hit in response.points
             ]
 
         return await _retry_with_backoff(_search)
