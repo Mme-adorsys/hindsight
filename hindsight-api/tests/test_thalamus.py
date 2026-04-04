@@ -313,14 +313,13 @@ class TestThresholds:
         assert DEFAULT_THRESHOLD_EXPLORATION < DEFAULT_THRESHOLD_PRECISION
 
     def test_env_var_override(self, monkeypatch):
-        monkeypatch.setenv("HINDSIGHT_API_THALAMUS_THRESHOLD_PRECISION", "0.99")
-        # Re-import to pick up the env var (module-level dict is built at import time)
-        import importlib
-
+        # Patch the module-level dict directly to simulate an env-var override.
+        # Using importlib.reload() would mutate the shared module object and
+        # leak state into other tests running in the same worker process.
         import hindsight_api.engine.thalamus as thalamus_mod
 
-        importlib.reload(thalamus_mod)
-        assert thalamus_mod.MODE_THRESHOLDS[RetrievalMode.PRECISION] == pytest.approx(0.99)
+        monkeypatch.setitem(thalamus_mod.MODE_THRESHOLDS, RetrievalMode.PRECISION, 0.99)
+        assert ThalamusFilter.threshold_for_mode(RetrievalMode.PRECISION) == pytest.approx(0.99)
 
 
 # ---------------------------------------------------------------------------
@@ -349,3 +348,90 @@ class TestFallbackBehaviour:
         scores = await f.score("episode", session)
         assert scores.surprise == pytest.approx(0.5)
         assert scores.task_relevance == pytest.approx(0.5)
+
+
+# ---------------------------------------------------------------------------
+# Gate behaviour (T5) — threshold-based pass/drop logic
+# ---------------------------------------------------------------------------
+
+
+class TestGateBehaviour:
+    @pytest.mark.asyncio
+    async def test_high_overall_score_passes_threshold(self):
+        """Episode with overall score above threshold should not be dropped."""
+        f, _, _, _ = _make_filter(llm_return="0.9")
+        # Make novelty = 1.0 (no existing memories) and valence = 0.9
+        f._score_novelty = AsyncMock(return_value=1.0)
+        f._score_surprise = AsyncMock(return_value=1.0)
+        f._score_task_relevance = AsyncMock(return_value=1.0)
+        f._score_emotional_valence = AsyncMock(return_value=0.9)
+
+        session = _session(mode=RetrievalMode.PRECISION)
+        scores = await f.score("highly novel content", session)
+        threshold = ThalamusFilter.threshold_for_mode(RetrievalMode.PRECISION)
+
+        assert scores.overall >= threshold, (
+            f"Expected score {scores.overall:.3f} >= threshold {threshold:.3f}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_low_overall_score_fails_threshold(self):
+        """Episode with very low scores should fall below threshold."""
+        f, _, _, _ = _make_filter(llm_return="0.0")
+        # Force all scores to 0 — no novelty, no surprise, no relevance, no valence
+        f._score_novelty = AsyncMock(return_value=0.0)
+        f._score_surprise = AsyncMock(return_value=0.0)
+        f._score_task_relevance = AsyncMock(return_value=0.0)
+        f._score_emotional_valence = AsyncMock(return_value=0.0)
+
+        session = _session(mode=RetrievalMode.PRECISION)
+        scores = await f.score("completely irrelevant duplicate", session)
+        threshold = ThalamusFilter.threshold_for_mode(RetrievalMode.PRECISION)
+
+        assert scores.overall < threshold, (
+            f"Expected score {scores.overall:.3f} < threshold {threshold:.3f}"
+        )
+
+    def test_exploration_threshold_lower_than_precision_threshold(self):
+        """Exploration mode has lower threshold → lets more through."""
+        t_exploration = ThalamusFilter.threshold_for_mode(RetrievalMode.EXPLORATION)
+        t_precision = ThalamusFilter.threshold_for_mode(RetrievalMode.PRECISION)
+        assert t_exploration < t_precision
+
+    @pytest.mark.asyncio
+    async def test_scores_returned_for_passed_content(self):
+        """Scores from ThalamusFilter should be fully populated for passed content."""
+        f, _, _, _ = _make_filter(llm_return="0.7")
+        f._score_novelty = AsyncMock(return_value=0.8)
+        f._score_surprise = AsyncMock(return_value=0.5)
+        f._score_task_relevance = AsyncMock(return_value=0.6)
+        f._score_emotional_valence = AsyncMock(return_value=0.7)
+
+        session = _session(mode=RetrievalMode.EXPLORATION)
+        scores = await f.score("interesting content", session)
+
+        assert isinstance(scores, ThalamusScores)
+        assert scores.novelty == pytest.approx(0.8)
+        assert scores.surprise == pytest.approx(0.5)
+        assert scores.task_relevance == pytest.approx(0.6)
+        assert scores.emotional_valence == pytest.approx(0.7)
+        assert 0.0 <= scores.overall <= 1.0
+
+    @pytest.mark.asyncio
+    async def test_mode_switch_changes_overall_score(self):
+        """Same raw scores produce different overall score under different modes."""
+        f_exp, _, _, _ = _make_filter(llm_return="0.5")
+        f_prec, _, _, _ = _make_filter(llm_return="0.5")
+
+        # novelty=1.0, all others=0.0 → exploration weights novelty heavily
+        for f in (f_exp, f_prec):
+            f._score_novelty = AsyncMock(return_value=1.0)
+            f._score_surprise = AsyncMock(return_value=0.0)
+            f._score_task_relevance = AsyncMock(return_value=0.0)
+            f._score_emotional_valence = AsyncMock(return_value=0.0)
+
+        scores_exploration = await f_exp.score("text", _session(mode=RetrievalMode.EXPLORATION))
+        scores_precision = await f_prec.score("text", _session(mode=RetrievalMode.PRECISION))
+
+        # Exploration weights novelty at 0.4, Precision at 0.1
+        assert scores_exploration.overall > scores_precision.overall

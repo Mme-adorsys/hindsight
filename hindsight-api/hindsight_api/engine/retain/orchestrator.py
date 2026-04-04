@@ -109,6 +109,14 @@ async def retain_batch(
         f"[1] Extract facts: {len(extracted_facts)} facts, {len(chunks)} chunks from {len(contents)} contents in {time.time() - step_start:.3f}s"
     )
 
+    # Apply gate ThalamusScores to facts where the LLM did not produce scores.
+    # Gate scores (heuristic) are the baseline; LLM-provided scores take precedence.
+    for fact in extracted_facts:
+        if fact.thalamus_scores is None and fact.content_index < len(contents_dicts):
+            gate_scores = contents_dicts[fact.content_index].get("thalamus_scores")
+            if gate_scores is not None:
+                fact.thalamus_scores = gate_scores
+
     if not extracted_facts:
         # Still need to create document if document_id was provided
         async with acquire_with_retry(pool) as conn:

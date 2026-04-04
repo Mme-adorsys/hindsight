@@ -31,6 +31,7 @@ class RetainContentDict(TypedDict, total=False):
     metadata: dict[str, str]
     document_id: str
     entities: list[dict[str, str]]  # [{"text": "...", "type": "..."}]
+    thalamus_scores: ThalamusScores  # Set by ThalamusFilter gate (Epic 04)
 
 
 def _now_utc() -> datetime:

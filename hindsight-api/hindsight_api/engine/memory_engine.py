@@ -327,6 +327,9 @@ class MemoryEngine(MemoryEngineInterface):
         # Engram Storage Service — set by the lifespan after pool + clients are ready (Epic 01)
         self.engram_storage = None
 
+        # ThalamusFilter — lazy-init in retain_batch_async once engram_storage is available (Epic 04)
+        self._thalamus = None
+
         # Initialize embeddings (from env vars if not provided)
         if embeddings is not None:
             self.embeddings = embeddings
@@ -1155,6 +1158,65 @@ class MemoryEngine(MemoryEngineInterface):
                 if "document_id" not in item:
                     item["document_id"] = document_id
 
+        # --- Thalamus Filter Gate (Epic 04) ---
+        # Runs per-content BEFORE chunking and orchestration.
+        # Episodes below the mode-dependent threshold are dropped; those above are enriched
+        # with ThalamusScores and passed on. Gate scores serve as baseline for fact extraction.
+        original_count = len(contents)
+        passed_indices: list[int] | None = None  # None = no filtering applied
+
+        if self.engram_storage is not None:
+            if self._thalamus is None:
+                from .thalamus import ThalamusFilter
+
+                self._thalamus = ThalamusFilter(
+                    qdrant=self.engram_storage._qdrant,
+                    embeddings=self.embeddings,
+                    llm=self._llm_registry.get_llm("retain", "thalamus_scoring"),
+                )
+
+            from .response_models import Session as _Session
+
+            effective_session = session or _Session.default()
+            threshold = ThalamusFilter.threshold_for_mode(effective_session.mode)
+            passed_contents: list[RetainContentDict] = []
+            passed_indices = []
+            dropped = 0
+            total_score = 0.0
+
+            for i, item in enumerate(contents):
+                scores = await self._thalamus.score(item.get("content", ""), effective_session)
+                total_score += scores.overall
+                if scores.overall < threshold:
+                    dropped += 1
+                    logger.info(
+                        "Thalamus: dropped content (score=%.3f, threshold=%.3f, bank=%s)",
+                        scores.overall,
+                        threshold,
+                        bank_id,
+                    )
+                else:
+                    enriched = dict(item)
+                    enriched["thalamus_scores"] = scores
+                    passed_contents.append(enriched)
+                    passed_indices.append(i)
+
+            logger.info(
+                "Thalamus: passed=%d dropped=%d avg_score=%.3f bank=%s mode=%s",
+                len(passed_contents),
+                dropped,
+                total_score / original_count,
+                bank_id,
+                effective_session.mode,
+            )
+
+            if not passed_contents:
+                if return_usage:
+                    return [[] for _ in range(original_count)], TokenUsage()
+                return [[] for _ in range(original_count)]
+
+            contents = passed_contents
+
         # Auto-chunk large batches by character count to avoid timeouts and memory issues
         # Calculate total character count
         total_chars = sum(len(item.get("content", "")) for item in contents)
@@ -1225,6 +1287,15 @@ class MemoryEngine(MemoryEngineInterface):
                 fact_type_override=fact_type_override,
                 confidence_score=confidence_score,
             )
+
+        # Reconstruct full result shape when thalamus filtering dropped some contents.
+        # Dropped positions get [] so the caller's index mapping stays intact.
+        if passed_indices is not None and len(passed_indices) < original_count:
+            full_result: list[list[str]] = [[] for _ in range(original_count)]
+            for filtered_idx, orig_idx in enumerate(passed_indices):
+                if filtered_idx < len(result):
+                    full_result[orig_idx] = result[filtered_idx]
+            result = full_result
 
         # Call post-operation hook if validator is configured
         if self._operation_validator:
