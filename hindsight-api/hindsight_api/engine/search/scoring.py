@@ -5,7 +5,14 @@ Includes recency weighting, frequency weighting, temporal proximity,
 and similarity calculations used in memory activation and ranking.
 """
 
+from __future__ import annotations
+
+import math
 from datetime import datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from hindsight_api.engine.session.mode_config import ScoringWeights
 
 
 def cosine_similarity(vec1: list[float], vec2: list[float]) -> float:
@@ -32,37 +39,124 @@ def cosine_similarity(vec1: list[float], vec2: list[float]) -> float:
     return dot_product / (magnitude1 * magnitude2)
 
 
-def calculate_recency_weight(days_since: float, half_life_days: float = 365.0) -> float:
+def calculate_recency_weight(days_since: float, half_life_days: float = 365.0, strength: float = 0.5) -> float:
     """
-    Calculate recency weight using logarithmic decay.
+    Calculate recency weight using logarithmic decay, modulated by Engram Strength.
 
-    This provides much better differentiation over long time periods compared to
-    exponential decay. Uses a log-based decay where the half-life parameter controls
-    when memories reach 50% weight.
+    Concept bio-mapping: well-consolidated Engrams (high strength) decay slower —
+    analogous to LTP Late stabilization in neocortex (concept.md § S4 Recency-Decay).
 
-    Examples:
-        - Today (0 days): 1.0
-        - 1 year (365 days): ~0.5 (with default half_life=365)
-        - 2 years (730 days): ~0.33
-        - 5 years (1825 days): ~0.17
-        - 10 years (3650 days): ~0.09
+    `effective_half_life = base_half_life × (1 + strength)`
+    - strength=0.0 → half_life unchanged (365 days)
+    - strength=1.0 → half_life doubled (730 days, decays half as fast)
 
-    This ensures that 2-year-old and 5-year-old memories have meaningfully
-    different weights, unlike exponential decay which makes them both ~0.
+    Examples (with default base_half_life=365):
+        - Today (0 days): 1.0 regardless of strength
+        - 1 year, strength=0.0: ~0.5
+        - 1 year, strength=1.0: ~0.59 (slower decay due to consolidation)
 
     Args:
         days_since: Number of days since the memory was created
-        half_life_days: Number of days for weight to reach 0.5 (default: 1 year)
+        half_life_days: Base half-life in days (default: 1 year)
+        strength: Engram consolidation level [0, 1] — modulates decay rate
 
     Returns:
         Weight between 0 and 1
     """
-    import math
-
-    # Logarithmic decay: 1 / (1 + log(1 + days_since/half_life))
-    # This decays much slower than exponential, giving better long-term differentiation
-    normalized_age = days_since / half_life_days
+    effective_half_life = half_life_days * (1.0 + strength)
+    normalized_age = days_since / effective_half_life
     return 1.0 / (1.0 + math.log1p(normalized_age))
+
+
+def calculate_thalamus_weight(
+    thalamus_scores: dict[str, float] | None,
+    boost_dimension: str | None,
+) -> float:
+    """
+    Compute a normalized thalamus composite weight from 4-dimensional scores.
+
+    Bio-mapping: Thalamus Filter gates relevance via novelty (CA1 mismatch),
+    surprise (noradrenaline), task_relevance (PFC attention), emotional_valence
+    (amygdala). The Session Mode boosts the dimension most relevant to the
+    current cognitive task (concept.md § 5, § 8).
+
+    Args:
+        thalamus_scores: Dict with keys novelty, surprise, task_relevance,
+                         emotional_valence (each 0.0–1.0). None → neutral 0.5.
+        boost_dimension: Dimension to boost (×1.5, capped at 1.0) per ModeConfig.
+                         None → mean of all 4 dimensions.
+
+    Returns:
+        Composite weight in [0, 1].
+    """
+    if thalamus_scores is None:
+        return 0.5
+    if boost_dimension is not None:
+        raw = thalamus_scores.get(boost_dimension)
+        if raw is not None:
+            return min(1.0, raw * 1.5)
+    keys = ("novelty", "surprise", "task_relevance", "emotional_valence")
+    vals = [thalamus_scores.get(k, 0.0) for k in keys]
+    return sum(vals) / len(keys)
+
+
+def calculate_strength_weight(strength: float) -> float:
+    """
+    Map Engram Strength [0, 1] to a normalized scoring weight via logarithmic dampening.
+
+    Bio-mapping: Dopamine-gated LTP — stronger engrams have higher activation
+    probability, but logarithmic scaling prevents very strong engrams from
+    dominating retrieval entirely (concept.md § 8 Extended Scoring).
+
+    strength=0.0 → 0.0, strength=0.5 → ~0.585, strength=1.0 → 1.0
+
+    Args:
+        strength: Engram consolidation level [0, 1]
+
+    Returns:
+        Normalized weight in [0, 1]
+    """
+    return math.log1p(strength) / math.log1p(1.0)
+
+
+def calculate_combined_score(
+    ce: float,
+    rrf: float,
+    temporal: float,
+    recency: float,
+    strength_weight: float,
+    thalamus_weight: float,
+    weights: ScoringWeights,
+) -> float:
+    """
+    Compute the extended 6-term scoring formula with mode-specific weights.
+
+    Formula: w1×CE + w2×RRF + w3×Temporal + w4×Recency + w5×Strength + w6×Thalamus
+    Weights sum to 1.0 (enforced by ScoringWeights.__post_init__).
+
+    Bio-mapping: PFC top-down attention (Session Mode) sets the weight profile —
+    Precision boosts CE, Exploration boosts Thalamus (concept.md § 8).
+
+    Args:
+        ce: Cross-encoder normalized score [0, 1]
+        rrf: RRF score normalized [0, 1]
+        temporal: Temporal proximity score [0, 1]
+        recency: Recency weight (strength-modulated) [0, 1]
+        strength_weight: Logarithmically dampened Engram Strength [0, 1]
+        thalamus_weight: Thalamus composite (possibly boosted) [0, 1]
+        weights: Mode-specific ScoringWeights (6 floats summing to 1.0)
+
+    Returns:
+        Combined score in [0, 1]
+    """
+    return (
+        weights.ce * ce
+        + weights.rrf * rrf
+        + weights.temporal * temporal
+        + weights.recency * recency
+        + weights.engram_strength * strength_weight
+        + weights.thalamus_weighted * thalamus_weight
+    )
 
 
 def calculate_frequency_weight(access_count: int, max_boost: float = 2.0) -> float:

@@ -120,6 +120,10 @@ class ScoredResult:
     recency: float = 0.5
     temporal: float = 0.5
 
+    # Extended scoring components (populated from engram_dictionary batch query)
+    engram_strength: float = 0.5  # Consolidation level [0,1]; default neutral until Neo4j wired
+    thalamus_score: float = 0.5  # Mode-boosted thalamus composite [0,1]; default neutral
+
     # Final combined score
     combined_score: float = 0.0
     weight: float = 0.0  # Final weight used for ranking
@@ -175,6 +179,8 @@ class ScoredResult:
         result["rrf_normalized"] = self.rrf_normalized
         result["temporal"] = self.temporal
         result["recency"] = self.recency
+        result["engram_strength"] = self.engram_strength
+        result["thalamus_score"] = self.thalamus_score
         result["combined_score"] = self.combined_score
         result["weight"] = self.weight
         result["activation"] = self.weight  # Legacy field

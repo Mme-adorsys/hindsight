@@ -1928,6 +1928,52 @@ class MemoryEngine(MemoryEngineInterface):
                 tracer.add_rrf_merged(tracer_merged)
                 tracer.add_phase_metric("rrf_merge", step_duration, {"candidates_merged": len(merged_candidates)})
 
+            # Step 3.5: Fetch engram_dictionary data (strength + thalamus) + strength pre-filter
+            # Bio-mapping: PFC-gated pre-filter removes low-consolidation Engrams before expensive CE stage.
+            # Default strength=0.5 is used when no engram_dictionary row exists (e.g. legacy facts).
+            from .search.scoring import (
+                calculate_combined_score,
+                calculate_recency_weight,
+                calculate_strength_weight,
+                calculate_thalamus_weight,
+            )
+            from .session.mode_config import get_mode_config as _get_mode_config
+
+            engram_data: dict[str, dict] = {}
+            scoring_weights = None
+            mode_boost_dim: str | None = None
+            if merged_candidates:
+                candidate_ids = [mc.id for mc in merged_candidates]
+                async with acquire_with_retry(pool) as conn:
+                    rows = await conn.fetch(
+                        """
+                        SELECT engram_id::text, strength,
+                               novelty, surprise, task_relevance, emotional_valence
+                        FROM engram_dictionary
+                        WHERE bank_id = $1 AND engram_id::text = ANY($2::text[])
+                        """,
+                        bank_id,
+                        candidate_ids,
+                    )
+                for row in rows:
+                    engram_data[row["engram_id"]] = dict(row)
+
+            if mode is not None:
+                _mc = _get_mode_config(mode)
+                scoring_weights = _mc.scoring_weights
+                mode_boost_dim = _mc.thalamus_boost_dimension
+                threshold = _mc.strength_pre_filter
+                if threshold > 0.0 and merged_candidates:
+                    before = len(merged_candidates)
+                    merged_candidates = [
+                        mc for mc in merged_candidates if engram_data.get(mc.id, {}).get("strength", 0.5) >= threshold
+                    ]
+                    filtered = before - len(merged_candidates)
+                    if filtered:
+                        log_buffer.append(
+                            f"  [3.5] Strength pre-filter: removed {filtered}/{before} below threshold={threshold}"
+                        )
+
             # Step 4: Rerank using cross-encoder (MergedCandidate -> ScoredResult)
             step_start = time.time()
             reranker_instance = self._cross_encoder_reranker
@@ -1942,7 +1988,9 @@ class MemoryEngine(MemoryEngineInterface):
             log_buffer.append(f"  [4] Reranking: {len(scored_results)} candidates scored in {step_duration:.3f}s")
 
             # Step 4.5: Combine cross-encoder score with retrieval signals
-            # This preserves retrieval work (RRF, temporal, recency) instead of pure cross-encoder ranking
+            # Extended scoring: w1×CE + w2×RRF + w3×Temporal + w4×Recency(strength-modulated)
+            #                   + w5×Engram_Strength + w6×Thalamus_Weighted  (concept.md § 8)
+            # Fallback (no mode): original 60/20/10/10 split for backward compat.
             if scored_results:
                 # Normalize RRF scores to [0, 1] range using min-max normalization
                 rrf_scores = [sr.candidate.rrf_score for sr in scored_results]
@@ -1950,42 +1998,58 @@ class MemoryEngine(MemoryEngineInterface):
                 min_rrf = min(rrf_scores) if rrf_scores else 0.0
                 rrf_range = max_rrf - min_rrf  # Don't force to 1.0, let fallback handle it
 
-                # Calculate recency based on occurred_start (more recent = higher score)
                 now = utcnow()
                 for sr in scored_results:
                     # Normalize RRF score (0-1 range, 0.5 if all same)
                     if rrf_range > 0:
                         sr.rrf_normalized = (sr.candidate.rrf_score - min_rrf) / rrf_range
                     else:
-                        # All RRF scores are the same, use neutral value
                         sr.rrf_normalized = 0.5
 
-                    # Calculate recency (decay over 365 days, minimum 0.1)
+                    # Populate engram strength + thalamus from pre-fetched data
+                    edata = engram_data.get(sr.id, {})
+                    sr.engram_strength = edata.get("strength", 0.5)
+                    thalamus_dims = (
+                        {k: edata.get(k, 0.0) for k in ("novelty", "surprise", "task_relevance", "emotional_valence")}
+                        if edata
+                        else None
+                    )
+                    sr.thalamus_score = calculate_thalamus_weight(thalamus_dims, mode_boost_dim)
+
+                    # Recency with strength-modulated half-life (concept.md § S4)
                     sr.recency = 0.5  # default for missing dates
                     if sr.retrieval.occurred_start:
                         occurred = sr.retrieval.occurred_start
                         if hasattr(occurred, "tzinfo") and occurred.tzinfo is None:
                             occurred = occurred.replace(tzinfo=UTC)
                         days_ago = (now - occurred).total_seconds() / 86400
-                        sr.recency = max(0.1, 1.0 - (days_ago / 365))  # Linear decay over 1 year
+                        sr.recency = calculate_recency_weight(days_ago, strength=sr.engram_strength)
 
                     # Get temporal proximity if available (already 0-1)
                     sr.temporal = (
                         sr.retrieval.temporal_proximity if sr.retrieval.temporal_proximity is not None else 0.5
                     )
 
-                    # Weighted combination
-                    # Cross-encoder: 60% (semantic relevance)
-                    # RRF: 20% (retrieval consensus)
-                    # Temporal proximity: 10% (time relevance for temporal queries)
-                    # Recency: 10% (prefer recent facts)
-                    sr.combined_score = (
-                        0.6 * sr.cross_encoder_score_normalized
-                        + 0.2 * sr.rrf_normalized
-                        + 0.1 * sr.temporal
-                        + 0.1 * sr.recency
-                    )
-                    sr.weight = sr.combined_score  # Update weight for final ranking
+                    if scoring_weights is not None:
+                        # Extended 6-term formula with mode-specific weights
+                        sr.combined_score = calculate_combined_score(
+                            ce=sr.cross_encoder_score_normalized,
+                            rrf=sr.rrf_normalized,
+                            temporal=sr.temporal,
+                            recency=sr.recency,
+                            strength_weight=calculate_strength_weight(sr.engram_strength),
+                            thalamus_weight=sr.thalamus_score,
+                            weights=scoring_weights,
+                        )
+                    else:
+                        # Fallback: original Hindsight weights (60/20/10/10)
+                        sr.combined_score = (
+                            0.6 * sr.cross_encoder_score_normalized
+                            + 0.2 * sr.rrf_normalized
+                            + 0.1 * sr.temporal
+                            + 0.1 * sr.recency
+                        )
+                    sr.weight = sr.combined_score
 
                 # Re-sort by combined score
                 scored_results.sort(key=lambda x: x.weight, reverse=True)
