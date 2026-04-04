@@ -124,6 +124,26 @@ class TestNoveltyScore:
         scores = await f.score("text", session)
         assert scores.novelty == pytest.approx(0.1, abs=1e-6)
 
+    @pytest.mark.asyncio
+    async def test_novelty_passes_bank_id_filter_to_qdrant(self):
+        f, qdrant, _, _ = _make_filter(qdrant_results=[])
+        session = _session()
+        await f.score("hello", session, bank_id="test-bank")
+        call_args = qdrant.search_similar.call_args
+        assert call_args is not None
+        filters = call_args.kwargs.get("filters") or (call_args.args[2] if len(call_args.args) > 2 else None)
+        assert filters is not None
+        assert "must" in filters
+
+    @pytest.mark.asyncio
+    async def test_novelty_no_bank_id_searches_without_filter(self):
+        f, qdrant, _, _ = _make_filter(qdrant_results=[])
+        session = _session()
+        await f.score("hello", session, bank_id=None)
+        call_args = qdrant.search_similar.call_args
+        filters = call_args.kwargs.get("filters")
+        assert filters is None
+
 
 # ---------------------------------------------------------------------------
 # Surprise score (T3)

@@ -1185,7 +1185,7 @@ class MemoryEngine(MemoryEngineInterface):
             total_score = 0.0
 
             for i, item in enumerate(contents):
-                scores = await self._thalamus.score(item.get("content", ""), effective_session)
+                scores = await self._thalamus.score(item.get("content", ""), effective_session, bank_id=bank_id)
                 total_score += scores.overall
                 if scores.overall < threshold:
                     dropped += 1

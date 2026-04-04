@@ -137,19 +137,21 @@ class ThalamusFilter:
     # Public API
     # ------------------------------------------------------------------
 
-    async def score(self, text: str, session: Session) -> ThalamusScores:
+    async def score(self, text: str, session: Session, bank_id: str | None = None) -> ThalamusScores:
         """Compute ThalamusScores for an incoming episode text.
 
         Args:
             text: The raw episode content to evaluate.
             session: Current Session providing mode, task_context, and current_expectation.
+            bank_id: Optional bank identifier. When set, novelty is computed only against
+                Engrams within this bank (Multi-Bank isolation, Epic 14).
 
         Returns:
             ThalamusScores with all 4 dimension scores and weighted overall.
         """
         input_embedding = self._embeddings.encode([text])[0]
 
-        novelty = await self._score_novelty(input_embedding)
+        novelty = await self._score_novelty(input_embedding, bank_id=bank_id)
         surprise = await self._score_surprise(input_embedding, session)
         task_relevance = await self._score_task_relevance(input_embedding, session)
         emotional_valence = await self._score_emotional_valence(text)
@@ -181,14 +183,22 @@ class ThalamusFilter:
     # Score dimensions (T2–T5)
     # ------------------------------------------------------------------
 
-    async def _score_novelty(self, embedding: list[float]) -> float:
+    async def _score_novelty(self, embedding: list[float], bank_id: str | None = None) -> float:
         """T2 — Novelty: 1.0 - max_similarity vs existing Engrams in Qdrant.
 
         High similarity to existing memories → low novelty.
         No existing memories → novelty = 1.0 (everything is new).
+
+        Args:
+            embedding: The input embedding to compare against.
+            bank_id: When set, restricts the similarity search to this bank only.
+                Ensures novelty is computed within bank boundaries (Multi-Bank isolation).
         """
         try:
-            results = await self._qdrant.search_similar(embedding, limit=5)
+            filters = None
+            if bank_id:
+                filters = {"must": [{"key": "bank_id", "match": {"value": bank_id}}]}
+            results = await self._qdrant.search_similar(embedding, limit=5, filters=filters)
         except Exception:
             logger.warning("Thalamus novelty: Qdrant search failed, defaulting to 1.0", exc_info=True)
             return 1.0
@@ -241,6 +251,9 @@ class ThalamusFilter:
 
         Asks the LLM to rate emotional significance 0.0–1.0.
         Falls back to 0.3 on any error (neutral-low, erring on the side of inclusion).
+
+        TODO(epic-14): For bulk imports, consider batching multiple texts into a single
+        LLM call to reduce per-item overhead. Current cost: ~$0.0002/call (Haiku).
         """
         prompt = (
             "Rate the emotional significance of the following text on a scale from 0.0 to 1.0. "
