@@ -1,0 +1,183 @@
+"""
+Unit tests for Session Layer — MemoryEngine Integration (Epic 06 Story 03).
+
+Tests validate WITHOUT requiring a running database or LLM:
+- _resolve_session_config returns correct ModeConfig for each mode
+- _resolve_session_config returns Precision default when session is None
+- _get_session_manager lazy-creates SessionManager on first call
+- _get_session_manager returns injected instance when provided
+- _session_from_mode (API helper) constructs Session correctly
+- _session_from_mode returns None for None input
+- _session_from_mode raises HTTPException for invalid mode
+- MemoryEngine constructor accepts session_manager kwarg
+"""
+
+import pytest
+from unittest.mock import MagicMock
+
+from hindsight_api.engine.response_models import RetrievalMode, Session
+from hindsight_api.engine.session.mode_config import MODE_PROFILES, ModeConfig
+from hindsight_api.engine.session.session_manager import SessionManager
+from hindsight_api.api.http import _session_from_mode
+
+
+# ---------------------------------------------------------------------------
+# _resolve_session_config (T3)
+# ---------------------------------------------------------------------------
+
+class TestResolveSessionConfig:
+    """Test the _resolve_session_config helper without spinning up MemoryEngine."""
+
+    def _make_minimal_engine(self):
+        """Create a minimal MemoryEngine-like object with just the helper method."""
+        from hindsight_api.engine.memory_engine import MemoryEngine
+        # Patch __init__ to avoid full DB setup
+        engine = object.__new__(MemoryEngine)
+        engine._session_manager = None
+        engine._session_manager_lazy_init = True
+        return engine
+
+    def test_none_session_returns_precision_config(self):
+        engine = self._make_minimal_engine()
+        config = engine._resolve_session_config(None)
+        assert config == MODE_PROFILES[RetrievalMode.PRECISION]
+
+    def test_precision_session_returns_precision_config(self):
+        engine = self._make_minimal_engine()
+        session = Session(mode=RetrievalMode.PRECISION)
+        config = engine._resolve_session_config(session)
+        assert config == MODE_PROFILES[RetrievalMode.PRECISION]
+
+    def test_exploration_session_returns_exploration_config(self):
+        engine = self._make_minimal_engine()
+        session = Session(mode=RetrievalMode.EXPLORATION)
+        config = engine._resolve_session_config(session)
+        assert config == MODE_PROFILES[RetrievalMode.EXPLORATION]
+        assert config.strength_pre_filter == 0.1
+        assert config.weak_link_policy == "follow"
+
+    def test_analogy_session_returns_analogy_config(self):
+        engine = self._make_minimal_engine()
+        session = Session(mode=RetrievalMode.ANALOGY)
+        config = engine._resolve_session_config(session)
+        assert config == MODE_PROFILES[RetrievalMode.ANALOGY]
+        assert config.weak_link_policy == "prefer"
+
+    def test_validation_session_returns_validation_config(self):
+        engine = self._make_minimal_engine()
+        session = Session(mode=RetrievalMode.VALIDATION)
+        config = engine._resolve_session_config(session)
+        assert config == MODE_PROFILES[RetrievalMode.VALIDATION]
+        assert config.reconsolidation_level == "aggressive"
+
+    def test_returns_modeconfig_instance(self):
+        engine = self._make_minimal_engine()
+        config = engine._resolve_session_config(None)
+        assert isinstance(config, ModeConfig)
+
+    def test_all_modes_resolve(self):
+        engine = self._make_minimal_engine()
+        for mode in RetrievalMode:
+            session = Session(mode=mode)
+            config = engine._resolve_session_config(session)
+            assert isinstance(config, ModeConfig)
+            assert config == MODE_PROFILES[mode]
+
+
+# ---------------------------------------------------------------------------
+# _get_session_manager (T2)
+# ---------------------------------------------------------------------------
+
+class TestGetSessionManager:
+    def _make_minimal_engine(self, session_manager=None):
+        from hindsight_api.engine.memory_engine import MemoryEngine
+        engine = object.__new__(MemoryEngine)
+        engine._session_manager = session_manager
+        engine._session_manager_lazy_init = session_manager is None
+        return engine
+
+    def test_lazy_creates_session_manager_on_first_call(self):
+        engine = self._make_minimal_engine()
+        assert engine._session_manager is None
+        manager = engine._get_session_manager()
+        assert isinstance(manager, SessionManager)
+        assert engine._session_manager is manager  # cached after first call
+
+    def test_returns_injected_session_manager(self):
+        injected = SessionManager()
+        engine = self._make_minimal_engine(session_manager=injected)
+        manager = engine._get_session_manager()
+        assert manager is injected
+
+    def test_repeated_calls_return_same_instance(self):
+        engine = self._make_minimal_engine()
+        m1 = engine._get_session_manager()
+        m2 = engine._get_session_manager()
+        assert m1 is m2
+
+
+# ---------------------------------------------------------------------------
+# _session_from_mode API helper (T7)
+# ---------------------------------------------------------------------------
+
+class TestSessionFromMode:
+    def test_none_returns_none(self):
+        result = _session_from_mode(None)
+        assert result is None
+
+    def test_precision_string_returns_session(self):
+        session = _session_from_mode("precision")
+        assert isinstance(session, Session)
+        assert session.mode == RetrievalMode.PRECISION
+
+    def test_exploration_string_returns_session(self):
+        session = _session_from_mode("exploration")
+        assert session.mode == RetrievalMode.EXPLORATION
+
+    def test_analogy_string_returns_session(self):
+        session = _session_from_mode("analogy")
+        assert session.mode == RetrievalMode.ANALOGY
+
+    def test_validation_string_returns_session(self):
+        session = _session_from_mode("validation")
+        assert session.mode == RetrievalMode.VALIDATION
+
+    def test_uppercase_mode_is_normalised(self):
+        session = _session_from_mode("EXPLORATION")
+        assert session.mode == RetrievalMode.EXPLORATION
+
+    def test_mixed_case_is_normalised(self):
+        session = _session_from_mode("Precision")
+        assert session.mode == RetrievalMode.PRECISION
+
+    def test_invalid_mode_raises_http_exception(self):
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc_info:
+            _session_from_mode("turbo")
+        assert exc_info.value.status_code == 400
+        assert "turbo" in exc_info.value.detail
+
+    def test_empty_string_raises_http_exception(self):
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException):
+            _session_from_mode("")
+
+
+# ---------------------------------------------------------------------------
+# Backward compatibility: no mode → engine uses Precision default
+# ---------------------------------------------------------------------------
+
+class TestBackwardCompatibility:
+    def test_resolve_none_equals_precision_profile(self):
+        from hindsight_api.engine.memory_engine import MemoryEngine
+        engine = object.__new__(MemoryEngine)
+        engine._session_manager = None
+        engine._session_manager_lazy_init = True
+
+        config_none = engine._resolve_session_config(None)
+        config_precision = engine._resolve_session_config(Session(mode=RetrievalMode.PRECISION))
+        assert config_none == config_precision
+
+    def test_session_from_mode_none_is_backward_compat(self):
+        """None mode → None session → engine uses its own default (Precision)."""
+        assert _session_from_mode(None) is None

@@ -103,6 +103,10 @@ class RecallRequest(BaseModel):
         default_factory=IncludeOptions,
         description="Options for including additional data (entities are included by default)",
     )
+    mode: str | None = Field(
+        default=None,
+        description="Session mode: precision, exploration, analogy, or validation (default: precision)",
+    )
 
 
 class RecallResult(BaseModel):
@@ -361,6 +365,10 @@ class RetainRequest(BaseModel):
         alias="async",
         description="If true, process asynchronously in background. If false, wait for completion (default: false)",
     )
+    mode: str | None = Field(
+        default=None,
+        description="Session mode: precision, exploration, analogy, or validation (default: precision)",
+    )
 
 
 class RetainResponse(BaseModel):
@@ -439,6 +447,10 @@ class ReflectRequest(BaseModel):
     max_tokens: int = Field(default=4096, description="Maximum tokens for the response")
     include: ReflectIncludeOptions = Field(
         default_factory=ReflectIncludeOptions, description="Options for including additional data (disabled by default)"
+    )
+    mode: str | None = Field(
+        default=None,
+        description="Session mode: precision, exploration, analogy, or validation (default: precision)",
     )
     response_schema: dict | None = Field(
         default=None,
@@ -1082,6 +1094,24 @@ def create_app(
     return app
 
 
+def _session_from_mode(mode: str | None):
+    """
+    Build a transient Session from an optional mode string.
+
+    Returns None when mode is not provided (engine uses Precision default).
+    Raises HTTPException 400 for unrecognised mode values.
+    """
+    if mode is None:
+        return None
+    from hindsight_api.engine.response_models import RetrievalMode, Session
+
+    try:
+        return Session(mode=RetrievalMode(mode.lower()))
+    except ValueError:
+        valid = ", ".join(m.value for m in RetrievalMode)
+        raise HTTPException(status_code=400, detail=f"Invalid mode '{mode}'. Must be one of: {valid}")
+
+
 def _register_routes(app: FastAPI):
     """Register all API routes on the given app instance."""
 
@@ -1262,6 +1292,9 @@ def _register_routes(app: FastAPI):
             include_chunks = request.include.chunks is not None
             max_chunk_tokens = request.include.chunks.max_tokens if include_chunks else 8192
 
+            # Build session from mode if provided (Epic 06 — Session Layer)
+            recall_session = _session_from_mode(request.mode)
+
             # Run recall with tracing (record metrics)
             with metrics.record_operation(
                 "recall", bank_id=bank_id, source="api", budget=request.budget.value, max_tokens=request.max_tokens
@@ -1278,6 +1311,7 @@ def _register_routes(app: FastAPI):
                     max_entity_tokens=max_entity_tokens,
                     include_chunks=include_chunks,
                     max_chunk_tokens=max_chunk_tokens,
+                    session=recall_session,
                     request_context=request_context,
                 )
 
@@ -1361,6 +1395,9 @@ def _register_routes(app: FastAPI):
         metrics = get_metrics_collector()
 
         try:
+            # Build session from mode if provided (Epic 06 — Session Layer)
+            reflect_session = _session_from_mode(request.mode)
+
             # Use the memory system's reflect_async method (record metrics)
             with metrics.record_operation("reflect", bank_id=bank_id, source="api", budget=request.budget.value):
                 core_result = await app.state.memory.reflect_async(
@@ -1370,6 +1407,7 @@ def _register_routes(app: FastAPI):
                     context=request.context,
                     max_tokens=request.max_tokens,
                     response_schema=request.response_schema,
+                    session=reflect_session,
                     request_context=request_context,
                 )
 
@@ -2111,6 +2149,9 @@ def _register_routes(app: FastAPI):
                     content_dict["entities"] = [{"text": e.text, "type": e.type or "CONCEPT"} for e in item.entities]
                 contents.append(content_dict)
 
+            # Build session from mode if provided (Epic 06 — Session Layer)
+            retain_session = _session_from_mode(request.mode)
+
             if request.async_:
                 # Async processing: queue task and return immediately
                 result = await app.state.memory.submit_async_retain(bank_id, contents, request_context=request_context)
@@ -2127,7 +2168,11 @@ def _register_routes(app: FastAPI):
                 # Synchronous processing: wait for completion (record metrics)
                 with metrics.record_operation("retain", bank_id=bank_id, source="api"):
                     result, usage = await app.state.memory.retain_batch_async(
-                        bank_id=bank_id, contents=contents, request_context=request_context, return_usage=True
+                        bank_id=bank_id,
+                        contents=contents,
+                        session=retain_session,
+                        request_context=request_context,
+                        return_usage=True,
                     )
 
                 return RetainResponse.model_validate(

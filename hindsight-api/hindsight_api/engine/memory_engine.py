@@ -128,6 +128,7 @@ from .interface import MemoryEngineInterface
 
 if TYPE_CHECKING:
     from hindsight_api.engine.response_models import Session
+    from hindsight_api.engine.session.session_manager import SessionManager
     from hindsight_api.extensions import OperationValidatorExtension, TenantExtension
     from hindsight_api.models import RequestContext
 
@@ -229,6 +230,7 @@ class MemoryEngine(MemoryEngineInterface):
         tenant_extension: "TenantExtension | None" = None,
         skip_llm_verification: bool | None = None,
         lazy_reranker: bool | None = None,
+        session_manager: "SessionManager | None" = None,
     ):
         """
         Initialize the temporal + semantic memory system.
@@ -330,6 +332,11 @@ class MemoryEngine(MemoryEngineInterface):
 
         # ThalamusFilter — lazy-init in retain_batch_async once engram_storage is available (Epic 04)
         self._thalamus = None
+
+        # SessionManager — manages transient sessions and Dual Control (Epic 06)
+        # Lazy-imported to avoid circular imports; injected or created on first use.
+        self._session_manager: "SessionManager | None" = session_manager if session_manager is not None else None
+        self._session_manager_lazy_init = session_manager is None  # True = create on first use
 
         # Initialize embeddings (from env vars if not provided)
         if embeddings is not None:
@@ -463,6 +470,30 @@ class MemoryEngine(MemoryEngineInterface):
         result = await validation_coro
         if not result.allowed:
             raise OperationValidationError(result.reason or "Operation not allowed", result.status_code)
+
+    def _get_session_manager(self) -> "SessionManager":
+        """Return the SessionManager, creating a default instance on first use."""
+        if self._session_manager is None:
+            from .session.session_manager import SessionManager
+
+            self._session_manager = SessionManager()
+        return self._session_manager
+
+    def _resolve_session_config(self, session: "Session | None"):
+        """
+        Resolve ModeConfig for the given session.
+
+        If session is provided, derives ModeConfig from its RetrievalMode.
+        If session is None, returns the default Precision profile.
+
+        Returns:
+            ModeConfig — immutable profile controlling all mode-dependent parameters.
+        """
+        from .response_models import RetrievalMode
+        from .session.mode_config import get_mode_config
+
+        mode = session.mode if session is not None else RetrievalMode.PRECISION
+        return get_mode_config(mode)
 
     async def _authenticate_tenant(self, request_context: "RequestContext | None") -> str:
         """
@@ -1181,6 +1212,14 @@ class MemoryEngine(MemoryEngineInterface):
             from .response_models import Session as _Session
 
             effective_session = session or _Session.default()
+            mode_config = self._resolve_session_config(effective_session)
+            logger.debug(
+                "Retain mode_config: mode=%s strength_pre_filter=%.2f reconsolidation=%s bank=%s",
+                effective_session.mode.value,
+                mode_config.strength_pre_filter,
+                mode_config.reconsolidation_level,
+                bank_id,
+            )
             threshold = ThalamusFilter.threshold_for_mode(effective_session.mode)
             passed_contents: list[RetainContentDict] = []
             passed_indices = []
@@ -1471,6 +1510,17 @@ class MemoryEngine(MemoryEngineInterface):
         """
         # Authenticate tenant and set schema in context (for fq_table())
         await self._authenticate_tenant(request_context)
+
+        # Resolve ModeConfig for session-aware retrieval (Epic 06 wire-through; used in Epic 07)
+        mode_config = self._resolve_session_config(session)
+        logger.debug(
+            "Recall mode_config: mode=%s strength_pre_filter=%.2f weak_links=%s traversal=%s bank=%s",
+            session.mode.value if session else "precision",
+            mode_config.strength_pre_filter,
+            mode_config.weak_link_policy,
+            mode_config.traversal_depth,
+            bank_id,
+        )
 
         # Default to all fact types if not specified
         if fact_type is None:
@@ -3384,6 +3434,16 @@ Guidelines:
 
         # Authenticate tenant and set schema in context (for fq_table())
         await self._authenticate_tenant(request_context)
+
+        # Resolve ModeConfig for session-aware reflect (Epic 06 wire-through; used in Epic 10)
+        mode_config = self._resolve_session_config(session)
+        logger.debug(
+            "Reflect mode_config: mode=%s reconsolidation=%s construction=%s bank=%s",
+            session.mode.value if session else "precision",
+            mode_config.reconsolidation_level,
+            mode_config.construction_style,
+            bank_id,
+        )
 
         # Validate operation if validator is configured
         if self._operation_validator:
