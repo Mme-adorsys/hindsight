@@ -139,6 +139,44 @@ async def _insert_engram_dictionary_batch(conn, bank_id: str, unit_ids: list[str
         )
 
 
+async def update_facts_batch(conn, bank_id: str, replacement_actions: list) -> None:
+    """Update memory_units + engram_dictionary rows for REPLACE resolutions.
+
+    Called within the same DB transaction as insert_facts_batch so that
+    all writes stay consistent.
+
+    Args:
+        conn: Active DB connection (already inside a transaction).
+        bank_id: Bank identifier.
+        replacement_actions: List of ReplacementAction describing existing Engrams to overwrite.
+    """
+    for ra in replacement_actions:
+        uid = uuid.UUID(ra.existing_unit_id)
+        await conn.execute(
+            f"UPDATE {fq_table('memory_units')} SET text=$1, embedding=$2 WHERE id=$3 AND bank_id=$4",
+            ra.new_fact.fact_text,
+            str(ra.new_fact.embedding),
+            uid,
+            bank_id,
+        )
+        ts = ra.new_fact.thalamus_scores
+        if ts:
+            await conn.execute(
+                f"""
+                UPDATE {fq_table("engram_dictionary")}
+                SET novelty=$1, surprise=$2, task_relevance=$3,
+                    emotional_valence=$4, thalamus_overall=$5
+                WHERE engram_id=$6
+                """,
+                ts.novelty,
+                ts.surprise,
+                ts.task_relevance,
+                ts.emotional_valence,
+                ts.overall,
+                uid,
+            )
+
+
 async def ensure_bank_exists(conn, bank_id: str) -> None:
     """
     Ensure bank exists in the database.

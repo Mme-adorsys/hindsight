@@ -343,25 +343,41 @@ async def retain_batch(
                         actual_doc_id = document_id
                     processed_fact.document_id = actual_doc_id
 
-            # Deduplication
+            # Deduplication (score-aware)
             step_start = time.time()
-            is_duplicate_flags = await deduplication.check_duplicates_batch(
+            dup_results = await deduplication.check_duplicates_batch(
                 conn, bank_id, processed_facts, duplicate_checker_fn
             )
+            facts_to_store, replacement_actions = deduplication.resolve_duplicates_batch(processed_facts, dup_results)
+            drop_count = sum(1 for dr in dup_results if dr.is_duplicate) - len(replacement_actions)
             log_buffer.append(
-                f"[4] Deduplication: {sum(is_duplicate_flags)} duplicates in {time.time() - step_start:.3f}s"
+                f"[4] Deduplication: {drop_count} dropped, {len(replacement_actions)} replaced"
+                f" in {time.time() - step_start:.3f}s"
             )
 
-            # Filter out duplicates
-            non_duplicate_facts = deduplication.filter_duplicates(processed_facts, is_duplicate_flags)
-
+            non_duplicate_facts = facts_to_store
             if not non_duplicate_facts:
                 return [[] for _ in contents], usage
 
-            # Insert facts (document_id is now stored per-fact)
+            # REPLACE: update existing Engrams in place
+            if replacement_actions:
+                await fact_storage.update_facts_batch(conn, bank_id, replacement_actions)
+
+            # KEEP: insert genuinely new facts
+            replace_set = {id(ra.new_fact) for ra in replacement_actions}
+            keep_facts = [f for f in facts_to_store if id(f) not in replace_set]
+
             step_start = time.time()
-            unit_ids = await fact_storage.insert_facts_batch(conn, bank_id, non_duplicate_facts)
-            log_buffer.append(f"[5] Insert facts: {len(unit_ids)} units in {time.time() - step_start:.3f}s")
+            new_unit_ids = await fact_storage.insert_facts_batch(conn, bank_id, keep_facts)
+            log_buffer.append(f"[5] Insert facts: {len(new_unit_ids)} units in {time.time() - step_start:.3f}s")
+
+            # Build unified unit_ids in facts_to_store order (KEEP → new id, REPLACE → existing id)
+            fact_id_map: dict[int, str] = {}
+            for fact, uid in zip(keep_facts, new_unit_ids):
+                fact_id_map[id(fact)] = uid
+            for ra in replacement_actions:
+                fact_id_map[id(ra.new_fact)] = ra.existing_unit_id
+            unit_ids = [fact_id_map[id(f)] for f in facts_to_store]
 
             # Process entities
             step_start = time.time()
@@ -426,8 +442,13 @@ async def retain_batch(
                 )
                 entity_ids_for_async = []
 
+            # Build dropped flags (DROP=True, KEEP/REPLACE=False) for result mapping
+            is_dropped_flags = [
+                deduplication.resolve_duplicate(fact, dr) == deduplication.DuplicateResolution.DROP
+                for fact, dr in zip(processed_facts, dup_results)
+            ]
             # Map results back to original content items
-            result_unit_ids = _map_results_to_contents(contents, extracted_facts, is_duplicate_flags, unit_ids)
+            result_unit_ids = _map_results_to_contents(contents, extracted_facts, is_dropped_flags, unit_ids)
 
         # Trigger background tasks AFTER transaction commits
         await _trigger_background_tasks(task_backend, bank_id, unit_ids, non_duplicate_facts, entity_ids_for_async)
@@ -448,13 +469,14 @@ async def retain_batch(
 def _map_results_to_contents(
     contents: list[RetainContent],
     extracted_facts: list[ExtractedFact],
-    is_duplicate_flags: list[bool],
+    is_dropped_flags: list[bool],
     unit_ids: list[str],
 ) -> list[list[str]]:
     """
     Map created unit IDs back to original content items.
 
-    Accounts for duplicates when mapping back.
+    Accounts for dropped facts (duplicates where existing wins) when mapping back.
+    REPLACE facts count as non-dropped — their existing_unit_id is included in unit_ids.
     """
     result_unit_ids = []
     filtered_idx = 0
@@ -467,7 +489,7 @@ def _map_results_to_contents(
     for content_index in range(len(contents)):
         content_unit_ids = []
         for fact_idx in facts_by_content[content_index]:
-            if not is_duplicate_flags[fact_idx]:
+            if not is_dropped_flags[fact_idx]:
                 content_unit_ids.append(unit_ids[filtered_idx])
                 filtered_idx += 1
         result_unit_ids.append(content_unit_ids)

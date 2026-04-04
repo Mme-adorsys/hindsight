@@ -148,6 +148,7 @@ from .response_models import (
 )
 from .response_models import RecallResult as RecallResultModel
 from .retain import bank_utils, embedding_utils
+from .retain.deduplication import DuplicateResult
 from .retain.types import RetainContentDict
 from .search import observation_utils, think_utils
 from .search.reranking import CrossEncoderReranker
@@ -893,12 +894,13 @@ class MemoryEngine(MemoryEngineInterface):
         event_date: datetime,
         time_window_hours: int = 24,
         similarity_threshold: float = 0.95,
-    ) -> list[bool]:
+    ) -> list[DuplicateResult]:
         """
         Check which facts are duplicates using semantic similarity + temporal window.
 
         For each new fact, checks if a semantically similar fact already exists
-        within the time window. Uses pgvector cosine similarity for efficiency.
+        within the time window. Also fetches thalamus_overall and strength from
+        engram_dictionary so score-aware resolution can compare both sides.
 
         Args:
             conn: Database connection
@@ -910,7 +912,7 @@ class MemoryEngine(MemoryEngineInterface):
             similarity_threshold: Minimum cosine similarity to consider duplicate (default: 0.95)
 
         Returns:
-            List of booleans - True if fact is a duplicate (should skip), False if new
+            List of DuplicateResult objects (same length as texts)
         """
         if not texts:
             return []
@@ -925,68 +927,69 @@ class MemoryEngine(MemoryEngineInterface):
         except OverflowError:
             time_upper = datetime.max
 
-        # Fetch ALL existing facts in time window ONCE (much faster than N queries)
+        # Fetch ALL existing facts in time window ONCE, with engram_dictionary scores
         import time as time_mod
 
-        fetch_start = time_mod.time()
         existing_facts = await conn.fetch(
             f"""
-            SELECT id, text, embedding
-            FROM {fq_table("memory_units")}
-            WHERE bank_id = $1
-              AND event_date BETWEEN $2 AND $3
+            SELECT mu.id, mu.text, mu.embedding,
+                   ed.thalamus_overall, ed.strength
+            FROM {fq_table("memory_units")} mu
+            LEFT JOIN {fq_table("engram_dictionary")} ed ON ed.engram_id = mu.id
+            WHERE mu.bank_id = $1
+              AND mu.event_date BETWEEN $2 AND $3
             """,
             bank_id,
             time_lower,
             time_upper,
         )
 
-        # If no existing facts, nothing is duplicate
         if not existing_facts:
-            return [False] * len(texts)
+            return [DuplicateResult(is_duplicate=False)] * len(texts)
 
-        # Compute similarities in Python (vectorized with numpy)
-        is_duplicate = []
-
-        # Convert existing embeddings to numpy for faster computation
+        # Convert existing embeddings to numpy for vectorised similarity
         embedding_arrays = []
         for row in existing_facts:
             raw_emb = row["embedding"]
-            # Handle different pgvector formats
             if isinstance(raw_emb, str):
-                # Parse string format: "[1.0, 2.0, ...]"
                 import json
 
                 emb = np.array(json.loads(raw_emb), dtype=np.float32)
             elif isinstance(raw_emb, (list, tuple)):
                 emb = np.array(raw_emb, dtype=np.float32)
             else:
-                # Try direct conversion
                 emb = np.array(raw_emb, dtype=np.float32)
             embedding_arrays.append(emb)
 
         if not embedding_arrays:
             existing_embeddings = np.array([])
         elif len(embedding_arrays) == 1:
-            # Single embedding: reshape to (1, dim)
             existing_embeddings = embedding_arrays[0].reshape(1, -1)
         else:
-            # Multiple embeddings: vstack
             existing_embeddings = np.vstack(embedding_arrays)
 
-        comp_start = time_mod.time()
+        results: list[DuplicateResult] = []
         for embedding in embeddings:
-            # Compute cosine similarity with all existing facts
             emb_array = np.array(embedding)
-            # Cosine similarity = 1 - cosine distance
-            # For normalized vectors: cosine_sim = dot product
             similarities = np.dot(existing_embeddings, emb_array)
+            max_sim = float(np.max(similarities)) if len(similarities) > 0 else 0.0
 
-            # Check if any existing fact is too similar
-            max_similarity = np.max(similarities) if len(similarities) > 0 else 0
-            is_duplicate.append(max_similarity > similarity_threshold)
+            if max_sim > similarity_threshold:
+                best_idx = int(np.argmax(similarities))
+                row = existing_facts[best_idx]
+                results.append(
+                    DuplicateResult(
+                        is_duplicate=True,
+                        existing_unit_id=str(row["id"]),
+                        existing_score=row["thalamus_overall"],
+                        existing_strength=row["strength"],
+                        similarity=max_sim,
+                    )
+                )
+            else:
+                results.append(DuplicateResult(is_duplicate=False, similarity=max_sim))
 
-        return is_duplicate
+        return results
 
     def retain(
         self,
