@@ -106,7 +106,7 @@ Phase 6:  * → 15 (Benchmarking)
 ## Aktueller Status
 
 - [x] Epic 01 — Hybrid Storage Architecture
-- [ ] Epic 02 — Engram Data Model
+- [x] Epic 02 — Engram Data Model
 - [ ] Epic 03 — LLM Routing
 - [ ] Epic 04 — Thalamus Filter
 - [ ] Epic 05 — Retain Pipeline Extension

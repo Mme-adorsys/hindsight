@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from hindsight_api.engine.memory_engine import Budget
-    from hindsight_api.engine.response_models import RecallResult, ReflectResult
+    from hindsight_api.engine.response_models import RecallResult, ReflectResult, Session
     from hindsight_api.models import RequestContext
 
 
@@ -47,6 +47,7 @@ class MemoryEngineInterface(ABC):
         bank_id: str,
         contents: list[dict[str, Any]],
         *,
+        session: "Session | None" = None,
         request_context: "RequestContext",
     ) -> dict[str, Any]:
         """
@@ -78,6 +79,7 @@ class MemoryEngineInterface(ABC):
         max_entity_tokens: int = 500,
         include_chunks: bool = False,
         max_chunk_tokens: int = 8192,
+        session: "Session | None" = None,
         request_context: "RequestContext",
     ) -> "RecallResult":
         """
@@ -112,6 +114,7 @@ class MemoryEngineInterface(ABC):
         context: str | None = None,
         max_tokens: int = 4096,
         response_schema: dict | None = None,
+        session: "Session | None" = None,
         request_context: "RequestContext",
     ) -> "ReflectResult":
         """

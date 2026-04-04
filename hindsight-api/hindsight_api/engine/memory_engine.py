@@ -127,6 +127,7 @@ from .embeddings import Embeddings, create_embeddings_from_env
 from .interface import MemoryEngineInterface
 
 if TYPE_CHECKING:
+    from hindsight_api.engine.response_models import Session
     from hindsight_api.extensions import OperationValidatorExtension, TenantExtension
     from hindsight_api.models import RequestContext
 
@@ -1059,6 +1060,7 @@ class MemoryEngine(MemoryEngineInterface):
         bank_id: str,
         contents: list[RetainContentDict],
         *,
+        session: "Session | None" = None,
         request_context: "RequestContext",
         document_id: str | None = None,
         fact_type_override: str | None = None,
@@ -1344,6 +1346,7 @@ class MemoryEngine(MemoryEngineInterface):
         max_entity_tokens: int = 500,
         include_chunks: bool = False,
         max_chunk_tokens: int = 8192,
+        session: "Session | None" = None,
         request_context: "RequestContext",
     ) -> RecallResultModel:
         """
@@ -3258,6 +3261,7 @@ Guidelines:
         context: str | None = None,
         max_tokens: int = 4096,
         response_schema: dict | None = None,
+        session: "Session | None" = None,
         request_context: "RequestContext",
     ) -> ReflectResult:
         """

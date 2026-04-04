@@ -7,8 +7,9 @@ API stability even if internal models change.
 """
 
 from datetime import datetime
+from enum import Enum
 from typing import Any, Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -366,3 +367,75 @@ class Engram(BaseModel):
     session_ref: UUID | None = None
     status: Literal["active", "archived", "decayed"] = "active"
     confidence_score: float | None = None
+
+
+# =============================================================================
+# Session Layer Models (Epic 02 — Story 02)
+# =============================================================================
+
+
+class RetrievalMode(str, Enum):
+    """
+    4 retrieval modes controlling MPFP patterns, thresholds, scoring weights,
+    traversal depth, weak links, reconsolidation, and answer construction.
+
+    Bio mapping: PFC top-down attention modulating hippocampal retrieval strategy.
+    """
+
+    PRECISION = "precision"
+    EXPLORATION = "exploration"
+    ANALOGY = "analogy"
+    VALIDATION = "validation"
+
+
+class Episode(BaseModel):
+    """
+    Structured input unit for the retain pipeline.
+
+    Replaces unstructured text with a 3-field schema capturing what happened,
+    in what context, and with what outcome. Converts to RetainContent for
+    backwards-compatible pipeline ingestion.
+
+    Bio mapping: Episodic memory encoding — hippocampus binds action + context + outcome.
+    """
+
+    action: str = Field(description="What the agent did")
+    context: str = Field(description="In which context the action occurred")
+    outcome: str = Field(description="What happened as a result")
+    timestamp: datetime | None = Field(default=None, description="When this episode occurred")
+    metadata: dict[str, Any] | None = Field(default=None, description="Optional metadata")
+
+    def to_retain_content(self) -> dict[str, Any]:
+        """Convert Episode to RetainContent-compatible dict for the existing retain pipeline."""
+        text = f"Action: {self.action} | Context: {self.context} | Outcome: {self.outcome}"
+        result: dict[str, Any] = {"content": text}
+        if self.timestamp is not None:
+            result["event_date"] = self.timestamp
+        if self.metadata is not None:
+            result["metadata"] = self.metadata
+        return result
+
+
+class Session(BaseModel):
+    """
+    Transient steering context for all memory operations.
+
+    NOT persisted — lives in the application layer during an agent session.
+    Controls MPFP patterns, pre-filter thresholds, score weights, recency influence,
+    traversal depth, weak connections, reconsolidation, construction, and prediction coding.
+
+    Bio mapping: PFC working memory — situational control of hippocampal access.
+    """
+
+    session_id: UUID = Field(default_factory=uuid4)
+    mode: RetrievalMode = Field(default=RetrievalMode.PRECISION)
+    current_expectation: str | None = Field(
+        default=None, description="Current expectation for Prediction Error Detection"
+    )
+    task_context: str | None = Field(default=None, description="Current task context")
+    started_at: datetime = Field(default_factory=datetime.utcnow)
+
+    @classmethod
+    def default(cls) -> "Session":
+        """Create a default Session with Precision mode and no expectation."""
+        return cls(mode=RetrievalMode.PRECISION)
