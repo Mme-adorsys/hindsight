@@ -36,6 +36,15 @@ ENV_REFLECT_LLM_API_KEY = "HINDSIGHT_API_REFLECT_LLM_API_KEY"
 ENV_REFLECT_LLM_MODEL = "HINDSIGHT_API_REFLECT_LLM_MODEL"
 ENV_REFLECT_LLM_BASE_URL = "HINDSIGHT_API_REFLECT_LLM_BASE_URL"
 
+# Per-subtask LLM configuration (optional, falls back to operation-level then global)
+# Naming pattern: HINDSIGHT_API_{OPERATION}_{SUBTASK}_LLM_{FIELD}
+# Supported fields: MODEL, PROVIDER
+# Examples:
+#   HINDSIGHT_API_RETAIN_FACT_EXTRACTION_LLM_MODEL=claude-opus-4-6
+#   HINDSIGHT_API_RETAIN_OBSERVATION_SYNTHESIS_LLM_MODEL=claude-sonnet-4-6
+#   HINDSIGHT_API_REFLECT_THINK_LLM_MODEL=claude-opus-4-6
+#   HINDSIGHT_API_REFLECT_OPINION_EXTRACTION_LLM_MODEL=claude-sonnet-4-6
+
 ENV_EMBEDDINGS_PROVIDER = "HINDSIGHT_API_EMBEDDINGS_PROVIDER"
 ENV_EMBEDDINGS_LOCAL_MODEL = "HINDSIGHT_API_EMBEDDINGS_LOCAL_MODEL"
 ENV_EMBEDDINGS_TEI_URL = "HINDSIGHT_API_EMBEDDINGS_TEI_URL"
@@ -186,6 +195,18 @@ Use this tool PROACTIVELY to:
 
 # Default embedding dimension (used by initial migration, adjusted at runtime)
 EMBEDDING_DIMENSION = DEFAULT_EMBEDDING_DIMENSION
+
+
+def get_subtask_llm_provider(operation: str, subtask: str) -> str | None:
+    """Read per-subtask LLM provider from env var (HINDSIGHT_API_{OP}_{SUBTASK}_LLM_PROVIDER)."""
+    key = f"HINDSIGHT_API_{operation.upper()}_{subtask.upper()}_LLM_PROVIDER"
+    return os.environ.get(key)
+
+
+def get_subtask_llm_model(operation: str, subtask: str) -> str | None:
+    """Read per-subtask LLM model from env var (HINDSIGHT_API_{OP}_{SUBTASK}_LLM_MODEL)."""
+    key = f"HINDSIGHT_API_{operation.upper()}_{subtask.upper()}_LLM_MODEL"
+    return os.environ.get(key)
 
 
 def _validate_extraction_mode(mode: str) -> str:

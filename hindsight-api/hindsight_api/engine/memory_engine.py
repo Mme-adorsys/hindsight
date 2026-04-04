@@ -396,6 +396,15 @@ class MemoryEngine(MemoryEngineInterface):
             model=reflect_model,
         )
 
+        # Per-subtask LLM registry — resolves correct model per subtask with 3-level fallback:
+        # subtask env var → operation config → global config
+        from .llm_routing import LLMRegistry
+
+        self._llm_registry = LLMRegistry(
+            global_config=self._llm_config,
+            operation_configs={"retain": self._retain_llm_config, "reflect": self._reflect_llm_config},
+        )
+
         # Initialize cross-encoder reranker (cached for performance)
         self._cross_encoder_reranker = CrossEncoderReranker(cross_encoder=cross_encoder)
 
@@ -1278,7 +1287,7 @@ class MemoryEngine(MemoryEngineInterface):
             return await orchestrator.retain_batch(
                 pool=pool,
                 embeddings_model=self.embeddings,
-                llm_config=self._retain_llm_config,
+                llm_registry=self._llm_registry,
                 entity_resolver=self.entity_resolver,
                 task_backend=self._task_backend,
                 format_date_fn=self._format_readable_date,
@@ -2973,7 +2982,7 @@ Guidelines:
 - Small changes in confidence are normal; large jumps should be rare"""
 
         try:
-            result = await self._reflect_llm_config.call(
+            result = await self._llm_registry.get_llm("reflect", "opinion_extraction").call(
                 messages=[
                     {"role": "system", "content": "You evaluate and update opinions based on new information."},
                     {"role": "user", "content": evaluation_prompt},
@@ -3386,7 +3395,7 @@ Guidelines:
             response_format = JsonSchemaWrapper(response_schema)
 
         llm_start = time.time()
-        llm_result, usage = await self._reflect_llm_config.call(
+        llm_result, usage = await self._llm_registry.get_llm("reflect", "think").call(
             messages=messages,
             scope="memory_reflect",
             max_completion_tokens=max_tokens,
@@ -3473,7 +3482,7 @@ Guidelines:
         try:
             # Extract opinions from the answer
             new_opinions = await think_utils.extract_opinions_from_text(
-                self._reflect_llm_config, text=answer_text, query=query
+                self._llm_registry.get_llm("reflect", "opinion_extraction"), text=answer_text, query=query
             )
 
             # Store new opinions
@@ -3784,7 +3793,7 @@ Guidelines:
 
         # Step 3: Extract observations using LLM (no personality)
         observations = await observation_utils.extract_observations_from_facts(
-            self._reflect_llm_config, entity_name, facts
+            self._llm_registry.get_llm("retain", "observation_synthesis"), entity_name, facts
         )
 
         if not observations:

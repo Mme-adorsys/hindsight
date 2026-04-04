@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 
 from ...config import get_config
 from ..db_utils import acquire_with_retry
+from ..llm_routing import LLMRegistry
 from . import bank_utils
 
 
@@ -38,7 +39,7 @@ logger = logging.getLogger(__name__)
 async def retain_batch(
     pool,
     embeddings_model,
-    llm_config,
+    llm_registry: LLMRegistry,
     entity_resolver,
     task_backend,
     format_date_fn,
@@ -56,7 +57,7 @@ async def retain_batch(
     Args:
         pool: Database connection pool
         embeddings_model: Embeddings model for generating embeddings
-        llm_config: LLM configuration for fact extraction
+        llm_registry: LLMRegistry for per-subtask LLM resolution
         entity_resolver: Entity resolver for entity processing
         task_backend: Task backend for background jobs
         format_date_fn: Function to format datetime to readable string
@@ -102,7 +103,7 @@ async def retain_batch(
     extract_opinions = fact_type_override == "opinion"
 
     extracted_facts, chunks, usage = await fact_extraction.extract_facts_from_contents(
-        contents, llm_config, agent_name, extract_opinions
+        contents, llm_registry.get_llm("retain", "fact_extraction"), agent_name, extract_opinions
     )
     log_buffer.append(
         f"[1] Extract facts: {len(extracted_facts)} facts, {len(chunks)} chunks from {len(contents)} contents in {time.time() - step_start:.3f}s"
@@ -407,7 +408,12 @@ async def retain_batch(
             else:
                 # Run synchronously inside transaction for atomicity
                 await observation_regeneration.regenerate_observations_batch(
-                    conn, embeddings_model, llm_config, bank_id, entity_links, log_buffer
+                    conn,
+                    embeddings_model,
+                    llm_registry.get_llm("retain", "observation_synthesis"),
+                    bank_id,
+                    entity_links,
+                    log_buffer,
                 )
                 entity_ids_for_async = []
 

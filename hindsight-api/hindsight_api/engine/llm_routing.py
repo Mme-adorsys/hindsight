@@ -18,8 +18,13 @@ Task key format: "<operation>.<subtask>"
   e.g. "retain.fact_extraction", "reflect.think"
 """
 
+from __future__ import annotations
+
 from enum import Enum
-from typing import Final
+from typing import TYPE_CHECKING, Final
+
+if TYPE_CHECKING:
+    from .llm_wrapper import LLMConfig
 
 
 class ModelTier(str, Enum):
@@ -74,6 +79,86 @@ TASK_TIER_MAPPING: Final[dict[str, ModelTier]] = {
     # Requires cross-fact reasoning → LARGE.
     "reflect.constructive_memory_inference": ModelTier.LARGE,
 }
+
+
+def resolve_llm_config(
+    operation: str,
+    subtask: str,
+    operation_config: LLMConfig,
+    global_config: LLMConfig,  # noqa: ARG001 — reserved for future multi-provider fallback
+) -> LLMConfig:
+    """Resolve LLMConfig for a subtask using a 3-level fallback chain.
+
+    Priority: subtask env var → operation config → global config.
+    The operation_config is already built with the global fallback in memory_engine,
+    so returning it covers both the operation and global levels.
+
+    Args:
+        operation: Pipeline name, e.g. "retain" or "reflect".
+        subtask: Subtask name, e.g. "fact_extraction" (underscores, no dots).
+        operation_config: Operation-level LLMConfig (already falls back to global).
+        global_config: Global LLMConfig (used to fill gaps when subtask overrides partial fields).
+
+    Returns:
+        Resolved LLMConfig for this subtask.
+    """
+    from ..config import get_subtask_llm_model, get_subtask_llm_provider
+
+    subtask_provider = get_subtask_llm_provider(operation, subtask)
+    subtask_model = get_subtask_llm_model(operation, subtask)
+
+    if subtask_provider or subtask_model:
+        # Build from subtask env vars, inherit remaining fields from operation config
+        from .llm_wrapper import LLMConfig as _LLMConfig
+
+        return _LLMConfig(
+            provider=subtask_provider or operation_config.provider,
+            model=subtask_model or operation_config.model,
+            api_key=operation_config.api_key,
+            base_url=operation_config.base_url,
+        )
+
+    return operation_config
+
+
+class LLMRegistry:
+    """Per-engine registry that resolves and caches LLMConfig instances per subtask.
+
+    Provides a single `get_llm(operation, subtask)` interface. Internal resolution
+    uses the 3-level fallback chain: subtask env var → operation config → global config.
+    Instances are cached after first resolution to avoid repeated env-var reads.
+    """
+
+    def __init__(
+        self,
+        global_config: LLMConfig,
+        operation_configs: dict[str, LLMConfig],
+    ) -> None:
+        """
+        Args:
+            global_config: Fallback LLMConfig used when no operation override exists.
+            operation_configs: Map of operation name → LLMConfig, e.g.
+                {"retain": retain_cfg, "reflect": reflect_cfg}.
+        """
+        self._global = global_config
+        self._operation = operation_configs
+        self._cache: dict[str, LLMConfig] = {}
+
+    def get_llm(self, operation: str, subtask: str) -> LLMConfig:
+        """Return the LLMConfig for a subtask, resolving and caching on first call.
+
+        Args:
+            operation: Pipeline name, e.g. "retain" or "reflect".
+            subtask: Subtask name with underscores, e.g. "fact_extraction".
+
+        Returns:
+            Resolved LLMConfig. Never None.
+        """
+        cache_key = f"{operation}.{subtask}"
+        if cache_key not in self._cache:
+            op_config = self._operation.get(operation, self._global)
+            self._cache[cache_key] = resolve_llm_config(operation, subtask, op_config, self._global)
+        return self._cache[cache_key]
 
 
 def get_tier(task_key: str) -> ModelTier:
