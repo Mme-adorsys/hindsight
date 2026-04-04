@@ -447,6 +447,59 @@ async def retain_batch(
             causal_link_count = await link_creation.create_causal_links_batch(conn, unit_ids, non_duplicate_facts)
             log_buffer.append(f"[10] Causal links: {causal_link_count} links in {time.time() - step_start:.3f}s")
 
+            # Create temporal proximity links (STC — intra-session window)
+            step_start = time.time()
+            tp_link_count = await link_creation.create_temporal_proximity_links_batch(conn, bank_id, unit_ids)
+            log_buffer.append(
+                f"[11] Temporal proximity links: {tp_link_count} links in {time.time() - step_start:.3f}s"
+            )
+
+            # Dual-write: all link types to Neo4j (eventual consistency, errors logged only)
+            if neo4j_client is not None:
+                import asyncio as _asyncio
+
+                from ..memory_engine import fq_table as _fq_table
+                from .neo4j_link_writer import LinkRecord as _LinkRecord
+                from .neo4j_link_writer import write_links_to_neo4j as _write_links_to_neo4j
+                from .schema_links import check_schema_fit_batch as _check_schema_fit_batch
+                from .schema_links import write_schema_links as _write_schema_links
+
+                # Fetch all non-entity links for the newly retained unit_ids
+                _neo4j_links: list[_LinkRecord] = []
+                try:
+                    _link_rows = await conn.fetch(
+                        f"SELECT from_unit_id::text AS from_id, to_unit_id::text AS to_id,"
+                        f"       link_type, weight"
+                        f" FROM {_fq_table('memory_links')}"
+                        f" WHERE from_unit_id::text = ANY($1)"
+                        f"   AND link_type IN ('temporal', 'semantic', 'causal', 'temporal_proximity')",
+                        unit_ids,
+                    )
+                    _neo4j_links = [
+                        _LinkRecord(
+                            from_id=r["from_id"],
+                            to_id=r["to_id"],
+                            rel_type=r["link_type"],
+                            weight=float(r["weight"]),
+                        )
+                        for r in _link_rows
+                    ]
+                except Exception as _exc:
+                    logger.warning(f"Neo4j link fetch failed: {_exc}")
+
+                # Check schema fit for newly retained Engrams
+                _embeddings_for_schema = [fact.embedding for fact in non_duplicate_facts]
+                _schema_links = await _check_schema_fit_batch(neo4j_client, unit_ids, _embeddings_for_schema)
+
+                # Parallel writes: regular links + schema links
+                await _asyncio.gather(
+                    _write_links_to_neo4j(neo4j_client, _neo4j_links),
+                    _write_schema_links(neo4j_client, _schema_links),
+                )
+                log_buffer.append(
+                    f"[12] Neo4j dual-write: {len(_neo4j_links)} links, {len(_schema_links)} schema links"
+                )
+
             # Regenerate observations - sync (in transaction) or async (background task)
             config = get_config()
             if config.retain_observations_async:

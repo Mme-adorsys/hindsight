@@ -50,8 +50,8 @@ Die Hindsight Retain Pipeline verarbeitet aktuell flache Facts (text + embedding
 
 ## Stories
 
-1. [ExtractedFact/ProcessedFact Extension](story-01-fact-extension.md) (R1)
-2. [Embedding Enrichment](story-02-embedding-enrichment.md) (R2)
-3. [Score-aware Deduplication](story-03-score-aware-dedup.md) (R3)
-4. [Entity Processing Extension](story-04-entity-processing.md) (R4)
-5. [Link Extension + Neo4j](story-05-link-extension.md) (R5)
+1. [x] [ExtractedFact/ProcessedFact Extension](story-01-fact-extension.md) (R1)
+2. [x] [Embedding Enrichment](story-02-embedding-enrichment.md) (R2)
+3. [x] [Score-aware Deduplication](story-03-score-aware-dedup.md) (R3)
+4. [x] [Entity Processing Extension](story-04-entity-processing.md) (R4)
+5. [x] [Link Extension + Neo4j](story-05-link-extension.md) (R5)

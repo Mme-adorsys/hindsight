@@ -109,7 +109,7 @@ Phase 6:  * → 15 (Benchmarking)
 - [x] Epic 02 — Engram Data Model
 - [x] Epic 03 — LLM Routing
 - [x] Epic 04 — Thalamus Filter
-- [ ] Epic 05 — Retain Pipeline Extension
+- [x] Epic 05 — Retain Pipeline Extension
 - [ ] Epic 06 — Session Layer
 - [ ] Epic 07 — Search & Retrieval Erweiterung
 - [ ] Epic 08 — Working Context
