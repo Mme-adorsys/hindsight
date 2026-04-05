@@ -19,9 +19,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 from ..response_models import Episode
+from ..retain.types import RetainContentDict
 
 if TYPE_CHECKING:
     from ..search.types import ScoredResult
@@ -211,8 +212,8 @@ class WorkingContext:
     # ------------------------------------------------------------------
 
     # Thresholds for tier promotion after reinforcement
-    _PROMOTE_TO_FOCUS_THRESHOLD: float = 0.7
-    _PROMOTE_TO_SUPPORTING_THRESHOLD: float = 0.4
+    _PROMOTE_TO_FOCUS_THRESHOLD: ClassVar[float] = 0.7
+    _PROMOTE_TO_SUPPORTING_THRESHOLD: ClassVar[float] = 0.4
 
     def populate_from_recall(
         self,
@@ -332,3 +333,134 @@ class WorkingContext:
         if idx < MAX_FOCUS + MAX_SUPPORTING:
             return "supporting"
         return "peripheral"
+
+    # ------------------------------------------------------------------
+    # Lifecycle & Decay — T1 + T2 + T3 (Story 03)
+    # ------------------------------------------------------------------
+
+    # Mode-dependent decay factors (fraction of score retained per minute).
+    # Precision decays fastest (tight focus), Exploration slowest (broad context).
+    _DECAY_FACTOR: ClassVar[dict[str, float]] = {
+        "precision": 0.90,
+        "exploration": 0.97,
+        "analogy": 0.95,
+        "validation": 0.95,
+    }
+    _DEFAULT_DECAY_FACTOR: ClassVar[float] = 0.95
+
+    # Tier-demotion thresholds (relevance_score below → demote to next tier / discard)
+    _FOCUS_DEMOTE_THRESHOLD: ClassVar[float] = 0.5
+    _SUPPORTING_DEMOTE_THRESHOLD: ClassVar[float] = 0.3
+    _PERIPHERAL_DISCARD_THRESHOLD: ClassVar[float] = 0.1
+
+    def apply_decay(self, elapsed_minutes: float, mode: str = "precision") -> None:
+        """
+        Apply time-based decay to all EngramRefs and demote those that fall below thresholds.
+
+        Each minute, relevance_score is multiplied by decay_factor (mode-dependent).
+        After scoring, tiers are rebalanced via _apply_demotion().
+
+        Bio mapping: PFC working-memory maintenance — representations that are not
+        actively rehearsed lose activation and eventually fall out of working memory.
+
+        Args:
+            elapsed_minutes: Time elapsed since last decay application.
+            mode: Session mode string ('precision', 'exploration', 'analogy', 'validation').
+        """
+        factor = self._DECAY_FACTOR.get(mode, self._DEFAULT_DECAY_FACTOR) ** elapsed_minutes
+        for ref in (
+            *self.active_engrams.focus,
+            *self.active_engrams.supporting,
+            *self.active_engrams.peripheral,
+        ):
+            ref.relevance_score *= factor
+
+        self._apply_demotion()
+        self.last_updated = datetime.now(UTC)
+
+    def _apply_demotion(self) -> None:
+        """
+        Demote or discard EngramRefs whose relevance_score has fallen below tier thresholds.
+
+        Demotion order (to avoid cascades within one call):
+        1. Focus → Supporting if score < FOCUS_DEMOTE_THRESHOLD
+        2. Supporting → Peripheral if score < SUPPORTING_DEMOTE_THRESHOLD
+        3. Peripheral → discard if score < PERIPHERAL_DISCARD_THRESHOLD
+        """
+        # Focus → Supporting
+        stay_focus: list[EngramRef] = []
+        demote_to_supporting: list[EngramRef] = []
+        for ref in self.active_engrams.focus:
+            if ref.relevance_score < self._FOCUS_DEMOTE_THRESHOLD:
+                demote_to_supporting.append(ref)
+            else:
+                stay_focus.append(ref)
+        self.active_engrams.focus = stay_focus
+
+        # Supporting → Peripheral (including newly demoted from focus)
+        stay_supporting: list[EngramRef] = []
+        demote_to_peripheral: list[EngramRef] = []
+        for ref in [*self.active_engrams.supporting, *demote_to_supporting]:
+            if ref.relevance_score < self._SUPPORTING_DEMOTE_THRESHOLD:
+                demote_to_peripheral.append(ref)
+            else:
+                stay_supporting.append(ref)
+        self.active_engrams.supporting = stay_supporting
+
+        # Peripheral → discard (including newly demoted from supporting)
+        stay_peripheral: list[EngramRef] = []
+        for ref in [*self.active_engrams.peripheral, *demote_to_peripheral]:
+            if ref.relevance_score >= self._PERIPHERAL_DISCARD_THRESHOLD:
+                stay_peripheral.append(ref)
+        self.active_engrams.peripheral = stay_peripheral
+
+    def flush(self) -> list[RetainContentDict]:
+        """
+        Collect Working Context contents worth persisting at session end.
+
+        Returns RetainContentDict items for:
+        1. Confirmed Inferences → retained as 'inferred' context facts
+        2. Completed Goals → retained as episodic entries
+        3. Focus-tier Engrams → access-count bookkeeping note (lightweight)
+
+        The caller is responsible for passing the returned list to retain_batch_async().
+        Working Context itself is discarded by the caller after flush().
+
+        Bio mapping: Session end = slow-wave sleep onset — salient activations
+        are replayed and transferred to long-term storage (neocortex).
+        """
+        items: list[RetainContentDict] = []
+
+        # 1. Confirmed inferences → retain as facts
+        for inf in self.inference_layer:
+            if inf.status == "confirmed":
+                item: RetainContentDict = {
+                    "content": inf.content,
+                    "context": "inferred",
+                    "metadata": {"confidence": str(round(inf.confidence, 3)), "inference_id": inf.id},
+                }
+                items.append(item)
+
+        # 2. Completed goals → retain as episodic entries
+        for goal in self.goal_stack:
+            if goal.status == "completed":
+                item = {
+                    "content": f"Completed goal: {goal.description}",
+                    "context": "episode",
+                    "metadata": {"goal_id": goal.id, "priority": str(round(goal.priority, 3))},
+                }
+                items.append(item)
+
+        # 3. Focus engrams → lightweight access-count note (no full content needed)
+        for ref in self.active_engrams.focus:
+            item = {
+                "content": f"Engram {ref.engram_id} was active in focus during this session.",
+                "context": "access",
+                "metadata": {
+                    "engram_id": ref.engram_id,
+                    "relevance_score": str(round(ref.relevance_score, 3)),
+                },
+            }
+            items.append(item)
+
+        return items

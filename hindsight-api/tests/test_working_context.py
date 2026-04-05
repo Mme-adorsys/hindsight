@@ -414,3 +414,162 @@ class TestPopulateFromRecall:
         wc.populate_from_recall([make_scored_result("e_new_strong", score=2.0)])
         focus_ids = {r.engram_id for r in wc.active_engrams.focus}
         assert "e_new_strong" in focus_ids
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle & Decay — Story 03
+# ---------------------------------------------------------------------------
+
+
+class TestDecay:
+    def test_decay_reduces_score(self) -> None:
+        wc = make_wc()
+        wc.push_engram_ref("focus", make_ref("e1", relevance=1.0))
+        wc.apply_decay(elapsed_minutes=1.0, mode="precision")
+        assert wc.active_engrams.focus[0].relevance_score < 1.0
+
+    def test_decay_factor_precision_faster_than_exploration(self) -> None:
+        wc_p = make_wc()
+        wc_e = make_wc()
+        wc_p.push_engram_ref("focus", make_ref("e1", relevance=1.0))
+        wc_e.push_engram_ref("focus", make_ref("e1", relevance=1.0))
+
+        wc_p.apply_decay(elapsed_minutes=5.0, mode="precision")
+        wc_e.apply_decay(elapsed_minutes=5.0, mode="exploration")
+
+        assert wc_p.active_engrams.focus[0].relevance_score < wc_e.active_engrams.focus[0].relevance_score
+
+    def test_decay_updates_last_updated(self) -> None:
+        wc = make_wc()
+        wc.push_engram_ref("focus", make_ref("e1", relevance=1.0))
+        before = wc.last_updated
+        wc.apply_decay(elapsed_minutes=1.0)
+        assert wc.last_updated >= before
+
+    def test_decay_unknown_mode_uses_default(self) -> None:
+        wc = make_wc()
+        wc.push_engram_ref("focus", make_ref("e1", relevance=1.0))
+        # Should not raise
+        wc.apply_decay(elapsed_minutes=1.0, mode="unknown_mode")
+        assert wc.active_engrams.focus[0].relevance_score < 1.0
+
+
+class TestTierDemotion:
+    def test_focus_demoted_to_supporting_below_threshold(self) -> None:
+        wc = make_wc()
+        # Relevance 0.3 < FOCUS_DEMOTE_THRESHOLD (0.5) → demoted after decay
+        wc.push_engram_ref("focus", make_ref("e1", relevance=0.51))
+        # Apply enough decay to cross threshold
+        wc.apply_decay(elapsed_minutes=20.0, mode="precision")  # 0.51 * 0.9^20 ≈ 0.087
+
+        assert not any(r.engram_id == "e1" for r in wc.active_engrams.focus)
+
+    def test_supporting_demoted_to_peripheral_below_threshold(self) -> None:
+        wc = make_wc()
+        wc.push_engram_ref("supporting", make_ref("e1", relevance=0.31))
+        wc.apply_decay(elapsed_minutes=15.0, mode="precision")  # 0.31 * 0.9^15 ≈ 0.076
+
+        assert not any(r.engram_id == "e1" for r in wc.active_engrams.supporting)
+
+    def test_peripheral_discarded_below_threshold(self) -> None:
+        wc = make_wc()
+        wc.push_engram_ref("peripheral", make_ref("e1", relevance=0.11))
+        wc.apply_decay(elapsed_minutes=30.0, mode="precision")  # 0.11 * 0.9^30 ≈ 0.0052
+
+        all_ids = (
+            {r.engram_id for r in wc.active_engrams.focus}
+            | {r.engram_id for r in wc.active_engrams.supporting}
+            | {r.engram_id for r in wc.active_engrams.peripheral}
+        )
+        assert "e1" not in all_ids
+
+    def test_high_relevance_stays_in_focus(self) -> None:
+        wc = make_wc()
+        wc.push_engram_ref("focus", make_ref("e1", relevance=0.9))
+        wc.apply_decay(elapsed_minutes=1.0, mode="precision")  # 0.9 * 0.9 = 0.81 ≥ 0.5
+
+        assert any(r.engram_id == "e1" for r in wc.active_engrams.focus)
+
+
+class TestFlush:
+    def test_flush_empty_context_returns_empty(self) -> None:
+        wc = make_wc()
+        assert wc.flush() == []
+
+    def test_flush_confirmed_inference_included(self) -> None:
+        wc = make_wc()
+        wc.inference_layer.append(
+            Inference(
+                id="i1",
+                content="The system will retry on failure",
+                confidence=0.9,
+                supporting_engram_ids=[],
+                created_at=datetime.now(UTC),
+                status="confirmed",
+            )
+        )
+        items = wc.flush()
+        assert any(item["context"] == "inferred" for item in items)
+        contents = [item["content"] for item in items]
+        assert any("retry on failure" in c for c in contents)
+
+    def test_flush_tentative_inference_excluded(self) -> None:
+        wc = make_wc()
+        wc.inference_layer.append(
+            Inference(
+                id="i1",
+                content="Maybe this will happen",
+                confidence=0.4,
+                supporting_engram_ids=[],
+                created_at=datetime.now(UTC),
+                status="tentative",
+            )
+        )
+        items = wc.flush()
+        assert not any(item.get("context") == "inferred" for item in items)
+
+    def test_flush_completed_goal_included(self) -> None:
+        wc = make_wc()
+        goal = make_goal("g1")
+        goal.description = "Migrate database schema"
+        goal.status = "completed"
+        wc.push_goal(goal)
+
+        items = wc.flush()
+        assert any(item["context"] == "episode" for item in items)
+        assert any("Migrate database schema" in item["content"] for item in items)
+
+    def test_flush_active_goal_excluded(self) -> None:
+        wc = make_wc()
+        goal = make_goal("g1")
+        goal.status = "active"
+        wc.push_goal(goal)
+
+        items = wc.flush()
+        assert not any(item.get("context") == "episode" for item in items)
+
+    def test_flush_focus_engrams_included(self) -> None:
+        wc = make_wc()
+        wc.push_engram_ref("focus", make_ref("e_focus", relevance=0.8))
+        wc.push_engram_ref("supporting", make_ref("e_supporting", relevance=0.5))
+
+        items = wc.flush()
+        access_items = [i for i in items if i.get("context") == "access"]
+        assert len(access_items) == 1
+        assert access_items[0]["metadata"]["engram_id"] == "e_focus"
+
+    def test_flush_metadata_confidence(self) -> None:
+        wc = make_wc()
+        wc.inference_layer.append(
+            Inference(
+                id="i1",
+                content="Confirmed fact",
+                confidence=0.85,
+                supporting_engram_ids=[],
+                created_at=datetime.now(UTC),
+                status="confirmed",
+            )
+        )
+        items = wc.flush()
+        inferred = [i for i in items if i.get("context") == "inferred"]
+        assert inferred[0]["metadata"]["confidence"] == "0.85"

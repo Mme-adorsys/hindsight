@@ -204,23 +204,37 @@ class SessionManager:
         state = self._sessions.get(session_id)
         return state.working_context if state else None
 
-    async def end_session(self, session_id: UUID) -> None:
+    async def end_session(self, session_id: UUID) -> list:
         """
-        Terminate a session and discard all transient state (episodes, history, working context).
+        Terminate a session and return flush contents for optional retention.
+
+        Calls working_context.flush() to collect confirmed inferences, completed
+        goals, and focus-tier access notes. The caller is responsible for passing
+        the returned list to retain_batch_async() if persistence is desired.
+        Working Context and all other transient state are discarded.
 
         Args:
             session_id: ID of the session to end.
+
+        Returns:
+            List of RetainContentDict items from the WorkingContext flush.
+            Empty list if no session or no working context.
 
         Raises:
             KeyError: If session_id is not found.
         """
         state = self._sessions.pop(session_id)
+        flush_items: list = []
+        if state.working_context is not None:
+            flush_items = state.working_context.flush()
         logger.debug(
-            "Session %s ended. Episodes buffered: %d. Mode transitions: %d.",
+            "Session %s ended. Episodes buffered: %d. Mode transitions: %d. Flush items: %d.",
             session_id,
             len(state.episodes),
             len(state.mode_history),
+            len(flush_items),
         )
+        return flush_items
 
     # ------------------------------------------------------------------
     # Explicit Mode Control (T2)
