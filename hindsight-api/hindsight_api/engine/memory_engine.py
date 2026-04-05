@@ -621,6 +621,8 @@ class MemoryEngine(MemoryEngineInterface):
                 await self._handle_reinforce_opinion(task_dict)
             elif task_type == "form_opinion":
                 await self._handle_form_opinion(task_dict)
+            elif task_type == "reconsolidate_engrams":
+                await self._handle_reconsolidate_engrams(task_dict)
             elif task_type == "batch_retain":
                 await self._handle_batch_retain(task_dict)
             elif task_type == "regenerate_observations":
@@ -3280,6 +3282,198 @@ Guidelines:
             bank_id=bank_id, answer_text=answer_text, query=query, tenant_id=tenant_id
         )
 
+    async def _handle_reconsolidate_engrams(self, task_dict: dict[str, Any]) -> None:
+        """
+        Handler for reconsolidate_engrams background tasks (RF1 — Epic 10).
+
+        Args:
+            task_dict: Dict with keys:
+                'bank_id'               — bank to reconsolidate
+                'reconsolidation_level' — 'minimal'|'moderate'|'schema_update'|'aggressive'
+                'prediction_error_ids'  — list[str] of Engram IDs flagged by PE (Epic 11)
+                'tenant_id'             — optional tenant for auth
+        """
+        bank_id = task_dict["bank_id"]
+        reconsolidation_level = task_dict.get("reconsolidation_level", "moderate")
+        prediction_error_ids: list[str] = task_dict.get("prediction_error_ids", [])
+
+        await self._reconsolidate_engrams_async(
+            bank_id=bank_id,
+            reconsolidation_level=reconsolidation_level,
+            prediction_error_ids=prediction_error_ids,
+        )
+
+    async def _reconsolidate_engrams_async(
+        self,
+        bank_id: str,
+        reconsolidation_level: str,
+        prediction_error_ids: list[str],
+    ) -> None:
+        """
+        RF1: Priority-based reconsolidation of ALL Engram types (not just opinions).
+
+        Steps:
+        1. Fetch active Engrams from engram_dictionary (all types — no fact_type filter)
+        2. Build priority queue: PE-flagged → weak (strength < 0.3) → rest by last_accessed
+        3. For each Engram in top-N: evaluate via LLM → map to CONFIRMED/MODIFIED/CONTRADICTION
+        4. Apply strength delta and persist to engram_dictionary
+
+        Bio mapping:
+        - Weak Engrams first    → BCM rule: plasticity highest at low-weight synapses
+        - PE Engrams prioritised → Dopaminergic error signal gates LTP/LTD
+        - Budget cap            → Energy cost of offline reconsolidation is bounded
+
+        Concept reference: docs/engram/concept.md — Chapter 10 (RF1)
+        """
+        from .engram_dictionary import list_entries, update_strength
+        from .reflect.prediction_error_registry import PredictionErrorRegistry
+        from .reflect.reconsolidation_queue import (
+            ReconsolidationOutcome,
+            apply_strength_delta,
+            build_reconsolidation_queue,
+        )
+        from .response_models import EngramMetadata, FullEngram
+        from .session.mode_config import ModeConfig
+        from .session.session_manager import RetrievalMode
+
+        try:
+            pool = await self._get_pool()
+
+            # Step 1: Fetch all active Engrams for this bank (no fact_type filter — RF1)
+            rows = await list_entries(pool, bank_id=bank_id, status="active", limit=200)
+            if not rows:
+                return
+
+            # Build FullEngram objects from dict rows
+            engrams: list[FullEngram] = []
+            for row in rows:
+                meta = EngramMetadata(
+                    engram_id=row["engram_id"],
+                    bank_id=bank_id,
+                    strength=float(row.get("strength", 0.0)),
+                    last_accessed=row.get("last_accessed"),
+                )
+                engrams.append(FullEngram(engram_id=row["engram_id"], metadata=meta))
+
+            # Step 2: Build priority queue with PE registry
+            pe_registry = PredictionErrorRegistry()
+            for eid in prediction_error_ids:
+                pe_registry.flag_prediction_error(eid, "prediction_error_from_task")
+
+            # Build ModeConfig with the given reconsolidation_level (base from PRECISION profile)
+            from .session.mode_config import MODE_PROFILES
+
+            base_config = MODE_PROFILES[RetrievalMode.PRECISION].with_overrides(
+                reconsolidation_level=reconsolidation_level
+            )
+            queue = build_reconsolidation_queue(engrams, pe_registry, base_config)
+
+            if not queue:
+                return
+
+            logger.debug(
+                "[RECON] bank=%s level=%s queue_size=%d",
+                bank_id,
+                reconsolidation_level,
+                len(queue),
+            )
+
+            # Step 3 + 4: LLM evaluation → strength update
+            for engram in queue:
+                eid = str(engram.engram_id)
+                current_strength = engram.metadata.strength if engram.metadata else 0.0
+
+                try:
+                    outcome = await self._evaluate_engram_reconsolidation_async(eid, bank_id)
+                    if outcome is None:
+                        continue
+                    new_strength = apply_strength_delta(current_strength, outcome)
+                    if abs(new_strength - current_strength) > 0.001:
+                        await update_strength(pool, eid, new_strength)
+                        logger.debug(
+                            "[RECON] engram=%s outcome=%s strength %.3f → %.3f",
+                            eid,
+                            outcome.value,
+                            current_strength,
+                            new_strength,
+                        )
+                except Exception as e:
+                    logger.warning("[RECON] Failed to reconsolidate engram %s: %s", eid, e)
+
+        except Exception as e:
+            logger.warning("[RECON] Reconsolidation failed for bank %s: %s", bank_id, e)
+
+    async def _evaluate_engram_reconsolidation_async(
+        self, engram_id: str, bank_id: str
+    ) -> "ReconsolidationOutcome | None":
+        """
+        Evaluate whether an Engram should be confirmed, modified, or marked as contradiction.
+
+        Fetches the Engram text from memory_units and asks the LLM to assess its current validity.
+        Returns None if evaluation is skipped (e.g. LLM unavailable or Engram has no text).
+
+        Bio mapping: post-retrieval lability window — LLM acts as the "new information" that
+        can trigger LTP (CONFIRMED) or LTD (CONTRADICTION) at the reconsolidated synapse.
+        """
+        from uuid import UUID
+
+        from .reflect.reconsolidation_queue import ReconsolidationOutcome
+
+        if self._reflect_llm_config is None:
+            return None
+
+        try:
+            pool = await self._get_pool()
+            async with acquire_with_retry(pool) as conn:
+                row = await conn.fetchrow(
+                    f"SELECT text, confidence_score FROM {fq_table('memory_units')} WHERE id = $1",
+                    UUID(engram_id),
+                )
+            if row is None or not row["text"]:
+                return None
+
+            engram_text = row["text"]
+            confidence = float(row["confidence_score"] or 0.5)
+
+            class ReconsolidationEval(BaseModel):
+                outcome: str = Field(
+                    description="One of: 'confirmed' (still valid), 'modified' (needs update), 'contradiction' (conflicts with known facts)"
+                )
+                reasoning: str = Field(description="Brief reason for the outcome")
+
+            prompt = f"""Assess whether this stored memory unit is still valid:
+
+MEMORY: {engram_text}
+CURRENT CONFIDENCE: {confidence:.2f}
+
+Is this memory:
+1. CONFIRMED — still accurate and relevant
+2. MODIFIED — partially outdated or needs updating
+3. CONTRADICTION — conflicts with known facts or is clearly wrong
+
+Respond with one of: confirmed, modified, contradiction"""
+
+            result = await self._llm_registry.get_llm("reflect", "opinion_extraction").call(
+                messages=[
+                    {"role": "system", "content": "You assess stored memory entries for validity."},
+                    {"role": "user", "content": prompt},
+                ],
+                response_format=ReconsolidationEval,
+                scope="memory_reconsolidate",
+                temperature=0.2,
+            )
+
+            outcome_map = {
+                "confirmed": ReconsolidationOutcome.CONFIRMED,
+                "modified": ReconsolidationOutcome.MODIFIED,
+                "contradiction": ReconsolidationOutcome.CONTRADICTION,
+            }
+            return outcome_map.get(result.outcome.lower(), ReconsolidationOutcome.CONFIRMED)
+
+        except Exception as e:
+            logger.warning("[RECON] LLM eval failed for engram %s: %s", engram_id, e)
+            return None
+
     async def _handle_reinforce_opinion(self, task_dict: dict[str, Any]):
         """
         Handler for reinforce opinion tasks.
@@ -3692,6 +3886,18 @@ Guidelines:
                 "bank_id": bank_id,
                 "answer_text": answer_text,
                 "query": query,
+                "tenant_id": getattr(request_context, "tenant_id", None) if request_context else None,
+            }
+        )
+
+        # RF1 (Epic 10): Submit reconsolidation task for all Engram types — priority queue selects top-N
+        # PredictionErrorRegistry is in-memory (Epic 11 populates it); pass empty list until then.
+        await self._task_backend.submit_task(
+            {
+                "type": "reconsolidate_engrams",
+                "bank_id": bank_id,
+                "reconsolidation_level": mode_config.reconsolidation_level,
+                "prediction_error_ids": [],  # Populated by Constructive Memory (Epic 11)
                 "tenant_id": getattr(request_context, "tenant_id", None) if request_context else None,
             }
         )
