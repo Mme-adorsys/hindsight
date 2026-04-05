@@ -18,16 +18,16 @@ Unterschied zu temporal_proximity bei Retain (Epic 05): Dort werden neue Engrams
 
 ## Akzeptanzkriterien
 
-- [ ] Association Window: Engrams die innerhalb von T Minuten (default: 5) gleichzeitig im Focus/Supporting Tier sind
-- [ ] temporal_proximity Links werden mit niedrigem Weight (0.1) erstellt
-- [ ] Wiederholte Co-Aktivierung im Window stärkt den Link
-- [ ] Nur intra-Session (Window wird bei Session-Ende geschlossen)
-- [ ] Distinct von Co-Activation (Story 01): STC basiert auf Zeitfenster im Working Context, Co-Activation auf wiederholtem Recall-Ergebnis
+- [x] Association Window: Engrams die innerhalb von T Minuten (default: 5) gleichzeitig im Focus/Supporting Tier sind
+- [x] temporal_proximity Links werden mit niedrigem Weight (0.1) erstellt
+- [x] Wiederholte Co-Aktivierung im Window stärkt den Link
+- [x] Nur intra-Session (Window wird bei Session-Ende geschlossen)
+- [x] Distinct von Co-Activation (Story 01): STC basiert auf Zeitfenster im Working Context, Co-Activation auf wiederholtem Recall-Ergebnis
 
 ## Tasks
 
-- [ ] **T1 — AssociationWindow Klasse:** In `session/working_context.py` oder eigenes Modul: `AssociationWindow(window_minutes=5)`. Tracked welche Engrams im Zeitfenster aktiv sind. Sliding Window über `activated_at` der EngramRefs im Working Context.
-- [ ] **T2 — Window Check:** `AssociationWindow.check_associations(active_engrams: ActiveEngrams) → list[tuple[str, str]]`. Prüft alle Focus + Supporting Engrams: Wenn `activated_at` Differenz ≤ window_minutes → Association Paar. Dedupliziert (kein Paar doppelt).
-- [ ] **T3 — Link Creation:** Für jedes Paar: temporal_proximity Link in Neo4j mit Weight 0.1. MERGE: Wenn Link existiert → `weight = min(weight + 0.05, 0.5)` (stärkt, aber capped — soll schwach bleiben).
-- [ ] **T4 — Periodic Check:** Association Window wird periodisch geprüft (nicht bei jedem Recall, sondern alle M Minuten oder bei jedem N-ten Recall). Konfigurierbar. Flush bei Session-Ende zusammen mit CoActivationTracker.
-- [ ] **T5 — Unit Tests:** Association erkannt bei Engrams im gleichen Zeitfenster. Keine Association bei Engrams außerhalb des Fensters. Weight-Stärkung bei wiederholter Association. Weight-Cap bei 0.5. Distinctness von Co-Activation.
+- [x] **T1 — AssociationWindow Klasse:** In `session/working_context.py` oder eigenes Modul: `AssociationWindow(window_minutes=5)`. Tracked welche Engrams im Zeitfenster aktiv sind. Sliding Window über `activated_at` der EngramRefs im Working Context.
+- [x] **T2 — Window Check:** `AssociationWindow.check_associations(active_engrams: ActiveEngrams) → list[tuple[str, str]]`. Prüft alle Focus + Supporting Engrams: Wenn `activated_at` Differenz ≤ window_minutes → Association Paar. Dedupliziert (kein Paar doppelt).
+- [x] **T3 — Link Creation:** Für jedes Paar: temporal_proximity Link in Neo4j mit Weight 0.1. MERGE: Wenn Link existiert → `weight = min(weight + 0.05, 0.5)` (stärkt, aber capped — soll schwach bleiben).
+- [x] **T4 — Periodic Check:** Association Window wird periodisch geprüft (nicht bei jedem Recall, sondern alle M Minuten oder bei jedem N-ten Recall). Konfigurierbar. Flush bei Session-Ende zusammen mit CoActivationTracker.
+- [x] **T5 — Unit Tests:** Association erkannt bei Engrams im gleichen Zeitfenster. Keine Association bei Engrams außerhalb des Fensters. Weight-Stärkung bei wiederholter Association. Weight-Cap bei 0.5. Distinctness von Co-Activation.

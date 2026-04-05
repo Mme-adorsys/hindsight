@@ -203,6 +203,37 @@ async def create_temporal_proximity_links_batch(
     return len(links)
 
 
+async def create_association_window_link(neo4j_client, from_id: str, to_id: str, weight: float = 0.1) -> None:
+    """Create or strengthen a TEMPORAL_PROXIMITY relationship between two Engram nodes in Neo4j.
+
+    Called by AssociationWindow.flush_to_neo4j() when STC-associated Engram pairs
+    are written after the session's association window check.
+
+    Uses MERGE + min() cap so the link remains weak (max 0.5).
+
+    Bio-mapping: Synaptic Tagging & Capture — memories formed / activated within a short
+    time window receive a tag that allows later capture into a weak association.
+
+    Args:
+        neo4j_client: Connected Neo4jEngineClient, or None (no-op).
+        from_id: engram_id of the source Engram.
+        to_id: engram_id of the target Engram.
+        weight: Link weight to set/merge (capped at 0.5 inside Cypher).
+    """
+    if neo4j_client is None:
+        return
+    try:
+        await neo4j_client.run_cypher(
+            "MATCH (a:Engram {engram_id: $from_id}), (b:Engram {engram_id: $to_id}) "
+            "MERGE (a)-[r:TEMPORAL_PROXIMITY]->(b) "
+            "SET r.weight = min(coalesce(r.weight, 0.0) + $weight, 0.5), "
+            "    r.time_delta = 0",
+            {"from_id": from_id, "to_id": to_id, "weight": weight},
+        )
+    except Exception as exc:
+        logger.warning(f"Neo4j TEMPORAL_PROXIMITY link creation failed ({from_id} → {to_id}): {exc}")
+
+
 async def create_co_activation_link(neo4j_client, from_id: str, to_id: str, weight: float = 1.0) -> None:
     """Create a CO_ACTIVATED relationship between two Engram nodes in Neo4j.
 

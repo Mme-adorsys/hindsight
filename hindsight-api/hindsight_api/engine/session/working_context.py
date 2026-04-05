@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, ClassVar, Literal
 
 from ..response_models import Episode
 from ..retain.types import RetainContentDict
+from .association_window import AssociationWindow
 from .co_activation_tracker import CoActivationTracker
 
 if TYPE_CHECKING:
@@ -150,6 +151,11 @@ class WorkingContext:
     # results (Focus + Supporting tiers). Pairs above threshold → CO_ACTIVATED link in Neo4j.
     # Bio mapping: Hebbian learning — synaptic connections between co-firing neurons strengthen.
     co_activation_tracker: CoActivationTracker = field(default_factory=CoActivationTracker, repr=False)
+
+    # Association window: STC-based temporal proximity tracker.
+    # Finds Focus+Supporting Engram pairs co-active within a time window → TEMPORAL_PROXIMITY links.
+    # Bio mapping: Synaptic Tagging & Capture — temporally proximate activations form weak links.
+    association_window: AssociationWindow = field(default_factory=AssociationWindow, repr=False)
 
     # ------------------------------------------------------------------
     # Goal Stack helpers

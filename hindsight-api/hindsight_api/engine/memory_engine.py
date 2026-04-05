@@ -1693,6 +1693,18 @@ class MemoryEngine(MemoryEngineInterface):
                     _neo4j = _retriever._neo4j if isinstance(_retriever, EngramRetriever) else None
                     await wc.co_activation_tracker.flush_to_neo4j(_neo4j)
 
+                # Association Window — T4 (Epic 09 S3)
+                # Check temporal proximity between Focus+Supporting Engrams (STC mechanism).
+                # Periodic: every check_every_n recalls to limit DB writes.
+                wc.association_window.check_associations(wc.active_engrams)
+                if wc.association_window.should_flush():
+                    from .search.engram_retrieval import EngramRetriever
+                    from .search.retrieval import get_default_graph_retriever
+
+                    _retriever = get_default_graph_retriever()
+                    _neo4j = _retriever._neo4j if isinstance(_retriever, EngramRetriever) else None
+                    await wc.association_window.flush_to_neo4j(_neo4j)
+
         # Call post-operation hook for success
         if self._operation_validator and result is not None:
             from hindsight_api.extensions.operation_validator import RecallResult
