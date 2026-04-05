@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, ClassVar, Literal
 
 from ..response_models import Episode
 from ..retain.types import RetainContentDict
+from .co_activation_tracker import CoActivationTracker
 
 if TYPE_CHECKING:
     from ..search.types import ScoredResult
@@ -145,6 +146,10 @@ class WorkingContext:
     inference_layer: list[Inference] = field(default_factory=list)
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     last_updated: datetime = field(default_factory=lambda: datetime.now(UTC))
+    # Co-activation tracker: counts how often Engram pairs appear together in recall
+    # results (Focus + Supporting tiers). Pairs above threshold → CO_ACTIVATED link in Neo4j.
+    # Bio mapping: Hebbian learning — synaptic connections between co-firing neurons strengthen.
+    co_activation_tracker: CoActivationTracker = field(default_factory=CoActivationTracker, repr=False)
 
     # ------------------------------------------------------------------
     # Goal Stack helpers
