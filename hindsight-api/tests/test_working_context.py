@@ -1,12 +1,19 @@
 """
-Unit tests for WorkingContext Data Structure (Epic 08, Story 01).
+Unit tests for WorkingContext (Epic 08, Stories 01 + 02).
 
-Tests cover:
+Story 01 — Data Structure:
 - Goal push/pop (LIFO stack semantics)
 - ActiveEngrams capacity limits
 - Tier-overflow: focus full → weakest displaced to supporting
 - Peripheral-overflow: weakest is discarded
 - Inference lifecycle: tentative → confirmed status change
+
+Story 02 — Population & Tiering:
+- populate_from_recall() tiering by score/index
+- Reinforcement on repeated recall
+- Tier promotion after reinforcement threshold
+- Goal-relevance bonus
+- Displacement when tiers are full
 """
 
 from __future__ import annotations
@@ -275,3 +282,135 @@ class TestWorkingContextBasics:
         before = wc.last_updated
         wc.push_engram_ref("focus", make_ref())
         assert wc.last_updated >= before
+
+
+# ---------------------------------------------------------------------------
+# Helpers for Story 02 tests
+# ---------------------------------------------------------------------------
+
+from hindsight_api.engine.search.types import MergedCandidate, RetrievalResult, ScoredResult  # noqa: E402
+
+
+def make_scored_result(eid: str, score: float = 0.5, text: str = "fact", context: str = "") -> ScoredResult:
+    retrieval = RetrievalResult(id=eid, text=text, fact_type="world", context=context or None)
+    candidate = MergedCandidate(retrieval=retrieval, rrf_score=score)
+    sr = ScoredResult(candidate=candidate)
+    sr.combined_score = score
+    sr.engram_strength = 0.8
+    return sr
+
+
+# ---------------------------------------------------------------------------
+# Population & Tiering — Story 02
+# ---------------------------------------------------------------------------
+
+
+class TestPopulateFromRecall:
+    def test_empty_list_noop(self) -> None:
+        wc = make_wc()
+        wc.populate_from_recall([])
+        assert wc.active_engrams.focus == []
+
+    def test_tiering_by_score_index(self) -> None:
+        wc = make_wc()
+        # First MAX_FOCUS → focus, next MAX_SUPPORTING → supporting, rest → peripheral
+        results = [make_scored_result(f"e{i}", score=1.0 - i * 0.01) for i in range(MAX_FOCUS + MAX_SUPPORTING + 3)]
+        wc.populate_from_recall(results)
+
+        assert len(wc.active_engrams.focus) == MAX_FOCUS
+        assert len(wc.active_engrams.supporting) == MAX_SUPPORTING
+        assert len(wc.active_engrams.peripheral) == 3
+
+        focus_ids = {r.engram_id for r in wc.active_engrams.focus}
+        assert all(f"e{i}" in focus_ids for i in range(MAX_FOCUS))
+
+    def test_reinforcement_increases_score(self) -> None:
+        wc = make_wc()
+        # First call: place e1 in focus
+        wc.populate_from_recall([make_scored_result("e1", score=0.8)])
+        initial_score = wc.active_engrams.focus[0].relevance_score
+
+        # Second call: reinforce
+        wc.populate_from_recall([make_scored_result("e1", score=0.6)])
+        reinforced_score = wc.active_engrams.focus[0].relevance_score
+
+        assert reinforced_score > initial_score
+        assert reinforced_score == pytest.approx(initial_score + 0.6 * 0.5)
+
+    def test_reinforcement_promotes_peripheral_to_supporting(self) -> None:
+        wc = make_wc()
+        # Place e_target in peripheral (index >= MAX_FOCUS + MAX_SUPPORTING)
+        results = [make_scored_result(f"e{i}", score=0.9 - i * 0.01) for i in range(MAX_FOCUS + MAX_SUPPORTING)]
+        results.append(make_scored_result("e_target", score=0.01))
+        wc.populate_from_recall(results)
+
+        assert any(r.engram_id == "e_target" for r in wc.active_engrams.peripheral)
+
+        # Reinforce until score crosses supporting threshold (0.4)
+        # Starting relevance ≈ 0.01; need += new * 0.5 >= 0.4 → new >= 0.78
+        wc.populate_from_recall([make_scored_result("e_target", score=0.9)])
+        # Score: 0.01 + 0.9*0.5 = 0.46 ≥ 0.4 → promoted
+        assert any(r.engram_id == "e_target" for r in wc.active_engrams.supporting)
+        assert not any(r.engram_id == "e_target" for r in wc.active_engrams.peripheral)
+
+    def test_reinforcement_promotes_supporting_to_focus(self) -> None:
+        wc = make_wc()
+        # Place e_target in supporting
+        results = [make_scored_result(f"f{i}", score=0.9) for i in range(MAX_FOCUS)]
+        results.append(make_scored_result("e_target", score=0.5))
+        wc.populate_from_recall(results)
+
+        assert any(r.engram_id == "e_target" for r in wc.active_engrams.supporting)
+
+        # Reinforce until score crosses focus threshold (0.7)
+        # Starting relevance ≈ 0.5; need += new * 0.5 >= 0.7 → new >= 0.4
+        wc.populate_from_recall([make_scored_result("e_target", score=0.8)])
+        # Score: 0.5 + 0.8*0.5 = 0.9 ≥ 0.7 → promoted to focus
+        assert any(r.engram_id == "e_target" for r in wc.active_engrams.focus)
+        assert not any(r.engram_id == "e_target" for r in wc.active_engrams.supporting)
+
+    def test_goal_relevance_bonus(self) -> None:
+        wc = make_wc()
+        goal = make_goal("g1")
+        goal.description = "database migration postgres"
+        wc.push_goal(goal)
+
+        # Matching result: contains "database" from goal description
+        matching = make_scored_result("e_match", score=0.5, text="database schema updated")
+        # Non-matching result
+        non_matching = make_scored_result("e_no", score=0.5, text="unrelated topic here today")
+
+        wc.populate_from_recall([matching, non_matching], active_goal=goal)
+
+        match_ref = next(r for r in wc.active_engrams.focus if r.engram_id == "e_match")
+        no_ref = next(r for r in wc.active_engrams.focus if r.engram_id == "e_no")
+
+        assert match_ref.relevance_score == pytest.approx(0.5 + 0.2)
+        assert no_ref.relevance_score == pytest.approx(0.5)
+
+    def test_goal_bonus_uses_top_active_goal_from_stack(self) -> None:
+        wc = make_wc()
+        goal = make_goal("g1")
+        goal.description = "postgres migration schema"
+        wc.push_goal(goal)
+
+        result = make_scored_result("e1", score=0.4, text="postgres database update")
+        wc.populate_from_recall([result])  # no active_goal passed → uses stack
+
+        ref = wc.active_engrams.focus[0]
+        assert ref.relevance_score == pytest.approx(0.4 + 0.2)
+
+    def test_displacement_on_full_tiers(self) -> None:
+        wc = make_wc()
+        # Fill all three tiers
+        results = [make_scored_result(f"e{i}", score=1.0 - i * 0.01) for i in range(MAX_FOCUS + MAX_SUPPORTING + MAX_PERIPHERAL)]
+        wc.populate_from_recall(results)
+
+        assert len(wc.active_engrams.focus) == MAX_FOCUS
+        assert len(wc.active_engrams.supporting) == MAX_SUPPORTING
+        assert len(wc.active_engrams.peripheral) == MAX_PERIPHERAL
+
+        # Add one more strong result — should displace weakest
+        wc.populate_from_recall([make_scored_result("e_new_strong", score=2.0)])
+        focus_ids = {r.engram_id for r in wc.active_engrams.focus}
+        assert "e_new_strong" in focus_ids

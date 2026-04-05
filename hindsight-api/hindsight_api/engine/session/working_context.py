@@ -19,9 +19,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from ..response_models import Episode
+
+if TYPE_CHECKING:
+    from ..search.types import ScoredResult
 
 # ---------------------------------------------------------------------------
 # Capacity limits (bio: PFC working-memory slot counts)
@@ -202,3 +205,130 @@ class WorkingContext:
         if tier == "supporting":
             return self.active_engrams.supporting, MAX_SUPPORTING, "peripheral"
         return self.active_engrams.peripheral, MAX_PERIPHERAL, None
+
+    # ------------------------------------------------------------------
+    # Population from Recall — T1 + T2 + T3 + T4 (Story 02)
+    # ------------------------------------------------------------------
+
+    # Thresholds for tier promotion after reinforcement
+    _PROMOTE_TO_FOCUS_THRESHOLD: float = 0.7
+    _PROMOTE_TO_SUPPORTING_THRESHOLD: float = 0.4
+
+    def populate_from_recall(
+        self,
+        results: list[ScoredResult],
+        active_goal: Goal | None = None,
+    ) -> None:
+        """
+        Ingest recall results into the Working Context activation tiers.
+
+        Called after every recall_async() to keep the workspace current.
+
+        Algorithm:
+        1. Results arrive pre-sorted by combined_score (descending) from the engine.
+        2. For each result:
+           - If already in context → Reinforcement: boost relevance_score, maybe promote tier.
+           - If new → apply Goal-relevance bonus, then insert via push_engram_ref()
+             targeting the tier implied by the result's sorted position.
+        3. Capacity enforcement (overflow/displacement) is handled by push_engram_ref().
+
+        Bio mapping: Repeated retrieval of an Engram strengthens its PFC representation
+        (rehearsal effect). Novel Engrams enter at a tier matching their retrieval rank.
+
+        Args:
+            results: ScoredResult list, pre-sorted descending by combined_score.
+            active_goal: If provided, Engrams matching goal keywords receive +0.2 bonus.
+                         Falls back to top active goal from goal_stack when None.
+        """
+        if not results:
+            return
+
+        goal = active_goal if active_goal is not None else self._top_active_goal()
+
+        for idx, sr in enumerate(results):
+            existing = self._find_existing(sr.id)
+            if existing is not None:
+                self._reinforce(existing, sr.combined_score)
+            else:
+                score = sr.combined_score + self._goal_bonus(sr, goal)
+                target_tier = self._tier_for_index(idx)
+                ref = EngramRef(
+                    engram_id=sr.id,
+                    strength=sr.engram_strength,
+                    relevance_score=score,
+                    activated_at=datetime.now(UTC),
+                )
+                self.push_engram_ref(target_tier, ref)
+
+        self.last_updated = datetime.now(UTC)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _find_existing(
+        self, engram_id: str
+    ) -> tuple[Literal["focus", "supporting", "peripheral"], EngramRef, int] | None:
+        """Search all tiers for an existing EngramRef. Returns (tier, ref, index) or None."""
+        for tier_name, tier_list in (
+            ("focus", self.active_engrams.focus),
+            ("supporting", self.active_engrams.supporting),
+            ("peripheral", self.active_engrams.peripheral),
+        ):
+            for i, ref in enumerate(tier_list):
+                if ref.engram_id == engram_id:
+                    return tier_name, ref, i  # type: ignore[return-value]
+        return None
+
+    def _reinforce(
+        self,
+        existing: tuple[Literal["focus", "supporting", "peripheral"], EngramRef, int],
+        new_score: float,
+    ) -> None:
+        """
+        Boost the relevance_score of an already-active EngramRef and promote if threshold met.
+
+        Reinforcement factor 0.5: each re-retrieval adds half the new score.
+        Promotion thresholds: supporting→focus at ≥0.7, peripheral→supporting at ≥0.4.
+        """
+        tier_name, ref, idx = existing
+        ref.relevance_score += new_score * 0.5
+
+        # Check promotion
+        if tier_name == "supporting" and ref.relevance_score >= self._PROMOTE_TO_FOCUS_THRESHOLD:
+            self.active_engrams.supporting.pop(idx)
+            self.push_engram_ref("focus", ref)
+        elif tier_name == "peripheral" and ref.relevance_score >= self._PROMOTE_TO_SUPPORTING_THRESHOLD:
+            self.active_engrams.peripheral.pop(idx)
+            self.push_engram_ref("supporting", ref)
+
+    def _goal_bonus(self, sr: ScoredResult, goal: Goal | None) -> float:
+        """
+        Return +0.2 if the result matches the active goal via keyword overlap, else 0.0.
+
+        Matching: any word (≥4 chars) from the goal description found in the retrieval
+        text or context (case-insensitive). No LLM call — pure string heuristic.
+        """
+        if goal is None:
+            return 0.0
+        goal_words = {w.lower() for w in goal.description.split() if len(w) >= 4}
+        if not goal_words:
+            return 0.0
+        haystack = (sr.retrieval.text + " " + (sr.retrieval.context or "")).lower()
+        return 0.2 if goal_words & set(haystack.split()) else 0.0
+
+    def _top_active_goal(self) -> Goal | None:
+        """Return the topmost active goal from the goal stack, or None."""
+        for goal in reversed(self.goal_stack):
+            if goal.status == "active":
+                return goal
+        return None
+
+    @staticmethod
+    def _tier_for_index(idx: int) -> Literal["focus", "supporting", "peripheral"]:
+        """Map a sorted-result index to the target tier."""
+        if idx < MAX_FOCUS:
+            return "focus"
+        if idx < MAX_FOCUS + MAX_SUPPORTING:
+            return "supporting"
+        return "peripheral"

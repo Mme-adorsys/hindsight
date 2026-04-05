@@ -1568,13 +1568,14 @@ class MemoryEngine(MemoryEngineInterface):
 
         # Backpressure: limit concurrent recalls to prevent overwhelming the database
         result = None
+        _top_scored: list = []
         error_msg = None
         async with self._search_semaphore:
             # Retry loop for connection errors
             max_retries = 3
             for attempt in range(max_retries + 1):
                 try:
-                    result = await self._search_with_retries(
+                    result, _top_scored = await self._search_with_retries(
                         bank_id,
                         query,
                         fact_type,
@@ -1664,6 +1665,13 @@ class MemoryEngine(MemoryEngineInterface):
                     except Exception as hook_err:
                         logger.warning(f"Post-recall hook error (non-fatal): {hook_err}")
                 raise Exception(error_msg)
+
+        # Populate WorkingContext if a session is active (Epic 08 S2)
+        if session is not None and result is not None and _top_scored:
+            wc = self._get_session_manager().get_working_context(session.session_id)
+            if wc is not None:
+                active_goal = wc.goal_stack[-1] if wc.goal_stack else None
+                wc.populate_from_recall(_top_scored, active_goal=active_goal)
 
         # Call post-operation hook for success
         if self._operation_validator and result is not None:
@@ -2373,7 +2381,10 @@ class MemoryEngine(MemoryEngineInterface):
             )
             logger.info("\n" + "\n".join(log_buffer))
 
-            return RecallResultModel(results=memory_facts, trace=trace_dict, entities=entities_dict, chunks=chunks_dict)
+            return (
+                RecallResultModel(results=memory_facts, trace=trace_dict, entities=entities_dict, chunks=chunks_dict),
+                top_scored,
+            )
 
         except Exception as e:
             log_buffer.append(f"[RECALL {recall_id}] ERROR after {time.time() - recall_start:.3f}s: {str(e)}")

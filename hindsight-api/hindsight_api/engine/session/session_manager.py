@@ -24,6 +24,7 @@ from enum import Enum
 from uuid import UUID
 
 from ..response_models import Episode, RetrievalMode, Session
+from .working_context import WorkingContext
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +106,9 @@ class SessionState:
     explicit_mode: bool = False
     """True when the mode was set explicitly by Agent/User — blocks automatic shifts."""
 
+    working_context: WorkingContext | None = None
+    """Transient PFC-workspace for this session. Created in create_session(), discarded at end."""
+
     episodes: list[Episode] = field(default_factory=list)
     """In-memory episode buffer. Discarded when session ends."""
 
@@ -174,7 +178,10 @@ class SessionManager:
             task_context=task_context,
             current_expectation=expectation,
         )
-        state = SessionState(session=session)
+        state = SessionState(
+            session=session,
+            working_context=WorkingContext(session_id=str(session.session_id)),
+        )
         self._sessions[session.session_id] = state
         logger.debug("Session %s created with mode=%s", session.session_id, mode.value)
         return session
@@ -188,9 +195,18 @@ class SessionManager:
         """
         return self._sessions[session_id].session
 
+    def get_working_context(self, session_id: UUID) -> WorkingContext | None:
+        """
+        Return the WorkingContext for the given session, or None if not found.
+
+        Does not raise — callers can safely check for None when session may not exist.
+        """
+        state = self._sessions.get(session_id)
+        return state.working_context if state else None
+
     async def end_session(self, session_id: UUID) -> None:
         """
-        Terminate a session and discard all transient state (episodes, history).
+        Terminate a session and discard all transient state (episodes, history, working context).
 
         Args:
             session_id: ID of the session to end.
