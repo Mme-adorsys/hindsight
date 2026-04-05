@@ -57,6 +57,11 @@ class RetrievalResult:
     # Bank provenance — populated during dual-bank merge (S5); default 'agent' for backward compat
     source: str = "agent"  # 'agent' | 'shared'
 
+    # Traversal provenance — set by EngramRetriever when result reached via weak link (Epic 09 S2)
+    # 'weak_link' if found via CO_ACTIVATED / TEMPORAL_PROXIMITY traversal; None otherwise.
+    # Bio mapping: Weak-link associations are lower-confidence than strong-link retrieval.
+    traversal_source: str | None = None  # None | 'weak_link'
+
     @classmethod
     def from_db_row(cls, row: dict[str, Any]) -> "RetrievalResult":
         """Create from a database row (asyncpg Record converted to dict)."""

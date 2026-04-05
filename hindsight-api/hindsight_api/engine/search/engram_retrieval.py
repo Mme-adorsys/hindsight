@@ -53,16 +53,34 @@ _DEPTH_MAP: dict[str, int] = {
 }
 _DEFAULT_DEPTH = 2
 
+# Weak-link relationship types (co-activation and temporal proximity)
+# Bio mapping: STC (Synaptic Tagging & Capture) — fragile associations that
+# require repeated co-activation to consolidate into strong links.
+WEAK_LINK_TYPES: frozenset[str] = frozenset({"CO_ACTIVATED", "TEMPORAL_PROXIMITY"})
 
-def _resolve_mode_params(mode) -> tuple[int, list[str], int]:
+# Minimum weight for weak-link traversal (T3)
+# Below this threshold, a weak link is too fragile to be meaningful.
+WEAK_LINK_MIN_WEIGHT: float = 0.1
+
+# Score multiplier for prefer-mode (Analogy): weak-link hits receive a boost
+# so they rank above equivalent strong-link hits, surfacing cross-domain patterns.
+WEAK_LINK_PREFER_BOOST: float = 1.5
+
+
+def _resolve_mode_params(mode) -> tuple[int, list[str], int, str]:
     """
-    Resolve seed limit, Neo4j relationship types, and traversal depth from mode.
+    Resolve seed limit, Neo4j relationship types, traversal depth, and weak_link_policy from mode.
 
     Returns:
-        (seed_limit, rel_types, max_depth)
+        (seed_limit, rel_types, max_depth, weak_link_policy)
+
+    rel_types reflects the weak_link_policy:
+      - ignore: CO_ACTIVATED + TEMPORAL_PROXIMITY excluded
+      - follow: all rel types included (default)
+      - prefer: all rel types included (weak-link boost handled separately in retrieve())
     """
     if mode is None:
-        return _DEFAULT_SEED_LIMIT, list(RELATIONSHIP_TYPES), _DEFAULT_DEPTH
+        return _DEFAULT_SEED_LIMIT, list(RELATIONSHIP_TYPES), _DEFAULT_DEPTH, "follow"
 
     mode_key = mode.value  # e.g. "precision", "exploration"
     seed_limit = _SEED_LIMITS.get(mode_key, _DEFAULT_SEED_LIMIT)
@@ -80,19 +98,27 @@ def _resolve_mode_params(mode) -> tuple[int, list[str], int]:
     except ImportError:
         rel_types = list(RELATIONSHIP_TYPES)
 
-    # Derive max_depth from ModeConfig.traversal_depth
+    # Derive max_depth and weak_link_policy from ModeConfig
+    weak_link_policy = "follow"
     try:
         from ..session.mode_config import MODE_PROFILES
 
         profile = MODE_PROFILES.get(mode)
         if profile:
             max_depth = _DEPTH_MAP.get(profile.traversal_depth, _DEFAULT_DEPTH)
+            weak_link_policy = profile.weak_link_policy
         else:
             max_depth = _DEFAULT_DEPTH
     except ImportError:
         max_depth = _DEFAULT_DEPTH
 
-    return seed_limit, rel_types, max_depth
+    # T1: Apply weak_link_policy to rel_types filter
+    # ignore → strip CO_ACTIVATED + TEMPORAL_PROXIMITY from traversal
+    # follow/prefer → keep all (prefer does a separate boost pass in retrieve())
+    if weak_link_policy == "ignore":
+        rel_types = [rt for rt in rel_types if rt not in WEAK_LINK_TYPES]
+
+    return seed_limit, rel_types, max_depth, weak_link_policy
 
 
 class EngramRetriever(GraphRetriever):
@@ -287,7 +313,7 @@ class EngramRetriever(GraphRetriever):
         Returns:
             (results, timings) — timings reuses MPFPTimings for pipeline compat
         """
-        seed_limit, rel_types, max_depth = _resolve_mode_params(mode)
+        seed_limit, rel_types, max_depth, weak_link_policy = _resolve_mode_params(mode)
 
         t_start = time.time()
 
@@ -309,6 +335,7 @@ class EngramRetriever(GraphRetriever):
             return [], None
 
         # Phase 2: Neo4j traversal
+        # T1: rel_types already filtered by weak_link_policy in _resolve_mode_params
         t_traverse = time.time()
         activation_map = await self._traverse(seed_ids, rel_types, max_depth)
         traverse_time = time.time() - t_traverse
@@ -317,10 +344,35 @@ class EngramRetriever(GraphRetriever):
         for sid in seed_ids:
             activation_map.setdefault(sid, 1.0)
 
+        # T2: Prefer mode — additional weak-link traversal with score boost (Analogy mode)
+        # Bio mapping: Analogy thinking preferentially follows weak associative bridges
+        # to surface cross-domain patterns not reachable via strong links.
+        weak_link_ids: set[str] = set()
+        if weak_link_policy == "prefer":
+            weak_rel_types = list(WEAK_LINK_TYPES)
+            weak_activation = await self._traverse(seed_ids, weak_rel_types, max_depth, min_weight=WEAK_LINK_MIN_WEIGHT)
+            for eid, score in weak_activation.items():
+                boosted = score * WEAK_LINK_PREFER_BOOST
+                if eid not in activation_map or boosted > activation_map[eid]:
+                    activation_map[eid] = boosted
+                weak_link_ids.add(eid)
+            logger.debug(
+                "[EngramRetriever] prefer-mode weak-link traversal: %d additional nodes (boost=×%.1f)",
+                len(weak_link_ids),
+                WEAK_LINK_PREFER_BOOST,
+            )
+
         # Phase 3: Enrichment
         t_enrich = time.time()
         results = await self._enrich(pool, bank_id, activation_map, budget)
         enrich_time = time.time() - t_enrich
+
+        # T4: Mark results reached via weak links
+        # Seeds are not weak-link results; only traversal-discovered nodes are marked.
+        seed_id_set = set(seed_ids)
+        for rr in results:
+            if rr.id in weak_link_ids and rr.id not in seed_id_set:
+                rr.traversal_source = "weak_link"
 
         logger.debug(
             "[EngramRetriever] bank=%s seeds=%d traversed=%d enriched=%d "
