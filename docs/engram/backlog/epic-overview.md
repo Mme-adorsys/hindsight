@@ -111,7 +111,7 @@ Phase 6:  * → 15 (Benchmarking)
 - [x] Epic 04 — Thalamus Filter
 - [x] Epic 05 — Retain Pipeline Extension
 - [x] Epic 06 — Session Layer
-- [ ] Epic 07 — Search & Retrieval Erweiterung
+- [x] Epic 07 — Search & Retrieval Erweiterung
 - [ ] Epic 08 — Working Context
 - [ ] Epic 09 — Weak Connections & Synaptic Tagging
 - [ ] Epic 10 — Reflect & Reconsolidation

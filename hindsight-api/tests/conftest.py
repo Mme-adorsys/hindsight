@@ -133,6 +133,38 @@ def query_analyzer():
 
 
 
+@pytest.fixture(scope="session")
+def qdrant_test_url():
+    """
+    Qdrant URL for integration tests.
+
+    Set HINDSIGHT_TEST_QDRANT_URL=http://localhost:6333 when running with docker-compose.test.yml.
+    Tests are skipped automatically when this env var is not set.
+    """
+    url = os.getenv("HINDSIGHT_TEST_QDRANT_URL")
+    if not url:
+        pytest.skip("HINDSIGHT_TEST_QDRANT_URL not set — start docker-compose.test.yml to run integration tests")
+    return url
+
+
+@pytest.fixture(scope="session")
+def neo4j_test_dsn():
+    """
+    Neo4j DSN tuple (url, user, password) for integration tests.
+
+    Set HINDSIGHT_TEST_NEO4J_URL=bolt://localhost:7687,
+        HINDSIGHT_TEST_NEO4J_USER=neo4j,
+        HINDSIGHT_TEST_NEO4J_PASS=testpassword
+    when running with docker-compose.test.yml.
+    """
+    url = os.getenv("HINDSIGHT_TEST_NEO4J_URL")
+    if not url:
+        pytest.skip("HINDSIGHT_TEST_NEO4J_URL not set — start docker-compose.test.yml to run integration tests")
+    user = os.getenv("HINDSIGHT_TEST_NEO4J_USER", "neo4j")
+    password = os.getenv("HINDSIGHT_TEST_NEO4J_PASS", "testpassword")
+    return url, user, password
+
+
 @pytest_asyncio.fixture(scope="function")
 async def memory(pg0_db_url, embeddings, cross_encoder, query_analyzer):
     """

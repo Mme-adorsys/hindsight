@@ -10,19 +10,19 @@ Ab Epic 07 beginnt laut Test-Policy die Retrieval-Test-Phase. Diese Story defini
 
 ## Akzeptanzkriterien
 
-- [ ] Alle Tests nutzen reale DB-Instanzen (Docker-Compose Test-Setup)
-- [ ] Tests decken alle 4 Modi ab (Precision, Exploration, Analogy, Validation)
-- [ ] Tests decken Dual-Bank Routing ab (Agent + Shared)
-- [ ] Tests messen Precision/Recall gegen bekannte Ground Truth
-- [ ] Tests sind reproduzierbar (deterministische Test-Daten, feste Seeds)
+- [x] Alle Tests nutzen reale DB-Instanzen (Docker-Compose Test-Setup)
+- [x] Tests decken alle 4 Modi ab (Precision, Exploration, Analogy, Validation)
+- [x] Tests decken Dual-Bank Routing ab (Agent + Shared)
+- [x] Tests messen Precision/Recall gegen bekannte Ground Truth
+- [x] Tests sind reproduzierbar (deterministische Test-Daten, feste Seeds)
 
 ## Tasks
 
-- [ ] **T1 — Test-Fixture Setup:** Docker-Compose Konfiguration für Tests: PostgreSQL + Qdrant + Neo4j. Fixture-Daten: 50 Engrams mit bekannten Tags, Strength, Thalamus Scores, Links. Engrams in Agent Bank UND Shared Bank verteilt. Deterministische Embeddings (nicht aus LLM, sondern vordefinierte Vektoren).
-- [ ] **T2 — Precision Mode Test:** Query mit hoher Relevanz zu bekannten Engrams. Erwartung: Nur starke Engrams (strength ≥ 0.5), kurze Traversal-Pfade, Task-Relevance geboostet. Precision@5 ≥ 0.8 gegen Ground Truth.
-- [ ] **T3 — Exploration Mode Test:** Gleicher Query, Exploration Mode. Erwartung: Mehr Ergebnisse (niedrigere Thresholds), schwache Engrams eingeschlossen, Novelty-Boost sichtbar in Ranking. Recall@20 ≥ Ground Truth.
-- [ ] **T4 — Analogy Mode Test:** Query mit Schema-Link Traversal. Erwartung: Cross-Domain Engrams via Schema-Links gefunden. Weak Links traversiert.
-- [ ] **T5 — Dual-Bank Test:** Query geht an Agent Bank + Shared Bank. Erwartung: Ergebnisse aus beiden Banks, Source-Marking korrekt, Bank-Gewichtung mode-abhängig.
-- [ ] **T6 — Tag-Filter Test:** Query mit Tag-Filter. Erwartung: Nur Engrams mit matchenden Tags. Ohne Tags: Alle Engrams.
-- [ ] **T7 — Scoring Validation:** Manuell berechnete Scores gegen System-Scores vergleichen. Strength-modulierte Recency. Thalamus-Boost. Mode-abhängige Gewichte.
-- [ ] **T8 — Performance Baseline:** Timing-Tests für Retrieval-Latenz. Baseline für 50 Engrams. Vergleich: MPFP (PostgreSQL) vs. EngramRetriever (Qdrant + Neo4j). Kein harter Threshold, aber Baseline dokumentieren.
+- [x] **T1 — Test-Fixture Setup:** Docker-Compose Konfiguration für Tests: PostgreSQL + Qdrant + Neo4j. Fixture-Daten: 50 Engrams mit bekannten Tags, Strength, Thalamus Scores, Links. Engrams in Agent Bank UND Shared Bank verteilt. Deterministische Embeddings (nicht aus LLM, sondern vordefinierte Vektoren).
+- [x] **T2 — Precision Mode Test:** Query mit hoher Relevanz zu bekannten Engrams. Erwartung: Nur starke Engrams (strength ≥ 0.5), kurze Traversal-Pfade, Task-Relevance geboostet. Precision@5 ≥ 0.8 gegen Ground Truth.
+- [x] **T3 — Exploration Mode Test:** Gleicher Query, Exploration Mode. Erwartung: Mehr Ergebnisse (niedrigere Thresholds), schwache Engrams eingeschlossen, Novelty-Boost sichtbar in Ranking. Recall@20 ≥ Ground Truth.
+- [x] **T4 — Analogy Mode Test:** Query mit Schema-Link Traversal. Erwartung: Cross-Domain Engrams via Schema-Links gefunden. Weak Links traversiert.
+- [x] **T5 — Dual-Bank Test:** Query geht an Agent Bank + Shared Bank. Erwartung: Ergebnisse aus beiden Banks, Source-Marking korrekt, Bank-Gewichtung mode-abhängig.
+- [x] **T6 — Tag-Filter Test:** Query mit Tag-Filter. Erwartung: Nur Engrams mit matchenden Tags. Ohne Tags: Alle Engrams.
+- [x] **T7 — Scoring Validation:** Manuell berechnete Scores gegen System-Scores vergleichen. Strength-modulierte Recency. Thalamus-Boost. Mode-abhängige Gewichte.
+- [x] **T8 — Performance Baseline:** Timing-Tests für Retrieval-Latenz. Baseline für 50 Engrams. Vergleich: MPFP (PostgreSQL) vs. EngramRetriever (Qdrant + Neo4j). Kein harter Threshold, aber Baseline dokumentieren.
