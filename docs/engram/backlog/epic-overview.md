@@ -112,7 +112,7 @@ Phase 6:  * → 15 (Benchmarking)
 - [x] Epic 05 — Retain Pipeline Extension
 - [x] Epic 06 — Session Layer
 - [x] Epic 07 — Search & Retrieval Erweiterung
-- [ ] Epic 08 — Working Context
+- [x] Epic 08 — Working Context
 - [ ] Epic 09 — Weak Connections & Synaptic Tagging
 - [ ] Epic 10 — Reflect & Reconsolidation
 - [ ] Epic 11 — Constructive Memory
