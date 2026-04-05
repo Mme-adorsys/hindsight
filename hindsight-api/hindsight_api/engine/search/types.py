@@ -54,6 +54,9 @@ class RetrievalResult:
     temporal_score: float | None = None  # Temporal retrieval
     temporal_proximity: float | None = None  # Temporal retrieval
 
+    # Bank provenance — populated during dual-bank merge (S5); default 'agent' for backward compat
+    source: str = "agent"  # 'agent' | 'shared'
+
     @classmethod
     def from_db_row(cls, row: dict[str, Any]) -> "RetrievalResult":
         """Create from a database row (asyncpg Record converted to dict)."""
@@ -184,5 +187,6 @@ class ScoredResult:
         result["combined_score"] = self.combined_score
         result["weight"] = self.weight
         result["activation"] = self.weight  # Legacy field
+        result["source"] = self.retrieval.source
 
         return result

@@ -1480,6 +1480,7 @@ class MemoryEngine(MemoryEngineInterface):
         session: "Session | None" = None,
         request_context: "RequestContext",
         tags: list[str] | None = None,
+        shared_bank_id: str | None = None,
     ) -> RecallResultModel:
         """
         Recall memories using 4-way parallel retrieval with optional Engram tag filtering.
@@ -1588,6 +1589,7 @@ class MemoryEngine(MemoryEngineInterface):
                         request_context,
                         tags=tags,
                         mode=retrieval_mode,
+                        shared_bank_id=shared_bank_id,
                     )
                     break  # Success - exit retry loop
                 except Exception as e:
@@ -1707,6 +1709,7 @@ class MemoryEngine(MemoryEngineInterface):
         request_context: "RequestContext" = None,
         tags: list[str] | None = None,
         mode=None,  # RetrievalMode | None — forwarded to retrieve_parallel for MPFP pattern selection
+        shared_bank_id: str | None = None,  # Optional second bank for dual-bank parallel query (S5)
     ) -> RecallResultModel:
         """
         Search implementation with modular retrieval and reranking.
@@ -1766,6 +1769,7 @@ class MemoryEngine(MemoryEngineInterface):
             step_start = time.time()
             query_embedding_str = str(query_embedding)
 
+            from .search.bank_merge import merge_parallel_results
             from .search.retrieval import get_default_graph_retriever, retrieve_parallel
             from .search.temporal_extraction import extract_temporal_constraint
 
@@ -1779,20 +1783,51 @@ class MemoryEngine(MemoryEngineInterface):
             )
             tc_duration = time.time() - tc_start
 
-            # Single type-agnostic 4-way parallel retrieval with optional tag filter
+            # 4-way parallel retrieval — optionally dual-bank (S5)
+            # Disposition does NOT influence retrieval (only reflect_async); mode drives everything.
             parallel_start = time.time()
-            rr = await retrieve_parallel(
-                pool,
-                query,
-                query_embedding_str,
-                bank_id,
-                thinking_budget,
-                question_date,
-                self.query_analyzer,
-                temporal_constraint=temporal_constraint,
-                tags=tags,
-                mode=mode,
-            )
+            if shared_bank_id:
+                # CLS dual-bank: agent bank (episodic) + shared bank (semantic) in parallel
+                agent_rr, shared_rr = await asyncio.gather(
+                    retrieve_parallel(
+                        pool,
+                        query,
+                        query_embedding_str,
+                        bank_id,
+                        thinking_budget,
+                        question_date,
+                        self.query_analyzer,
+                        temporal_constraint=temporal_constraint,
+                        tags=tags,
+                        mode=mode,
+                    ),
+                    retrieve_parallel(
+                        pool,
+                        query,
+                        query_embedding_str,
+                        shared_bank_id,
+                        thinking_budget,
+                        question_date,
+                        self.query_analyzer,
+                        temporal_constraint=temporal_constraint,
+                        tags=tags,
+                        mode=mode,
+                    ),
+                )
+                rr = merge_parallel_results(agent_rr, shared_rr, mode)
+            else:
+                rr = await retrieve_parallel(
+                    pool,
+                    query,
+                    query_embedding_str,
+                    bank_id,
+                    thinking_budget,
+                    question_date,
+                    self.query_analyzer,
+                    temporal_constraint=temporal_constraint,
+                    tags=tags,
+                    mode=mode,
+                )
             parallel_duration = time.time() - parallel_start
 
             semantic_results = rr.semantic
