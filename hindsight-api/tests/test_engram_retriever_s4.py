@@ -49,27 +49,28 @@ class TestResolveModeParams:
     def test_none_mode_returns_defaults(self):
         from hindsight_api.engine.neo4j_client import RELATIONSHIP_TYPES
 
-        seed_limit, rel_types, max_depth = _resolve_mode_params(None)
+        seed_limit, rel_types, max_depth, weak_link_policy = _resolve_mode_params(None)
         assert seed_limit == 10
         assert set(rel_types) == set(RELATIONSHIP_TYPES)
         assert max_depth == 2
+        assert weak_link_policy == "follow"
 
     def test_precision_returns_5_seeds_and_depth_1(self):
-        seed_limit, _, max_depth = _resolve_mode_params(RetrievalMode.PRECISION)
+        seed_limit, _, max_depth, _ = _resolve_mode_params(RetrievalMode.PRECISION)
         assert seed_limit == 5
         assert max_depth == 1
 
     def test_exploration_returns_20_seeds_and_depth_3(self):
-        seed_limit, _, max_depth = _resolve_mode_params(RetrievalMode.EXPLORATION)
+        seed_limit, _, max_depth, _ = _resolve_mode_params(RetrievalMode.EXPLORATION)
         assert seed_limit == 20
         assert max_depth == 3
 
     def test_analogy_returns_10_seeds(self):
-        seed_limit, _, _ = _resolve_mode_params(RetrievalMode.ANALOGY)
+        seed_limit, _, _, _ = _resolve_mode_params(RetrievalMode.ANALOGY)
         assert seed_limit == 10
 
     def test_validation_returns_10_seeds(self):
-        seed_limit, _, _ = _resolve_mode_params(RetrievalMode.VALIDATION)
+        seed_limit, _, _, _ = _resolve_mode_params(RetrievalMode.VALIDATION)
         assert seed_limit == 10
 
     def test_all_modes_have_seed_limits(self):
@@ -218,7 +219,7 @@ class TestEngramRetrieverTraversal:
             return []
 
         retriever._neo4j.traverse = mock_traverse
-        _, rel_types, max_depth = _resolve_mode_params(RetrievalMode.PRECISION)
+        _, rel_types, max_depth, _ = _resolve_mode_params(RetrievalMode.PRECISION)
 
         await retriever._traverse(["s1"], rel_types, max_depth)
         assert called_depths == [1]
@@ -234,7 +235,7 @@ class TestEngramRetrieverTraversal:
             return []
 
         retriever._neo4j.traverse = mock_traverse
-        _, rel_types, max_depth = _resolve_mode_params(RetrievalMode.EXPLORATION)
+        _, rel_types, max_depth, _ = _resolve_mode_params(RetrievalMode.EXPLORATION)
 
         await retriever._traverse(["s1"], rel_types, max_depth)
         assert called_depths == [3]
