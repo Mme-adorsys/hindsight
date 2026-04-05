@@ -304,7 +304,10 @@ class Neo4jEngineClient:
         """
         driver = self._require_driver()
         type_filter = "|".join(rel_types) if rel_types else "|".join(RELATIONSHIP_TYPES)
-        weight_filter = "WHERE r.weight >= $min_weight" if min_weight > 0.0 else ""
+        # Fix 16: Always apply weight filter with COALESCE so relationships lacking
+        # a weight property (NULL) are treated as 0.0 rather than bypassing the filter.
+        # min_weight=0.0 (default) means "include all" — no behavior change for existing callers.
+        weight_filter = "WHERE coalesce(r.weight, 0.0) >= $min_weight"
 
         async def _traverse():
             async with driver.session(database=self._database) as session:

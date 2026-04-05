@@ -117,21 +117,22 @@ class TestPairsAboveThreshold:
 
 
 class TestComputeWeight:
+    # Fix 22: formula is min(count/20, 0.5) — cap at 0.5 to keep CO_ACTIVATED weak.
     def test_low_count_proportional(self) -> None:
         t = make_tracker()
-        assert t.compute_weight(5) == pytest.approx(0.5)
+        assert t.compute_weight(5) == pytest.approx(0.25)  # 5/20
 
     def test_count_at_10_gives_max(self) -> None:
         t = make_tracker()
-        assert t.compute_weight(10) == pytest.approx(1.0)
+        assert t.compute_weight(10) == pytest.approx(0.5)  # 10/20 = cap
 
-    def test_count_above_10_capped_at_1(self) -> None:
+    def test_count_above_10_capped_at_max(self) -> None:
         t = make_tracker()
-        assert t.compute_weight(50) == pytest.approx(1.0)
+        assert t.compute_weight(50) == pytest.approx(0.5)  # capped at 0.5
 
-    def test_count_1_gives_0_1(self) -> None:
+    def test_count_1_gives_0_05(self) -> None:
         t = make_tracker()
-        assert t.compute_weight(1) == pytest.approx(0.1)
+        assert t.compute_weight(1) == pytest.approx(0.05)  # 1/20
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +205,7 @@ class TestFlushToNeo4j:
             assert len(calls) == 1
             assert calls[0][0] == "a"
             assert calls[0][1] == "b"
-            assert calls[0][2] == pytest.approx(0.3)
+            assert calls[0][2] == pytest.approx(0.15)  # count=3, fix22: 3/20=0.15
         finally:
             lc.create_co_activation_link = original
 

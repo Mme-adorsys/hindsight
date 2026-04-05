@@ -344,9 +344,14 @@ class EngramRetriever(GraphRetriever):
         for sid in seed_ids:
             activation_map.setdefault(sid, 1.0)
 
+        # seed_id_set created early — needed by both prefer-mode and traversal_source marking
+        seed_id_set = set(seed_ids)
+
         # T2: Prefer mode — additional weak-link traversal with score boost (Analogy mode)
         # Bio mapping: Analogy thinking preferentially follows weak associative bridges
         # to surface cross-domain patterns not reachable via strong links.
+        # Fix 17: only add to weak_link_ids when the boost actually wins over the strong-link score,
+        # so nodes that are primarily strong-link results are never mis-marked as weak-link.
         weak_link_ids: set[str] = set()
         if weak_link_policy == "prefer":
             weak_rel_types = list(WEAK_LINK_TYPES)
@@ -355,11 +360,22 @@ class EngramRetriever(GraphRetriever):
                 boosted = score * WEAK_LINK_PREFER_BOOST
                 if eid not in activation_map or boosted > activation_map[eid]:
                     activation_map[eid] = boosted
-                weak_link_ids.add(eid)
+                    # Only mark as weak-link when the weak path actually dominates
+                    # and the node is not a direct seed (seeds are primary matches, not associations)
+                    if eid not in seed_id_set:
+                        weak_link_ids.add(eid)
             logger.debug(
                 "[EngramRetriever] prefer-mode weak-link traversal: %d additional nodes (boost=×%.1f)",
                 len(weak_link_ids),
                 WEAK_LINK_PREFER_BOOST,
+            )
+
+        # Fix 20: log a warning for unknown modes (silent fallback is hard to diagnose)
+        if mode is not None and mode.value not in _SEED_LIMITS:
+            logger.warning(
+                "[EngramRetriever] Unknown mode '%s'; used default seed_limit=%d",
+                mode.value,
+                _DEFAULT_SEED_LIMIT,
             )
 
         # Phase 3: Enrichment
@@ -367,11 +383,9 @@ class EngramRetriever(GraphRetriever):
         results = await self._enrich(pool, bank_id, activation_map, budget)
         enrich_time = time.time() - t_enrich
 
-        # T4: Mark results reached via weak links
-        # Seeds are not weak-link results; only traversal-discovered nodes are marked.
-        seed_id_set = set(seed_ids)
+        # T4: Mark results reached via weak links (only when weak path dominated, not seeds)
         for rr in results:
-            if rr.id in weak_link_ids and rr.id not in seed_id_set:
+            if rr.id in weak_link_ids:
                 rr.traversal_source = "weak_link"
 
         logger.debug(

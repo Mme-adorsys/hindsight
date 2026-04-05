@@ -573,3 +573,99 @@ class TestFlush:
         items = wc.flush()
         inferred = [i for i in items if i.get("context") == "inferred"]
         assert inferred[0]["metadata"]["confidence"] == "0.85"
+
+
+# ---------------------------------------------------------------------------
+# Fix 7 — Tier overflow tiebreaker displaces oldest activated_at
+# ---------------------------------------------------------------------------
+
+
+class TestTierOverflowTiebreaker:
+    def test_tier_overflow_tiebreaker_displaces_oldest(self) -> None:
+        """When two refs have equal relevance_score, the oldest activated_at is displaced."""
+        from datetime import timedelta
+
+        wc = make_wc()
+        now = datetime.now(UTC)
+
+        # Fill focus to capacity, all with the same relevance score (0.5)
+        for i in range(MAX_FOCUS):
+            ref = EngramRef(
+                engram_id=f"e{i}",
+                strength=0.8,
+                relevance_score=0.5,
+                # activated_at increases: e0 is oldest, e(MAX_FOCUS-1) is newest
+                activated_at=now + timedelta(seconds=i),
+            )
+            wc.active_engrams.focus.append(ref)
+
+        # Add one more ref with equal score — should displace e0 (oldest)
+        new_ref = EngramRef(
+            engram_id="e_new",
+            strength=0.8,
+            relevance_score=0.5,
+            activated_at=now + timedelta(seconds=MAX_FOCUS),
+        )
+        wc.push_engram_ref("focus", new_ref)
+
+        focus_ids = {r.engram_id for r in wc.active_engrams.focus}
+        # e_new must be in focus
+        assert "e_new" in focus_ids
+        # e0 (oldest) must have been displaced, not e(MAX_FOCUS-1) (newest)
+        assert "e0" not in focus_ids
+
+
+# ---------------------------------------------------------------------------
+# Fix 10 — Goal cycle detection
+# ---------------------------------------------------------------------------
+
+
+class TestGoalCycleDetection:
+    def test_direct_self_cycle_raises(self) -> None:
+        """A goal that is its own parent should raise ValueError."""
+        wc = make_wc()
+        g = Goal(
+            id="g1",
+            description="Self-referencing goal",
+            priority=1.0,
+            status="active",
+            created_at=datetime.now(UTC),
+            parent_goal_id="g1",
+        )
+        with pytest.raises(ValueError, match="cycle"):
+            wc.push_goal(g)
+
+    def test_indirect_cycle_raises(self) -> None:
+        """A→B→A cycle detected when pushing A with parent=B after B already points back."""
+        wc = make_wc()
+        # Push g1 (no parent)
+        g1 = make_goal("g1")
+        wc.push_goal(g1)
+        # Push g2 with parent=g1
+        g2 = Goal(
+            id="g2",
+            description="Child of g1",
+            priority=0.8,
+            status="active",
+            created_at=datetime.now(UTC),
+            parent_goal_id="g1",
+        )
+        wc.push_goal(g2)
+        # Now push g3 with parent=g2 — but g3.id == g1 (creates g1→g2→g1 cycle)
+        g3 = Goal(
+            id="g1",  # same ID as g1 already on stack
+            description="Would create cycle",
+            priority=0.5,
+            status="active",
+            created_at=datetime.now(UTC),
+            parent_goal_id="g2",
+        )
+        with pytest.raises(ValueError, match="cycle"):
+            wc.push_goal(g3)
+
+    def test_no_parent_does_not_raise(self) -> None:
+        """Goals without parent_goal_id are always accepted."""
+        wc = make_wc()
+        g = make_goal("g1")
+        wc.push_goal(g)  # must not raise
+        assert len(wc.goal_stack) == 1

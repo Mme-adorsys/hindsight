@@ -95,21 +95,34 @@ class AssociationWindow:
         """
         self._recall_count += 1
 
-        refs = list(active_engrams.focus) + list(active_engrams.supporting)
+        # Fix 18: Deduplicate refs by engram_id before pair generation to prevent
+        # count inflation when the same engram appears in both focus and supporting.
+        seen_ids: set[str] = set()
+        unique_refs: list = []
+        for ref in list(active_engrams.focus) + list(active_engrams.supporting):
+            if ref.engram_id not in seen_ids:
+                seen_ids.add(ref.engram_id)
+                unique_refs.append(ref)
+        refs = unique_refs
+
         if len(refs) < 2:
             return []
 
+        # Fix 11: Use seen set within the pair loop to prevent double-counting
+        # pairs within a single call (e.g. A↔B counted once regardless of path).
+        seen_pairs: set[tuple[str, str]] = set()
         new_pairs: list[tuple[str, str]] = []
         for i, ref_a in enumerate(refs):
             for ref_b in refs[i + 1 :]:
                 delta_minutes = _time_delta_minutes(ref_a.activated_at, ref_b.activated_at)
                 if delta_minutes <= self.window_minutes:
                     key = (min(ref_a.engram_id, ref_b.engram_id), max(ref_a.engram_id, ref_b.engram_id))
-                    self._pair_counts[key] = self._pair_counts.get(key, 0) + 1
-                    new_pairs.append(key)
+                    if key not in seen_pairs:
+                        self._pair_counts[key] = self._pair_counts.get(key, 0) + 1
+                        new_pairs.append(key)
+                        seen_pairs.add(key)
 
-        # Deduplicate (multiple refs can create the same pair key)
-        return list(dict.fromkeys(new_pairs))
+        return new_pairs
 
     def should_flush(self) -> bool:
         """Return True when the periodic flush interval has been reached."""
@@ -133,20 +146,36 @@ class AssociationWindow:
         from ..retain.link_creation import create_association_window_link
 
         written = 0
+        errors = 0
         for pair, count in list(self._pair_counts.items()):
             weight = min(self._INITIAL_LINK_WEIGHT + (count - 1) * self._WEIGHT_INCREMENT, self._MAX_LINK_WEIGHT)
             from_id, to_id = pair
-            await create_association_window_link(neo4j_client, from_id, to_id, weight)
-            self._written_pairs.add(pair)
-            written += 1
-            logger.debug(
-                "[AssociationWindow] TEMPORAL_PROXIMITY link: %s ↔ %s (count=%d, weight=%.2f)",
-                from_id,
-                to_id,
-                count,
-                weight,
-            )
+            try:
+                await create_association_window_link(neo4j_client, from_id, to_id, weight)
+                self._written_pairs.add(pair)
+                written += 1
+                logger.debug(
+                    "[AssociationWindow] TEMPORAL_PROXIMITY link: %s ↔ %s (count=%d, weight=%.2f)",
+                    from_id,
+                    to_id,
+                    count,
+                    weight,
+                )
+            except Exception as exc:
+                errors += 1
+                logger.warning(
+                    "[AssociationWindow] Failed to write link %s ↔ %s: %s",
+                    from_id,
+                    to_id,
+                    exc,
+                )
 
+        if errors:
+            logger.error(
+                "[AssociationWindow] Flush: %d/%d pairs failed",
+                errors,
+                written + errors,
+            )
         return written
 
     def reset(self) -> None:

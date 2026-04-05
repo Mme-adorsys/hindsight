@@ -57,8 +57,10 @@ class CoActivationTracker:
     # Pairs that have already been written to Neo4j (avoid duplicate writes)
     _written_pairs: set[tuple[str, str]] = field(default_factory=set, repr=False)
 
-    # Minimum weight for a new link; incremented proportionally with count
-    _MAX_WEIGHT: ClassVar[float] = 1.0
+    # Fix 22: CO_ACTIVATED links are Hebbian traces, not LTP — cap at 0.5 so they stay
+    # weaker than direct semantic links (which can reach 1.0). Bio: weak associative bridges
+    # require NCR-level consolidation before they can compete with strong semantic links.
+    _MAX_WEIGHT: ClassVar[float] = 0.5
 
     def track_recall(self, engram_ids: list[str]) -> None:
         """
@@ -88,11 +90,15 @@ class CoActivationTracker:
 
     def compute_weight(self, count: int) -> float:
         """
-        Normalise co-activation count to a link weight in (0, 1].
+        Normalise co-activation count to a link weight in (0, 0.5].
 
-        weight = min(count / 10, 1.0)
+        weight = min(count / 20, 0.5)
+
+        Fix 22: denominator raised to 20 (from 10) so 10 co-activations reach the cap.
+        Keeps CO_ACTIVATED links in the "weak association" range; stronger consolidation
+        requires NCR.
         """
-        return min(count / 10.0, self._MAX_WEIGHT)
+        return min(count / 20.0, self._MAX_WEIGHT)
 
     def should_flush(self) -> bool:
         """Return True when the periodic flush interval has been reached."""
@@ -119,6 +125,7 @@ class CoActivationTracker:
         from ..retain.link_creation import create_co_activation_link
 
         written = 0
+        errors = 0
         for pair, count in list(self._counter.items()):
             if count < effective_threshold:
                 continue
@@ -126,17 +133,32 @@ class CoActivationTracker:
                 continue
             from_id, to_id = pair
             weight = self.compute_weight(count)
-            await create_co_activation_link(neo4j_client, from_id, to_id, weight)
-            self._written_pairs.add(pair)
-            written += 1
-            logger.debug(
-                "[CoActivationTracker] CO_ACTIVATED link: %s ↔ %s (count=%d, weight=%.2f)",
-                from_id,
-                to_id,
-                count,
-                weight,
-            )
+            try:
+                await create_co_activation_link(neo4j_client, from_id, to_id, weight)
+                self._written_pairs.add(pair)
+                written += 1
+                logger.debug(
+                    "[CoActivationTracker] CO_ACTIVATED link: %s ↔ %s (count=%d, weight=%.2f)",
+                    from_id,
+                    to_id,
+                    count,
+                    weight,
+                )
+            except Exception as exc:
+                errors += 1
+                logger.warning(
+                    "[CoActivationTracker] Failed to write link %s ↔ %s: %s",
+                    from_id,
+                    to_id,
+                    exc,
+                )
 
+        if errors:
+            logger.error(
+                "[CoActivationTracker] Flush: %d/%d pairs failed",
+                errors,
+                written + errors,
+            )
         return written
 
     def reset(self) -> None:

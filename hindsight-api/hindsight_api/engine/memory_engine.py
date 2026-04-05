@@ -2126,6 +2126,20 @@ class MemoryEngine(MemoryEngineInterface):
                         )
                     sr.weight = sr.combined_score
 
+                # Fix 2: Apply weak-link boost to combined_score for Analogy mode.
+                # The 1.5× boost was applied to activation_map in EngramRetriever but is lost
+                # after enrichment (scoring uses CE/RRF, not activation). Re-apply here so
+                # weak-link results actually rank higher in Analogy mode output.
+                # Bio mapping: Analogy retrieval preferentially follows associative bridges —
+                # weak-link hits should surface above equivalent strong-link hits.
+                if mode is not None and mode.value == "analogy":
+                    from .search.engram_retrieval import WEAK_LINK_PREFER_BOOST
+
+                    for sr in scored_results:
+                        if getattr(sr.candidate.retrieval, "traversal_source", None) == "weak_link":
+                            sr.combined_score = min(sr.combined_score * WEAK_LINK_PREFER_BOOST, 1.0)
+                            sr.weight = sr.combined_score
+
                 # Re-sort by combined score
                 scored_results.sort(key=lambda x: x.weight, reverse=True)
 

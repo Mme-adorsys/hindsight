@@ -127,6 +127,20 @@ class MPFPPatternSet:
 
 # Mode-specific pattern sets (keyed by RetrievalMode.value to avoid circular import).
 # Selected at retrieve() time when mode is provided; falls back to MPFPConfig defaults otherwise.
+#
+# Fix 6 — Threshold semantics:
+#   min_score  — minimum RRF/cosine score for a candidate to enter the result set.
+#                Higher = more selective (fewer, stronger matches).
+#   min_edge_weight — minimum Neo4j relationship weight to follow during graph traversal.
+#                     Higher = only well-consolidated links are traversed.
+#   top_k      — maximum candidates returned after pattern fusion.
+#
+# Mode calibration rationale:
+#   Precision:   high thresholds (0.6/0.4), top_k=5  — tightest focus, strong signal only.
+#   Exploration: low thresholds (0.3/0.1),  top_k=20 — broadest coverage, admits weak links.
+#   Analogy:     medium thresholds (0.3/0.1), top_k=10 — cross-domain bridges, weak links valued.
+#   Validation:  high thresholds (0.5/0.3), top_k=8  — confirms/refutes existing belief,
+#                strong contradictory evidence preferred.
 MODE_PATTERNS: dict[str, MPFPPatternSet] = {
     # Precision: short direct paths, high threshold — strongest signal only
     "precision": MPFPPatternSet(

@@ -140,6 +140,9 @@ class SessionManager:
     def __init__(self, session_ttl: timedelta = DEFAULT_SESSION_TTL) -> None:
         self._sessions: dict[UUID, SessionState] = {}
         self._session_ttl = session_ttl
+        # Fix 13: Rate-limit cleanup to avoid O(n) scan on every create_session call.
+        self._last_cleanup: datetime = datetime.now(UTC)
+        self._cleanup_interval: timedelta = timedelta(minutes=5)
 
     # ------------------------------------------------------------------
     # Lifecycle (T1)
@@ -172,7 +175,11 @@ class SessionManager:
         Returns:
             The newly created Session.
         """
-        self._cleanup_expired()
+        # Fix 13: Only run cleanup if the interval has elapsed (avoids O(n) on every create).
+        now = datetime.now(UTC)
+        if (now - self._last_cleanup) >= self._cleanup_interval:
+            self._cleanup_expired()
+            self._last_cleanup = now
         session = Session(
             mode=mode,
             task_context=task_context,

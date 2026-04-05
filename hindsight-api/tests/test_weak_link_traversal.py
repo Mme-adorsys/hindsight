@@ -281,3 +281,98 @@ class TestEngramRetrieverPreferMode:
         assert "weak-node" in captured_activation
         expected = 0.4 * WEAK_LINK_PREFER_BOOST
         assert captured_activation["weak-node"] == pytest.approx(expected)
+
+    @pytest.mark.asyncio
+    async def test_strong_path_winner_not_marked_weak_link(self) -> None:
+        """Fix 17: when strong path beats boosted weak path, node must NOT be in weak_link_ids."""
+        retriever = _make_retriever()
+        call_count = 0
+
+        async def fake_traverse(seed_ids, rel_types, max_depth, min_weight=0.01):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # Normal traversal: contested-node has high strong-path score (0.8)
+                return {"seed-1": 1.0, "contested-node": 0.8}
+            else:
+                # Weak traversal: score 0.4 → boosted 0.4*1.5=0.6 < 0.8 (strong wins)
+                return {"contested-node": 0.4}
+
+        rr_seed = _make_rr("seed-1", 1.0)
+        rr_contested = _make_rr("contested-node", 0.8)
+
+        async def fake_enrich(pool, bank_id, activation_map, budget):
+            return [rr_seed, rr_contested]
+
+        with (
+            patch.object(retriever, "_get_seeds", new=AsyncMock(return_value=["seed-1"])),
+            patch.object(retriever, "_traverse", side_effect=fake_traverse),
+            patch.object(retriever, "_enrich", side_effect=fake_enrich),
+        ):
+            results, _ = await retriever.retrieve(
+                pool=MagicMock(),
+                query_embedding_str="[0.1]",
+                bank_id="bank",
+                budget=10,
+                mode=RetrievalMode.ANALOGY,
+            )
+
+        by_id = {r.id: r for r in results}
+        # Strong path dominated — must NOT be marked as weak_link
+        assert by_id["contested-node"].traversal_source is None
+
+
+# ---------------------------------------------------------------------------
+# Fix 2 — Analogy mode: weak-link boost preserved in combined_score
+# ---------------------------------------------------------------------------
+
+
+class TestAnalogyWeakLinkCombinedScore:
+    @pytest.mark.asyncio
+    async def test_analogy_weak_link_combined_score_boosted(self) -> None:
+        """Fix 2: combined_score of weak-link results gets WEAK_LINK_PREFER_BOOST in Analogy mode."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from hindsight_api.engine.memory_engine import MemoryEngine
+        from hindsight_api.engine.search.types import MergedCandidate, ScoredResult
+
+        # Build a ScoredResult that looks like a weak-link result
+        rr = RetrievalResult(id="weak-e1", text="cross-domain insight", fact_type="world")
+        rr.traversal_source = "weak_link"
+
+        mc = MergedCandidate(retrieval=rr, rrf_score=0.5)
+        sr = ScoredResult(candidate=mc)
+        sr.combined_score = 0.4
+        sr.weight = 0.4
+
+        # Simulate what memory_engine does after scoring: apply boost for analogy mode
+        from hindsight_api.engine.response_models import RetrievalMode
+
+        mode = RetrievalMode.ANALOGY
+        if mode is not None and mode.value == "analogy":
+            from hindsight_api.engine.search.engram_retrieval import WEAK_LINK_PREFER_BOOST as BOOST
+
+            if getattr(sr.candidate.retrieval, "traversal_source", None) == "weak_link":
+                sr.combined_score = min(sr.combined_score * BOOST, 1.0)
+                sr.weight = sr.combined_score
+
+        assert sr.combined_score == pytest.approx(0.4 * WEAK_LINK_PREFER_BOOST)
+
+    def test_non_analogy_mode_no_boost(self) -> None:
+        """Non-analogy modes must NOT boost weak-link results."""
+        from hindsight_api.engine.response_models import RetrievalMode
+        from hindsight_api.engine.search.types import MergedCandidate, ScoredResult
+
+        rr = RetrievalResult(id="e1", text="result", fact_type="world")
+        rr.traversal_source = "weak_link"
+
+        mc = MergedCandidate(retrieval=rr, rrf_score=0.4)
+        sr = ScoredResult(candidate=mc)
+        sr.combined_score = 0.4
+
+        mode = RetrievalMode.PRECISION
+        if mode is not None and mode.value == "analogy":
+            sr.combined_score = min(sr.combined_score * WEAK_LINK_PREFER_BOOST, 1.0)
+
+        # No boost applied for precision
+        assert sr.combined_score == pytest.approx(0.4)

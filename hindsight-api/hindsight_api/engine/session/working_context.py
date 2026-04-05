@@ -162,7 +162,20 @@ class WorkingContext:
     # ------------------------------------------------------------------
 
     def push_goal(self, goal: Goal) -> None:
-        """Push a new goal onto the stack and mark last_updated."""
+        """Push a new goal onto the stack and mark last_updated.
+
+        Raises ValueError if the goal creates a cycle in the parent chain.
+        """
+        # Fix 10: Walk the parent chain at push time to detect cycles.
+        if goal.parent_goal_id is not None:
+            visited: set[str] = {goal.id}
+            current_id: str | None = goal.parent_goal_id
+            while current_id is not None:
+                if current_id in visited:
+                    raise ValueError(f"Goal cycle detected: {goal.id!r} creates cycle via {current_id!r}")
+                visited.add(current_id)
+                parent = next((g for g in self.goal_stack if g.id == current_id), None)
+                current_id = parent.parent_goal_id if parent else None
         self.goal_stack.append(goal)
         self.last_updated = datetime.now(UTC)
 
@@ -199,8 +212,13 @@ class WorkingContext:
             tier_list.append(ref)
             return
 
-        # Displace weakest to next tier (or discard from peripheral)
-        weakest_idx = min(range(len(tier_list)), key=lambda i: tier_list[i].relevance_score)
+        # Displace weakest to next tier (or discard from peripheral).
+        # Fix 7: tiebreak by activated_at so the oldest unrefreshed trace is displaced first.
+        # Bio-correct: older representations that haven't been rehearsed fade preferentially.
+        weakest_idx = min(
+            range(len(tier_list)),
+            key=lambda i: (tier_list[i].relevance_score, tier_list[i].activated_at),
+        )
         displaced = tier_list.pop(weakest_idx)
         tier_list.append(ref)
 
@@ -384,7 +402,7 @@ class WorkingContext:
             *self.active_engrams.supporting,
             *self.active_engrams.peripheral,
         ):
-            ref.relevance_score *= factor
+            ref.relevance_score = max(ref.relevance_score * factor, 0.0)  # Fix 12: explicit floor
 
         self._apply_demotion()
         self.last_updated = datetime.now(UTC)
@@ -464,6 +482,8 @@ class WorkingContext:
 
         # 3. Focus engrams → lightweight access-count note (no full content needed)
         for ref in self.active_engrams.focus:
+            if not ref.engram_id or not ref.engram_id.strip():  # Fix 14: skip blank ids
+                continue
             item = {
                 "content": f"Engram {ref.engram_id} was active in focus during this session.",
                 "context": "access",
@@ -475,3 +495,18 @@ class WorkingContext:
             items.append(item)
 
         return items
+
+
+# ---------------------------------------------------------------------------
+# Fix 8 — Module-level invariant guard: promote threshold must exceed demote threshold
+# per tier, otherwise a ref oscillates (promoted then immediately demoted in same cycle).
+# These are class-level constants; catching drift at import time prevents silent bugs.
+# ---------------------------------------------------------------------------
+assert WorkingContext._PROMOTE_TO_FOCUS_THRESHOLD > WorkingContext._FOCUS_DEMOTE_THRESHOLD, (
+    f"Focus promote ({WorkingContext._PROMOTE_TO_FOCUS_THRESHOLD}) must exceed "
+    f"demote ({WorkingContext._FOCUS_DEMOTE_THRESHOLD}) threshold"
+)
+assert WorkingContext._PROMOTE_TO_SUPPORTING_THRESHOLD > WorkingContext._SUPPORTING_DEMOTE_THRESHOLD, (
+    f"Supporting promote ({WorkingContext._PROMOTE_TO_SUPPORTING_THRESHOLD}) must exceed "
+    f"demote ({WorkingContext._SUPPORTING_DEMOTE_THRESHOLD}) threshold"
+)

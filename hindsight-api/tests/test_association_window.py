@@ -393,3 +393,64 @@ class TestDistinctnessFromCoActivation:
         cat.track_recall(["a", "b"])
         assert cat._counter[("a", "b")] == 2
         assert cat.pairs_above_threshold() != []
+
+
+# ---------------------------------------------------------------------------
+# Fix 18 — Duplicate engram_id in focus+supporting counts only once
+# ---------------------------------------------------------------------------
+
+
+class TestDuplicateEnggramIdDeduplication:
+    def test_same_engram_in_focus_and_supporting_counts_once(self) -> None:
+        """Fix 18: if 'a' appears in both focus and supporting, pair (a,b) is counted once."""
+        aw = AssociationWindow(window_minutes=10.0)
+        # 'a' in focus AND supporting; 'b' in focus
+        ae = _engrams(
+            focus=[_ref("a", 0), _ref("b", 1)],
+            supporting=[_ref("a", 2)],  # duplicate of 'a'
+        )
+        pairs = aw.check_associations(ae)
+        # Should produce exactly one pair: (a, b) — not counted twice
+        assert len(pairs) == 1
+        assert pairs[0] == (min("a", "b"), max("a", "b"))
+        assert aw._pair_counts[(min("a", "b"), max("a", "b"))] == 1
+
+    def test_duplicate_does_not_inflate_count_on_repeated_calls(self) -> None:
+        """Fix 18: repeated calls with duplicate engram increments count by 1 per call."""
+        aw = AssociationWindow(window_minutes=10.0)
+        ae = _engrams(
+            focus=[_ref("a", 0), _ref("b", 1)],
+            supporting=[_ref("a", 2)],
+        )
+        aw.check_associations(ae)
+        aw.check_associations(ae)
+        key = (min("a", "b"), max("a", "b"))
+        # 2 calls → count 2 (not 4 which would happen without dedup)
+        assert aw._pair_counts[key] == 2
+
+
+# ---------------------------------------------------------------------------
+# Fix 11 — Within-call deduplication prevents double-counting
+# ---------------------------------------------------------------------------
+
+
+class TestWithinCallDeduplication:
+    def test_single_call_counts_pair_once(self) -> None:
+        """Fix 11: a pair can only be counted once per check_associations call."""
+        aw = AssociationWindow(window_minutes=10.0)
+        ae = _engrams(focus=[_ref("a", 0), _ref("b", 1), _ref("c", 2)])
+        # Three refs → pairs: (a,b), (a,c), (b,c) — each exactly once
+        pairs = aw.check_associations(ae)
+        assert len(pairs) == 3
+        key_ab = (min("a", "b"), max("a", "b"))
+        assert aw._pair_counts[key_ab] == 1
+
+    def test_multiple_calls_accumulate_correctly(self) -> None:
+        """Pair count should increment by 1 per call, not more."""
+        aw = AssociationWindow(window_minutes=10.0)
+        ae = _engrams(focus=[_ref("x", 0), _ref("y", 1)])
+        aw.check_associations(ae)
+        aw.check_associations(ae)
+        aw.check_associations(ae)
+        key = (min("x", "y"), max("x", "y"))
+        assert aw._pair_counts[key] == 3
