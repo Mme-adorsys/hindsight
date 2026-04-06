@@ -27,6 +27,7 @@ from .models import (
     Inference,
 )
 from .pipeline import ConstructionPipeline
+from .prediction_error import PredictionError, PredictionErrorDetector, apply_prediction_error_feedback
 
 __all__ = [
     "ConstructedFact",
@@ -34,4 +35,7 @@ __all__ = [
     "Gap",
     "ConstructedAnswer",
     "ConstructionPipeline",
+    "PredictionError",
+    "PredictionErrorDetector",
+    "apply_prediction_error_feedback",
 ]

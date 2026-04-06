@@ -1724,6 +1724,47 @@ class MemoryEngine(MemoryEngineInterface):
                 except Exception as _pipeline_err:
                     logger.warning("[CONSTRUCTION] Pipeline failed (non-fatal): %s", _pipeline_err)
 
+                # Prediction Error Detection (Epic 11 S3) — runs after construction when
+                # session.current_expectation is set.
+                # Bio mapping: dopaminergic PE signal — mismatch drives reconsolidation + mode shift.
+                if (
+                    result.constructed_answer is not None
+                    and session.current_expectation
+                    and self._reflect_llm_config is not None
+                ):
+                    try:
+                        from .constructive.prediction_error import (
+                            PredictionErrorDetector,
+                            apply_prediction_error_feedback,
+                        )
+
+                        _pe_detector = PredictionErrorDetector(llm=self._reflect_llm_config)
+                        _pe = await _pe_detector.detect(
+                            answer=result.constructed_answer,
+                            expectation=session.current_expectation,
+                        )
+                        if _pe is not None:
+                            from .reflect.prediction_error_registry import PredictionErrorRegistry as _PEReg
+
+                            _sm = self._get_session_manager()
+                            _pe_registry = _PEReg()
+                            await apply_prediction_error_feedback(
+                                error=_pe,
+                                session_id=session.session_id,
+                                session_manager=_sm,
+                                prediction_error_registry=_pe_registry,
+                            )
+                            result.constructed_answer.construction_metadata["prediction_error"] = {
+                                "severity": _pe.severity,
+                                "level": _pe.level,
+                                "description": _pe.description,
+                                "conflicting_fact_ids": _pe.conflicting_fact_ids,
+                                "expected_summary": _pe.expected_summary,
+                                "actual_summary": _pe.actual_summary,
+                            }
+                    except Exception as _pe_err:
+                        logger.warning("[PE] Prediction error detection failed (non-fatal): %s", _pe_err)
+
         # Call post-operation hook for success
         if self._operation_validator and result is not None:
             from hindsight_api.extensions.operation_validator import RecallResult
