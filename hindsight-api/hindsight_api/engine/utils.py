@@ -399,3 +399,13 @@ _DISPOSITION_DESCRIPTIONS: dict[str, str] = {
     "conservative": "retain existing memories unless evidence is very strong and direct",
     "neutral": "evaluate objectively without any particular bias",
 }
+
+
+class JsonSchemaWrapper:
+    """Pydantic-like interface for raw JSON schemas — used in reflect_async() structured output."""
+
+    def __init__(self, schema: dict) -> None:
+        self._schema = schema
+
+    def model_json_schema(self) -> dict:
+        return self._schema

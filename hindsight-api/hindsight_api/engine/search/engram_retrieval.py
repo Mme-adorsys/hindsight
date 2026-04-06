@@ -150,6 +150,16 @@ class EngramRetriever(GraphRetriever):
         """Return the Qdrant client (public accessor for reconsolidation and scoring pipelines)."""
         return self._qdrant
 
+    @property
+    def neo4j_client(self) -> Neo4jEngineClient:
+        """Return the Neo4j client (public accessor for co-activation and association flush)."""
+        return self._neo4j
+
+    @property
+    def qdrant_client(self) -> QdrantEngineClient:
+        """Return the Qdrant client as property (alternative to get_qdrant_client)."""
+        return self._qdrant
+
     # ------------------------------------------------------------------
     # T2 — Qdrant Seed Phase
     # ------------------------------------------------------------------

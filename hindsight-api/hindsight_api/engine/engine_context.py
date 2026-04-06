@@ -350,6 +350,49 @@ class EngineContext:
             logger.info("pg0 stopped")
 
     # ------------------------------------------------------------------
+    # Public accessors for orchestrator use
+    # ------------------------------------------------------------------
+
+    @property
+    def operation_validator(self) -> "OperationValidatorExtension | None":
+        """Operation validator extension (may be None if not configured)."""
+        return self._operation_validator
+
+    @operation_validator.setter
+    def operation_validator(self, value: "OperationValidatorExtension | None") -> None:
+        self._operation_validator = value
+
+    @property
+    def tenant_extension(self) -> "TenantExtension | None":
+        """Tenant extension (may be None if not configured)."""
+        return self._tenant_extension
+
+    @property
+    def task_backend(self) -> "TaskBackend":
+        """Task backend for submitting background work."""
+        return self._task_backend
+
+    @property
+    def search_semaphore(self) -> asyncio.Semaphore:
+        """Semaphore for limiting concurrent search operations."""
+        return self._search_semaphore
+
+    @property
+    def put_semaphore(self) -> asyncio.Semaphore:
+        """Semaphore for limiting concurrent retain operations."""
+        return self._put_semaphore
+
+    @property
+    def reflect_llm_config(self) -> "LLMConfig | None":
+        """LLM config for reflect operations."""
+        return self._reflect_llm_config
+
+    @property
+    def cross_encoder_reranker(self) -> "CrossEncoderReranker":
+        """Cross-encoder reranker instance."""
+        return self._cross_encoder_reranker
+
+    # ------------------------------------------------------------------
     # Pool access
     # ------------------------------------------------------------------
 

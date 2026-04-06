@@ -30,10 +30,17 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 
 from ..metrics import get_metrics_collector
-from .response_models import ReflectResult
+from .response_models import OpinionEvaluation, ReflectResult
 from .retain import bank_utils
 from .search import think_utils
-from .utils import _DISPOSITION_DESCRIPTIONS, Budget, _ReconsolidationEval, acquire_with_retry, fq_table
+from .utils import (
+    _DISPOSITION_DESCRIPTIONS,
+    Budget,
+    JsonSchemaWrapper,
+    _ReconsolidationEval,
+    acquire_with_retry,
+    fq_table,
+)
 
 if TYPE_CHECKING:
     from hindsight_api.models import RequestContext
@@ -72,19 +79,6 @@ class ReflectOrchestrator:
             Dict with 'action' ('keep'|'update'), 'new_confidence', 'new_text' (if action=='update')
             or None if no changes needed
         """
-
-        class OpinionEvaluation(BaseModel):
-            """Evaluation of whether an opinion should be updated."""
-
-            action: str = Field(description="Action to take: 'keep' (no change) or 'update' (modify opinion)")
-            reasoning: str = Field(description="Brief explanation of why this action was chosen")
-            new_confidence: float = Field(
-                description="New confidence score (0.0-1.0). Can be higher, lower, or same as before."
-            )
-            new_opinion_text: str | None = Field(
-                default=None,
-                description="If action is 'update', the revised opinion text that acknowledges the previous view. Otherwise None.",
-            )
 
         evaluation_prompt = f"""You are evaluating whether an existing opinion should be updated based on new information.
 
@@ -231,7 +225,7 @@ Guidelines:
 
                     query_embedding = embedding_utils.generate_embedding(self._ctx.embeddings, query)
                     _retriever = get_default_graph_retriever()
-                    _qdrant = _retriever._qdrant if isinstance(_retriever, EngramRetriever) else None
+                    _qdrant = _retriever.qdrant_client if isinstance(_retriever, EngramRetriever) else None
                     if _qdrant is not None:
                         qdrant_candidates = await find_reconsolidation_candidates(
                             qdrant_client=_qdrant,
@@ -401,7 +395,7 @@ Guidelines:
 
         from .reflect.reconsolidation_queue import ReconsolidationOutcome
 
-        if self._ctx._reflect_llm_config is None:
+        if self._ctx.reflect_llm_config is None:
             return None
 
         try:
@@ -528,7 +522,7 @@ Respond with one of: confirmed, modified, contradiction"""
                     return
 
                 # Use cached LLM config
-                if self._ctx._reflect_llm_config is None:
+                if self._ctx.reflect_llm_config is None:
                     logger.error("[REINFORCE] LLM config not available, skipping opinion reinforcement")
                     return
 
@@ -639,7 +633,7 @@ Respond with one of: confirmed, modified, contradiction"""
                 - structured_output: Optional dict if response_schema was provided
         """
         # Use cached LLM config
-        if self._ctx._reflect_llm_config is None:
+        if self._ctx.reflect_llm_config is None:
             raise ValueError("Memory LLM API key not set. Set HINDSIGHT_API_LLM_API_KEY environment variable.")
 
         # Authenticate tenant and set schema in context (for fq_table())
@@ -656,7 +650,7 @@ Respond with one of: confirmed, modified, contradiction"""
         )
 
         # Validate operation if validator is configured
-        if self._ctx._operation_validator:
+        if self._ctx.operation_validator:
             from hindsight_api.extensions import ReflectContext
 
             ctx = ReflectContext(
@@ -666,7 +660,7 @@ Respond with one of: confirmed, modified, contradiction"""
                 budget=budget,
                 context=context,
             )
-            await self._ctx.validate_operation(self._ctx._operation_validator.validate_reflect(ctx))
+            await self._ctx.validate_operation(self._ctx.operation_validator.validate_reflect(ctx))
 
         reflect_start = time.time()
         reflect_id = f"{bank_id[:8]}-{int(time.time() * 1000) % 100000}"
@@ -740,14 +734,6 @@ Respond with one of: confirmed, modified, contradiction"""
         # Prepare response_format if schema provided
         response_format = None
         if response_schema is not None:
-            # Wrapper class to provide Pydantic-like interface for raw JSON schemas
-            class JsonSchemaWrapper:
-                def __init__(self, schema: dict):
-                    self._schema = schema
-
-                def model_json_schema(self):
-                    return self._schema
-
             response_format = JsonSchemaWrapper(response_schema)
 
         llm_start = time.time()
@@ -775,7 +761,7 @@ Respond with one of: confirmed, modified, contradiction"""
 
         # Submit form_opinion task for background processing
         # Pass tenant_id from request context for internal authentication in background task
-        await self._ctx._task_backend.submit_task(
+        await self._ctx.task_backend.submit_task(
             {
                 "type": "form_opinion",
                 "bank_id": bank_id,
@@ -792,7 +778,7 @@ Respond with one of: confirmed, modified, contradiction"""
             _pe_reg = self._ctx.get_session_manager().get_prediction_error_registry(session.session_id)
             if _pe_reg is not None:
                 _pe_ids = list(_pe_reg.get_flagged_ids())
-        await self._ctx._task_backend.submit_task(
+        await self._ctx.task_backend.submit_task(
             {
                 "type": "reconsolidate_engrams",
                 "bank_id": bank_id,
@@ -819,7 +805,7 @@ Respond with one of: confirmed, modified, contradiction"""
         )
 
         # Call post-operation hook if validator is configured
-        if self._ctx._operation_validator:
+        if self._ctx.operation_validator:
             from hindsight_api.extensions.operation_validator import ReflectResultContext
 
             result_ctx = ReflectResultContext(
@@ -833,7 +819,7 @@ Respond with one of: confirmed, modified, contradiction"""
                 error=None,
             )
             try:
-                await self._ctx._operation_validator.on_reflect_complete(result_ctx)
+                await self._ctx.operation_validator.on_reflect_complete(result_ctx)
             except Exception as e:
                 logger.warning(f"Post-reflect hook error (non-fatal): {e}")
 

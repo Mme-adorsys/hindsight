@@ -431,6 +431,20 @@ class Episode(BaseModel):
         return result
 
 
+class OpinionEvaluation(BaseModel):
+    """Evaluation of whether an opinion should be updated."""
+
+    action: str = Field(description="Action to take: 'keep' (no change) or 'update' (modify opinion)")
+    reasoning: str = Field(description="Brief explanation of why this action was chosen")
+    new_confidence: float = Field(
+        description="New confidence score (0.0-1.0). Can be higher, lower, or same as before."
+    )
+    new_opinion_text: str | None = Field(
+        default=None,
+        description="If action is 'update', the revised opinion text that acknowledges the previous view. Otherwise None.",
+    )
+
+
 class Session(BaseModel):
     """
     Transient steering context for all memory operations.

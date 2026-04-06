@@ -597,7 +597,7 @@ class AdminOperations:
         await self._ctx.authenticate_tenant(request_context)
         pool = await self._ctx.get_pool()
         return await bank_utils.merge_bank_background(
-            pool, self._ctx._reflect_llm_config, bank_id, new_info, update_disposition
+            pool, self._ctx.reflect_llm_config, bank_id, new_info, update_disposition
         )
 
     async def list_banks(
@@ -793,7 +793,7 @@ class AdminOperations:
                 "retain",
                 json.dumps({"items_count": len(contents)}),
             )
-        await self._ctx._task_backend.submit_task(
+        await self._ctx.task_backend.submit_task(
             {
                 "type": "batch_retain",
                 "operation_id": str(operation_id),

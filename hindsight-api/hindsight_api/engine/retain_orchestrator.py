@@ -127,7 +127,7 @@ class RetainOrchestrator:
         await self._ctx.authenticate_tenant(request_context)
 
         contents_copy = [dict(c) for c in contents]
-        if self._ctx._operation_validator:
+        if self._ctx.operation_validator:
             from hindsight_api.extensions import RetainContext
 
             ctx = RetainContext(
@@ -138,7 +138,7 @@ class RetainOrchestrator:
                 fact_type_override=fact_type_override,
                 confidence_score=confidence_score,
             )
-            await self._ctx.validate_operation(self._ctx._operation_validator.validate_retain(ctx))
+            await self._ctx.validate_operation(self._ctx.operation_validator.validate_retain(ctx))
 
         if document_id:
             for item in contents:
@@ -282,7 +282,7 @@ class RetainOrchestrator:
                     full_result[orig_idx] = result[filtered_idx]
             result = full_result
 
-        if self._ctx._operation_validator:
+        if self._ctx.operation_validator:
             from hindsight_api.extensions import RetainResult
 
             result_ctx = RetainResult(
@@ -297,7 +297,7 @@ class RetainOrchestrator:
                 error=None,
             )
             try:
-                await self._ctx._operation_validator.on_retain_complete(result_ctx)
+                await self._ctx.operation_validator.on_retain_complete(result_ctx)
             except Exception as e:
                 logger.warning(f"Post-retain hook error (non-fatal): {e}")
 
@@ -320,7 +320,7 @@ class RetainOrchestrator:
         session: "Session | None" = None,
     ) -> tuple[list[list[str]], "TokenUsage"]:
         """Sub-batch worker: backpressure-protected, no chunking logic."""
-        async with self._ctx._put_semaphore:
+        async with self._ctx.put_semaphore:
             from .retain import orchestrator
 
             pool = await self._ctx.get_pool()
@@ -329,7 +329,7 @@ class RetainOrchestrator:
                 embeddings_model=self._ctx.embeddings,
                 llm_registry=self._ctx.llm_registry,
                 entity_resolver=self._ctx.entity_resolver,
-                task_backend=self._ctx._task_backend,
+                task_backend=self._ctx.task_backend,
                 format_date_fn=self._format_readable_date,
                 duplicate_checker_fn=self._find_duplicate_facts_batch,
                 bank_id=bank_id,

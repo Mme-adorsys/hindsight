@@ -171,7 +171,7 @@ class RecallOrchestrator:
             )
 
         # Validate operation if validator is configured
-        if self._ctx._operation_validator:
+        if self._ctx.operation_validator:
             from hindsight_api.extensions import RecallContext
 
             ctx = RecallContext(
@@ -188,7 +188,7 @@ class RecallOrchestrator:
                 include_chunks=include_chunks,
                 max_chunk_tokens=max_chunk_tokens,
             )
-            await self._ctx.validate_operation(self._ctx._operation_validator.validate_recall(ctx))
+            await self._ctx.validate_operation(self._ctx.operation_validator.validate_recall(ctx))
 
         # Map budget enum to thinking_budget number (default to MID if None)
         budget_mapping = {Budget.LOW: 100, Budget.MID: 300, Budget.HIGH: 1000}
@@ -199,7 +199,7 @@ class RecallOrchestrator:
         result = None
         _top_scored: list = []
         error_msg = None
-        async with self._ctx._search_semaphore:
+        async with self._ctx.search_semaphore:
             # Retry loop for connection errors
             max_retries = 3
             for attempt in range(max_retries + 1):
@@ -241,7 +241,7 @@ class RecallOrchestrator:
                     else:
                         # Not a connection error or out of retries - call post-hook and raise
                         error_msg = str(e)
-                        if self._ctx._operation_validator:
+                        if self._ctx.operation_validator:
                             from hindsight_api.extensions.operation_validator import RecallResult
 
                             result_ctx = RecallResult(
@@ -262,14 +262,14 @@ class RecallOrchestrator:
                                 error=error_msg,
                             )
                             try:
-                                await self._ctx._operation_validator.on_recall_complete(result_ctx)
+                                await self._ctx.operation_validator.on_recall_complete(result_ctx)
                             except Exception as hook_err:
                                 logger.warning(f"Post-recall hook error (non-fatal): {hook_err}")
                         raise
             else:
                 # Exceeded max retries
                 error_msg = "Exceeded maximum retries for search due to connection errors."
-                if self._ctx._operation_validator:
+                if self._ctx.operation_validator:
                     from hindsight_api.extensions.operation_validator import RecallResult
 
                     result_ctx = RecallResult(
@@ -290,7 +290,7 @@ class RecallOrchestrator:
                         error=error_msg,
                     )
                     try:
-                        await self._ctx._operation_validator.on_recall_complete(result_ctx)
+                        await self._ctx.operation_validator.on_recall_complete(result_ctx)
                     except Exception as hook_err:
                         logger.warning(f"Post-recall hook error (non-fatal): {hook_err}")
                 raise Exception(error_msg)
@@ -312,27 +312,27 @@ class RecallOrchestrator:
                 if active_ids:
                     wc.co_activation_tracker.track_recall(active_ids)
 
-                # Periodic flush: write eligible CO_ACTIVATED links to Neo4j every N recalls.
+                # Resolve Neo4j client once for both flush operations below.
                 # neo4j_client comes from EngramRetriever if active; None → graceful no-op.
-                if wc.co_activation_tracker.should_flush():
+                _neo4j_client = None
+                _needs_neo4j = wc.co_activation_tracker.should_flush() or wc.association_window.should_flush()
+                if _needs_neo4j:
                     from .search.engram_retrieval import EngramRetriever
                     from .search.retrieval import get_default_graph_retriever
 
                     _retriever = get_default_graph_retriever()
-                    _neo4j = _retriever._neo4j if isinstance(_retriever, EngramRetriever) else None
-                    await wc.co_activation_tracker.flush_to_neo4j(_neo4j)
+                    _neo4j_client = _retriever.neo4j_client if isinstance(_retriever, EngramRetriever) else None
+
+                # Periodic flush: write eligible CO_ACTIVATED links to Neo4j every N recalls.
+                if wc.co_activation_tracker.should_flush():
+                    await wc.co_activation_tracker.flush_to_neo4j(_neo4j_client)
 
                 # Association Window — T4 (Epic 09 S3)
                 # Check temporal proximity between Focus+Supporting Engrams (STC mechanism).
                 # Periodic: every check_every_n recalls to limit DB writes.
                 wc.association_window.check_associations(wc.active_engrams)
                 if wc.association_window.should_flush():
-                    from .search.engram_retrieval import EngramRetriever
-                    from .search.retrieval import get_default_graph_retriever
-
-                    _retriever = get_default_graph_retriever()
-                    _neo4j = _retriever._neo4j if isinstance(_retriever, EngramRetriever) else None
-                    await wc.association_window.flush_to_neo4j(_neo4j)
+                    await wc.association_window.flush_to_neo4j(_neo4j_client)
 
                 # Construction Pipeline (Epic 11 S2) — builds ConstructedAnswer from scored results.
                 # Runs after WorkingContext population so WC already reflects the current recall.
@@ -360,7 +360,7 @@ class RecallOrchestrator:
                 if (
                     result.constructed_answer is not None
                     and session.current_expectation
-                    and self._ctx._reflect_llm_config is not None
+                    and self._ctx.reflect_llm_config is not None
                 ):
                     try:
                         from .constructive.prediction_error import (
@@ -400,7 +400,7 @@ class RecallOrchestrator:
                         logger.warning("[PE] Prediction error detection failed (non-fatal): %s", _pe_err)
 
         # Call post-operation hook for success
-        if self._ctx._operation_validator and result is not None:
+        if self._ctx.operation_validator and result is not None:
             from hindsight_api.extensions.operation_validator import RecallResult
 
             result_ctx = RecallResult(
@@ -421,7 +421,7 @@ class RecallOrchestrator:
                 error=None,
             )
             try:
-                await self._ctx._operation_validator.on_recall_complete(result_ctx)
+                await self._ctx.operation_validator.on_recall_complete(result_ctx)
             except Exception as e:
                 logger.warning(f"Post-recall hook error (non-fatal): {e}")
 
@@ -747,7 +747,7 @@ class RecallOrchestrator:
 
             # Step 4: Rerank using cross-encoder (MergedCandidate -> ScoredResult)
             step_start = time.time()
-            reranker_instance = self._ctx._cross_encoder_reranker
+            reranker_instance = self._ctx.cross_encoder_reranker
 
             # Ensure reranker is initialized (for lazy initialization mode)
             await reranker_instance.ensure_initialized()
@@ -903,7 +903,7 @@ class RecallOrchestrator:
             # Step 8: Queue access count updates for visited nodes
             visited_ids = list(set([sr.id for sr in scored_results[:50]]))  # Top 50
             if visited_ids:
-                await self._ctx._task_backend.submit_task({"type": "access_count_update", "node_ids": visited_ids})
+                await self._ctx.task_backend.submit_task({"type": "access_count_update", "node_ids": visited_ids})
 
             # Log fact_type distribution in results
             fact_type_counts = {}
