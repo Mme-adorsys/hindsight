@@ -277,6 +277,10 @@ class MemoryEngine(MemoryEngineInterface):
     def _operation_validator(self):
         return self._ctx._operation_validator
 
+    @_operation_validator.setter
+    def _operation_validator(self, value):
+        self._ctx._operation_validator = value
+
     @property
     def _tenant_extension(self):
         return self._ctx._tenant_extension

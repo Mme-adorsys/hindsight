@@ -351,37 +351,52 @@ class TestSingleCallPerformance:
             call_count["n"] += 1
             return empty_pr
 
-        # Build a minimal MemoryEngine-like object
+        # Build a minimal MemoryEngine-like object via ctx + orchestrator stubs
         import threading
 
+        from hindsight_api.engine.engine_context import EngineContext
         from hindsight_api.engine.memory_engine import MemoryEngine
+        from hindsight_api.engine.recall_orchestrator import RecallOrchestrator
         from hindsight_api.models import RequestContext
 
-        engine = object.__new__(MemoryEngine)
-        engine._session_manager = None
-        engine._session_manager_lazy_init = True
-        engine._session_manager_lock = threading.Lock()
-        engine._operation_validator = None
-        engine._search_semaphore = asyncio.Semaphore(10)
-        engine.query_analyzer = None
-        engine.embeddings = MagicMock()
-        engine.embeddings.encode = MagicMock(return_value=[0.1] * 128)
-        engine._cross_encoder_reranker = None
-        engine._reranker_lock = threading.Lock()
-        engine._reranker_initialized = False
-
         mock_pool = AsyncMock()
-        engine._pool = mock_pool
 
-        async def _get_pool():
-            return mock_pool
+        # Minimal EngineContext stub (bypass __init__)
+        ctx = object.__new__(EngineContext)
+        ctx._operation_validator = None
+        ctx._search_semaphore = asyncio.Semaphore(10)
+        ctx.query_analyzer = None
+        ctx.embeddings = MagicMock()
+        ctx.embeddings.encode = MagicMock(return_value=[0.1] * 128)
+        ctx._cross_encoder_reranker = None
+        ctx._reranker_lock = threading.Lock()
+        ctx._reranker_initialized = False
+        ctx._pool = mock_pool
+        ctx.entity_resolver = None
+        ctx.llm_registry = MagicMock()
+        ctx.resolve_session_config = lambda s: MagicMock(
+            strength_pre_filter=0.0, weak_link_policy="disabled", traversal_depth=1
+        )
 
-        engine._get_pool = _get_pool
-
-        async def _authenticate_tenant(rc):
+        async def authenticate_tenant(rc):
             pass
 
-        engine._authenticate_tenant = _authenticate_tenant
+        ctx.authenticate_tenant = authenticate_tenant
+
+        async def get_pool_fn():
+            return mock_pool
+
+        ctx.get_pool = get_pool_fn
+
+        # Wire engine facade with ctx + recall orchestrator
+        recall = RecallOrchestrator(ctx)
+        engine = object.__new__(MemoryEngine)
+        engine._ctx = ctx
+        engine._recall = recall
+        engine._retain = MagicMock()
+        engine._reflect = MagicMock()
+        engine._admin = MagicMock()
+        engine._entity = MagicMock()
 
         with (
             patch(
