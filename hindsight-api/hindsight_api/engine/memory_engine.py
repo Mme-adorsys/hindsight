@@ -7,20 +7,25 @@ This implements a sophisticated memory architecture that combines:
 3. Entity links: Memories connected by shared entities (PERSON, ORG, etc.)
 4. Spreading activation: Search through the graph with activation decay
 5. Dynamic weighting: Recency and frequency-based importance
+
+This file is now a Facade. All logic lives in the orchestrators:
+  - engine_context.py      — EngineContext (shared infrastructure)
+  - retain_orchestrator.py — RetainOrchestrator
+  - recall_orchestrator.py — RecallOrchestrator
+  - reflect_orchestrator.py — ReflectOrchestrator
+  - admin_operations.py    — AdminOperations
+  - entity_operations.py   — EntityOperations
 """
 
+from __future__ import annotations
+
 import asyncio
-import contextvars
 import logging
-import threading
-import time
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
-import numpy as np
-from pydantic import BaseModel, Field
 
 from ..config import get_config
 from ..metrics import get_metrics_collector
@@ -28,8 +33,7 @@ from .cross_encoder import CrossEncoderModel
 from .embeddings import Embeddings, create_embeddings_from_env
 from .interface import MemoryEngineInterface
 
-# Engine utilities — imported from utils.py to break circular imports in orchestrators.
-# Re-exported here so existing code (`from .memory_engine import fq_table`) continues to work.
+# Engine utilities — re-exported here so existing code keeps working.
 from .utils import (  # noqa: F401 (re-exports)
     _DISPOSITION_DESCRIPTIONS,
     Budget,
@@ -50,14 +54,12 @@ if TYPE_CHECKING:
     from hindsight_api.extensions import OperationValidatorExtension, TenantExtension
     from hindsight_api.models import RequestContext
 
+from enum import Enum  # noqa: E402
 
-from enum import Enum
-
-from ..pg0 import EmbeddedPostgres, parse_pg0_url
-from .entity_resolver import EntityResolver
+from ..pg0 import EmbeddedPostgres, parse_pg0_url  # noqa: F401
 from .llm_wrapper import LLMConfig
 from .query_analyzer import QueryAnalyzer
-from .response_models import (
+from .response_models import (  # noqa: F401
     VALID_RECALL_FACT_TYPES,
     EntityObservation,
     EntityState,
@@ -66,471 +68,274 @@ from .response_models import (
     TokenUsage,
 )
 from .response_models import RecallResult as RecallResultModel
-from .retain import bank_utils, embedding_utils
-from .retain.deduplication import DuplicateResult
+from .retain import bank_utils, embedding_utils  # noqa: F401
+from .retain.deduplication import DuplicateResult  # noqa: F401
 from .retain.types import RetainContentDict
-from .search import observation_utils, think_utils
-from .search.reranking import CrossEncoderReranker
+from .search import observation_utils, think_utils  # noqa: F401
+from .search.reranking import CrossEncoderReranker  # noqa: F401
 from .task_backend import AsyncIOQueueBackend, NoopTaskBackend, TaskBackend
 
-# Logger for memory system
 logger = logging.getLogger(__name__)
 
-# Eagerly warm up tiktoken encoding (avoids latency on first call)
-_get_tiktoken_encoding()
+_get_tiktoken_encoding()  # eager warmup
 
 
 class MemoryEngine(MemoryEngineInterface):
     """
     Advanced memory system using temporal and semantic linking with PostgreSQL.
 
-    This class provides:
-    - Embedding generation for semantic search
-    - Entity, temporal, and semantic link creation
-    - Think operations for formulating answers with opinions
-    - bank profile and disposition management
+    This class is a facade. All logic lives in the orchestrators imported from
+    engine_context.py, retain_orchestrator.py, recall_orchestrator.py,
+    reflect_orchestrator.py, admin_operations.py, and entity_operations.py.
     """
 
     def __init__(
         self,
-        db_url: str | None = None,
-        memory_llm_provider: str | None = None,
-        memory_llm_api_key: str | None = None,
-        memory_llm_model: str | None = None,
-        memory_llm_base_url: str | None = None,
-        # Per-operation LLM config (optional, falls back to memory_llm_* params)
-        retain_llm_provider: str | None = None,
-        retain_llm_api_key: str | None = None,
-        retain_llm_model: str | None = None,
-        retain_llm_base_url: str | None = None,
-        reflect_llm_provider: str | None = None,
-        reflect_llm_api_key: str | None = None,
-        reflect_llm_model: str | None = None,
-        reflect_llm_base_url: str | None = None,
-        embeddings: Embeddings | None = None,
-        cross_encoder: CrossEncoderModel | None = None,
-        query_analyzer: QueryAnalyzer | None = None,
-        pool_min_size: int | None = None,
-        pool_max_size: int | None = None,
-        db_command_timeout: int | None = None,
-        db_acquire_timeout: int | None = None,
-        task_backend: TaskBackend | None = None,
-        task_batch_size: int | None = None,
-        task_batch_interval: float | None = None,
-        run_migrations: bool = True,
-        operation_validator: "OperationValidatorExtension | None" = None,
-        tenant_extension: "TenantExtension | None" = None,
-        skip_llm_verification: bool | None = None,
-        lazy_reranker: bool | None = None,
-        session_manager: "SessionManager | None" = None,
+        db_url=None,
+        memory_llm_provider=None,
+        memory_llm_api_key=None,
+        memory_llm_model=None,
+        memory_llm_base_url=None,
+        retain_llm_provider=None,
+        retain_llm_api_key=None,
+        retain_llm_model=None,
+        retain_llm_base_url=None,
+        reflect_llm_provider=None,
+        reflect_llm_api_key=None,
+        reflect_llm_model=None,
+        reflect_llm_base_url=None,
+        embeddings=None,
+        cross_encoder=None,
+        query_analyzer=None,
+        pool_min_size=None,
+        pool_max_size=None,
+        db_command_timeout=None,
+        db_acquire_timeout=None,
+        task_backend=None,
+        task_batch_size=None,
+        task_batch_interval=None,
+        run_migrations=True,
+        operation_validator=None,
+        tenant_extension=None,
+        skip_llm_verification=None,
+        lazy_reranker=None,
+        session_manager=None,
     ):
-        """
-        Initialize the temporal + semantic memory system.
+        from .admin_operations import AdminOperations
+        from .engine_context import EngineContext
+        from .entity_operations import EntityOperations
+        from .recall_orchestrator import RecallOrchestrator
+        from .reflect_orchestrator import ReflectOrchestrator
+        from .retain_orchestrator import RetainOrchestrator
 
-        All parameters are optional and will be read from environment variables if not provided.
-        See hindsight_api.config for environment variable names and defaults.
-
-        Args:
-            db_url: PostgreSQL connection URL. Defaults to HINDSIGHT_API_DATABASE_URL env var or "pg0".
-                    Also supports pg0 URLs: "pg0" or "pg0://instance-name" or "pg0://instance-name:port"
-            memory_llm_provider: LLM provider. Defaults to HINDSIGHT_API_LLM_PROVIDER env var or "groq".
-            memory_llm_api_key: API key for the LLM provider. Defaults to HINDSIGHT_API_LLM_API_KEY env var.
-            memory_llm_model: Model name. Defaults to HINDSIGHT_API_LLM_MODEL env var.
-            memory_llm_base_url: Base URL for the LLM API. Defaults based on provider.
-            retain_llm_provider: LLM provider for retain operations. Falls back to memory_llm_provider.
-            retain_llm_api_key: API key for retain LLM. Falls back to memory_llm_api_key.
-            retain_llm_model: Model for retain operations. Falls back to memory_llm_model.
-            retain_llm_base_url: Base URL for retain LLM. Falls back to memory_llm_base_url.
-            reflect_llm_provider: LLM provider for reflect operations. Falls back to memory_llm_provider.
-            reflect_llm_api_key: API key for reflect LLM. Falls back to memory_llm_api_key.
-            reflect_llm_model: Model for reflect operations. Falls back to memory_llm_model.
-            reflect_llm_base_url: Base URL for reflect LLM. Falls back to memory_llm_base_url.
-            embeddings: Embeddings implementation. If not provided, created from env vars.
-            cross_encoder: Cross-encoder model. If not provided, created from env vars.
-            query_analyzer: Query analyzer implementation. If not provided, uses DateparserQueryAnalyzer.
-            pool_min_size: Minimum number of connections in the pool. Defaults to HINDSIGHT_API_DB_POOL_MIN_SIZE.
-            pool_max_size: Maximum number of connections in the pool. Defaults to HINDSIGHT_API_DB_POOL_MAX_SIZE.
-            db_command_timeout: PostgreSQL command timeout in seconds. Defaults to HINDSIGHT_API_DB_COMMAND_TIMEOUT.
-            db_acquire_timeout: Connection acquisition timeout in seconds. Defaults to HINDSIGHT_API_DB_ACQUIRE_TIMEOUT.
-            task_backend: Custom task backend. If not provided, uses AsyncIOQueueBackend.
-            task_batch_size: Background task batch size. Defaults to HINDSIGHT_API_TASK_BACKEND_MEMORY_BATCH_SIZE.
-            task_batch_interval: Background task batch interval in seconds. Defaults to HINDSIGHT_API_TASK_BACKEND_MEMORY_BATCH_INTERVAL.
-            run_migrations: Whether to run database migrations during initialize(). Default: True
-            operation_validator: Optional extension to validate operations before execution.
-                                If provided, retain/recall/reflect operations will be validated.
-            tenant_extension: Optional extension for multi-tenancy and API key authentication.
-                             If provided, operations require a RequestContext for authentication.
-            skip_llm_verification: Skip LLM connection verification during initialization.
-                                  Defaults to HINDSIGHT_API_SKIP_LLM_VERIFICATION env var or False.
-            lazy_reranker: Delay reranker initialization until first use. Useful for retain-only
-                          operations that don't need the cross-encoder. Defaults to
-                          HINDSIGHT_API_LAZY_RERANKER env var or False.
-        """
-        # Load config from environment for any missing parameters
-        from ..config import get_config
-
-        config = get_config()
-
-        # Apply optimization flags from config if not explicitly provided
-        self._skip_llm_verification = (
-            skip_llm_verification if skip_llm_verification is not None else config.skip_llm_verification
+        self._ctx = EngineContext(
+            db_url=db_url,
+            memory_llm_provider=memory_llm_provider,
+            memory_llm_api_key=memory_llm_api_key,
+            memory_llm_model=memory_llm_model,
+            memory_llm_base_url=memory_llm_base_url,
+            retain_llm_provider=retain_llm_provider,
+            retain_llm_api_key=retain_llm_api_key,
+            retain_llm_model=retain_llm_model,
+            retain_llm_base_url=retain_llm_base_url,
+            reflect_llm_provider=reflect_llm_provider,
+            reflect_llm_api_key=reflect_llm_api_key,
+            reflect_llm_model=reflect_llm_model,
+            reflect_llm_base_url=reflect_llm_base_url,
+            embeddings=embeddings,
+            cross_encoder=cross_encoder,
+            query_analyzer=query_analyzer,
+            pool_min_size=pool_min_size,
+            pool_max_size=pool_max_size,
+            db_command_timeout=db_command_timeout,
+            db_acquire_timeout=db_acquire_timeout,
+            task_backend=task_backend,
+            task_batch_size=task_batch_size,
+            task_batch_interval=task_batch_interval,
+            run_migrations=run_migrations,
+            operation_validator=operation_validator,
+            tenant_extension=tenant_extension,
+            skip_llm_verification=skip_llm_verification,
+            lazy_reranker=lazy_reranker,
+            session_manager=session_manager,
         )
-        self._lazy_reranker = lazy_reranker if lazy_reranker is not None else config.lazy_reranker
 
-        # Apply defaults from config
-        db_url = db_url or config.database_url
-        memory_llm_provider = memory_llm_provider or config.llm_provider
-        memory_llm_api_key = memory_llm_api_key or config.llm_api_key
-        # Ollama and mock don't require an API key
-        if not memory_llm_api_key and memory_llm_provider not in ("ollama", "mock"):
-            raise ValueError("LLM API key is required. Set HINDSIGHT_API_LLM_API_KEY environment variable.")
-        memory_llm_model = memory_llm_model or config.llm_model
-        memory_llm_base_url = memory_llm_base_url or config.get_llm_base_url() or None
-        # Track pg0 instance (if used)
-        self._pg0: EmbeddedPostgres | None = None
+        self._retain = RetainOrchestrator(self._ctx)
+        self._recall = RecallOrchestrator(self._ctx)
+        self._reflect = ReflectOrchestrator(self._ctx, recall=self._recall, retain=self._retain)
+        self._admin = AdminOperations(self._ctx)
+        self._entity = EntityOperations(self._ctx)
 
-        # Initialize PostgreSQL connection URL
-        # The actual URL will be set during initialize() after starting the server
-        # Supports: "pg0" (default instance), "pg0://instance-name" (named instance), or regular postgresql:// URL
-        self._use_pg0, self._pg0_instance_name, self._pg0_port = parse_pg0_url(db_url)
-        if self._use_pg0:
-            self.db_url = None
-        else:
-            self.db_url = db_url
-
-        # Set default base URL if not provided
-        if memory_llm_base_url is None:
-            if memory_llm_provider.lower() == "groq":
-                memory_llm_base_url = "https://api.groq.com/openai/v1"
-            elif memory_llm_provider.lower() == "ollama":
-                memory_llm_base_url = "http://localhost:11434/v1"
-            else:
-                memory_llm_base_url = ""
-
-        # Connection pool (will be created in initialize())
-        self._pool = None
         self._initialized = False
-        self._pool_min_size = pool_min_size if pool_min_size is not None else config.db_pool_min_size
-        self._pool_max_size = pool_max_size if pool_max_size is not None else config.db_pool_max_size
-        self._db_command_timeout = db_command_timeout if db_command_timeout is not None else config.db_command_timeout
-        self._db_acquire_timeout = db_acquire_timeout if db_acquire_timeout is not None else config.db_acquire_timeout
-        self._run_migrations = run_migrations
 
-        # Initialize entity resolver (will be created in initialize())
-        self.entity_resolver = None
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
 
-        # Engram Storage Service — set by the lifespan after pool + clients are ready (Epic 01)
-        self.engram_storage = None
+    async def initialize(self):
+        await self._ctx.initialize(executor=self.execute_task)
+        self._initialized = True
 
-        # ThalamusFilter — lazy-init in retain_batch_async once engram_storage is available (Epic 04)
-        self._thalamus = None
+    async def close(self):
+        await self._ctx.close()
+        self._initialized = False
 
-        # SessionManager — manages transient sessions and Dual Control (Epic 06)
-        # Lazy-imported to avoid circular imports; injected or created on first use.
-        self._session_manager: "SessionManager | None" = session_manager if session_manager is not None else None
-        self._session_manager_lazy_init = session_manager is None  # True = create on first use
-        self._session_manager_lock = threading.Lock()  # Guards lazy init against concurrent access
+    async def health_check(self) -> dict:
+        if not self._initialized:
+            return {"status": "unhealthy", "reason": "not_initialized"}
+        try:
+            pool = await self._ctx.get_pool()
+            async with pool.acquire() as conn:
+                result = await conn.fetchval("SELECT 1")
+                if result == 1:
+                    return {"status": "healthy", "database": "connected"}
+                return {"status": "unhealthy", "database": "unexpected response"}
+        except Exception as e:
+            return {"status": "unhealthy", "database": "error", "error": str(e)}
 
-        # Initialize embeddings (from env vars if not provided)
-        if embeddings is not None:
-            self.embeddings = embeddings
-        else:
-            self.embeddings = create_embeddings_from_env()
+    async def wait_for_background_tasks(self):
+        if hasattr(self._ctx._task_backend, "wait_for_pending_tasks"):
+            await self._ctx._task_backend.wait_for_pending_tasks()
 
-        # Initialize query analyzer
-        if query_analyzer is not None:
-            self.query_analyzer = query_analyzer
-        else:
-            from .query_analyzer import DateparserQueryAnalyzer
+    # ------------------------------------------------------------------
+    # Backward-compat property proxies (accessed by lifespan / external code)
+    # ------------------------------------------------------------------
 
-            self.query_analyzer = DateparserQueryAnalyzer()
+    @property
+    def embeddings(self):
+        return self._ctx.embeddings
 
-        # Initialize LLM configuration (default, used as fallback)
-        self._llm_config = LLMConfig(
-            provider=memory_llm_provider,
-            api_key=memory_llm_api_key,
-            base_url=memory_llm_base_url,
-            model=memory_llm_model,
-        )
+    @embeddings.setter
+    def embeddings(self, value):
+        self._ctx.embeddings = value
 
-        # Store client and model for convenience (deprecated: use _llm_config.call() instead)
-        self._llm_client = self._llm_config._client
-        self._llm_model = self._llm_config.model
+    @property
+    def entity_resolver(self):
+        return self._ctx.entity_resolver
 
-        # Initialize per-operation LLM configs (fall back to default if not specified)
-        # Retain LLM config - for fact extraction (benefits from strong structured output)
-        retain_provider = retain_llm_provider or config.retain_llm_provider or memory_llm_provider
-        retain_api_key = retain_llm_api_key or config.retain_llm_api_key or memory_llm_api_key
-        retain_model = retain_llm_model or config.retain_llm_model or memory_llm_model
-        retain_base_url = retain_llm_base_url or config.retain_llm_base_url or memory_llm_base_url
-        # Apply provider-specific base URL defaults for retain
-        if retain_base_url is None:
-            if retain_provider.lower() == "groq":
-                retain_base_url = "https://api.groq.com/openai/v1"
-            elif retain_provider.lower() == "ollama":
-                retain_base_url = "http://localhost:11434/v1"
-            else:
-                retain_base_url = ""
+    @entity_resolver.setter
+    def entity_resolver(self, value):
+        self._ctx.entity_resolver = value
 
-        self._retain_llm_config = LLMConfig(
-            provider=retain_provider,
-            api_key=retain_api_key,
-            base_url=retain_base_url,
-            model=retain_model,
-        )
+    @property
+    def engram_storage(self):
+        return self._retain.engram_storage
 
-        # Reflect LLM config - for think/observe operations (can use lighter models)
-        reflect_provider = reflect_llm_provider or config.reflect_llm_provider or memory_llm_provider
-        reflect_api_key = reflect_llm_api_key or config.reflect_llm_api_key or memory_llm_api_key
-        reflect_model = reflect_llm_model or config.reflect_llm_model or memory_llm_model
-        reflect_base_url = reflect_llm_base_url or config.reflect_llm_base_url or memory_llm_base_url
-        # Apply provider-specific base URL defaults for reflect
-        if reflect_base_url is None:
-            if reflect_provider.lower() == "groq":
-                reflect_base_url = "https://api.groq.com/openai/v1"
-            elif reflect_provider.lower() == "ollama":
-                reflect_base_url = "http://localhost:11434/v1"
-            else:
-                reflect_base_url = ""
+    @engram_storage.setter
+    def engram_storage(self, value):
+        self._retain.engram_storage = value
 
-        self._reflect_llm_config = LLMConfig(
-            provider=reflect_provider,
-            api_key=reflect_api_key,
-            base_url=reflect_base_url,
-            model=reflect_model,
-        )
+    @property
+    def _thalamus(self):
+        return self._retain._thalamus
 
-        # Per-subtask LLM registry — resolves correct model per subtask with 3-level fallback:
-        # subtask env var → operation config → global config
-        from .llm_routing import LLMRegistry
+    @_thalamus.setter
+    def _thalamus(self, value):
+        self._retain._thalamus = value
 
-        self._llm_registry = LLMRegistry(
-            global_config=self._llm_config,
-            operation_configs={"retain": self._retain_llm_config, "reflect": self._reflect_llm_config},
-        )
+    @property
+    def db_url(self):
+        return self._ctx.db_url
 
-        # Initialize cross-encoder reranker (cached for performance)
-        self._cross_encoder_reranker = CrossEncoderReranker(cross_encoder=cross_encoder)
+    @db_url.setter
+    def db_url(self, value):
+        self._ctx.db_url = value
 
-        # Initialize task backend
-        if task_backend:
-            self._task_backend = task_backend
-        elif config.task_backend == "noop":
-            self._task_backend = NoopTaskBackend()
-        else:
-            # Default to memory (AsyncIOQueueBackend)
-            _task_batch_size = task_batch_size if task_batch_size is not None else config.task_backend_memory_batch_size
-            _task_batch_interval = (
-                task_batch_interval if task_batch_interval is not None else config.task_backend_memory_batch_interval
-            )
-            self._task_backend = AsyncIOQueueBackend(batch_size=_task_batch_size, batch_interval=_task_batch_interval)
+    @property
+    def _pg0(self):
+        return self._ctx._pg0
 
-        # Backpressure mechanism: limit concurrent searches to prevent overwhelming the database
-        # Limit concurrent searches to prevent connection pool exhaustion
-        # Each search can use 2-4 connections, so with 10 concurrent searches
-        # we use ~20-40 connections max, staying well within pool limits
-        self._search_semaphore = asyncio.Semaphore(10)
+    @_pg0.setter
+    def _pg0(self, value):
+        self._ctx._pg0 = value
 
-        # Backpressure for put operations: limit concurrent puts to prevent database contention
-        # Each put_batch holds a connection for the entire transaction, so we limit to 5
-        # concurrent puts to avoid connection pool exhaustion and reduce write contention
-        self._put_semaphore = asyncio.Semaphore(5)
+    @property
+    def _llm_registry(self):
+        return self._ctx.llm_registry
 
-        # initialize encoding eagerly to avoid delaying the first time
-        _get_tiktoken_encoding()
+    @property
+    def _llm_config(self):
+        return self._ctx._llm_config
 
-        # Store operation validator extension (optional)
-        self._operation_validator = operation_validator
+    @property
+    def _retain_llm_config(self):
+        return self._ctx._retain_llm_config
 
-        # Store tenant extension (optional)
-        self._tenant_extension = tenant_extension
+    @property
+    def _reflect_llm_config(self):
+        return self._ctx._reflect_llm_config
 
-    async def _validate_operation(self, validation_coro) -> None:
-        """
-        Run validation if an operation validator is configured.
+    @property
+    def query_analyzer(self):
+        return self._ctx.query_analyzer
 
-        Args:
-            validation_coro: Coroutine that returns a ValidationResult
+    @property
+    def _task_backend(self):
+        return self._ctx._task_backend
 
-        Raises:
-            OperationValidationError: If validation fails
-        """
-        if self._operation_validator is None:
-            return
+    @property
+    def _operation_validator(self):
+        return self._ctx._operation_validator
 
-        from hindsight_api.extensions import OperationValidationError
+    @property
+    def _tenant_extension(self):
+        return self._ctx._tenant_extension
 
-        result = await validation_coro
-        if not result.allowed:
-            raise OperationValidationError(result.reason or "Operation not allowed", result.status_code)
+    @property
+    def _cross_encoder_reranker(self):
+        return self._ctx._cross_encoder_reranker
 
-    def _get_session_manager(self) -> "SessionManager":
-        """Return the SessionManager, creating a default instance on first use (thread-safe)."""
-        if self._session_manager is None:
-            with self._session_manager_lock:
-                if self._session_manager is None:
-                    from .session.session_manager import SessionManager
+    @property
+    def _pool(self):
+        return self._ctx._pool
 
-                    self._session_manager = SessionManager()
-        return self._session_manager
-
-    def _resolve_session_config(self, session: "Session | None"):
-        """
-        Resolve ModeConfig for the given session.
-
-        If session is provided, derives ModeConfig from its RetrievalMode.
-        If session is None, returns the default Precision profile.
-
-        Returns:
-            ModeConfig — immutable profile controlling all mode-dependent parameters.
-        """
-        from .response_models import RetrievalMode
-        from .session.mode_config import get_mode_config
-
-        mode = session.mode if session is not None else RetrievalMode.PRECISION
-        return get_mode_config(mode)
-
-    async def _authenticate_tenant(self, request_context: "RequestContext | None") -> str:
-        """
-        Authenticate tenant and set schema in context variable.
-
-        The schema is stored in a contextvar for async-safe, per-task isolation.
-        Use fq_table(table_name) to get fully-qualified table names.
-
-        Args:
-            request_context: The request context with API key. Required if tenant_extension is configured.
-
-        Returns:
-            Schema name that was set in the context.
-
-        Raises:
-            AuthenticationError: If authentication fails or request_context is missing when required.
-        """
-        if self._tenant_extension is None:
-            _current_schema.set("public")
-            return "public"
-
-        from hindsight_api.extensions import AuthenticationError
-
-        if request_context is None:
-            raise AuthenticationError("RequestContext is required when tenant extension is configured")
-
-        # Let AuthenticationError propagate - HTTP layer will convert to 401
-        tenant_context = await self._tenant_extension.authenticate(request_context)
-
-        _current_schema.set(tenant_context.schema_name)
-        return tenant_context.schema_name
-
-    async def _handle_access_count_update(self, task_dict: dict[str, Any]):
-        """
-        Handler for access count update tasks.
-
-        Args:
-            task_dict: Dict with 'node_ids' key containing list of node IDs to update
-
-        Raises:
-            Exception: Any exception from database operations (propagates to execute_task for retry)
-        """
-        node_ids = task_dict.get("node_ids", [])
-        if not node_ids:
-            return
-
-        pool = await self._get_pool()
-        # Convert string UUIDs to UUID type for faster matching
-        uuid_list = [uuid.UUID(nid) for nid in node_ids]
-        async with acquire_with_retry(pool) as conn:
-            await conn.execute(
-                f"UPDATE {fq_table('memory_units')} SET access_count = access_count + 1 WHERE id = ANY($1::uuid[])",
-                uuid_list,
-            )
-
-    async def _handle_batch_retain(self, task_dict: dict[str, Any]):
-        """
-        Handler for batch retain tasks.
-
-        Args:
-            task_dict: Dict with 'bank_id', 'contents'
-
-        Raises:
-            ValueError: If bank_id is missing
-            Exception: Any exception from retain_batch_async (propagates to execute_task for retry)
-        """
-        bank_id = task_dict.get("bank_id")
-        if not bank_id:
-            raise ValueError("bank_id is required for batch retain task")
-        contents = task_dict.get("contents", [])
-
-        logger.info(
-            f"[BATCH_RETAIN_TASK] Starting background batch retain for bank_id={bank_id}, {len(contents)} items"
-        )
-
-        # Use internal request context for background tasks
-        from hindsight_api.models import RequestContext
-
-        internal_context = RequestContext()
-        await self.retain_batch_async(bank_id=bank_id, contents=contents, request_context=internal_context)
-
-        logger.info(f"[BATCH_RETAIN_TASK] Completed background batch retain for bank_id={bank_id}")
+    # ------------------------------------------------------------------
+    # execute_task — dispatch stays in facade
+    # ------------------------------------------------------------------
 
     async def execute_task(self, task_dict: dict[str, Any]):
-        """
-        Execute a task by routing it to the appropriate handler.
-
-        This method is called by the task backend to execute tasks.
-        It receives a plain dict that can be serialized and sent over the network.
-
-        Args:
-            task_dict: Task dictionary with 'type' key and other payload data
-                      Example: {'type': 'access_count_update', 'node_ids': [...]}
-        """
         task_type = task_dict.get("type")
         operation_id = task_dict.get("operation_id")
         retry_count = task_dict.get("retry_count", 0)
         max_retries = 3
 
-        # Check if operation was cancelled (only for tasks with operation_id)
         if operation_id:
             try:
-                pool = await self._get_pool()
+                pool = await self._ctx.get_pool()
                 async with acquire_with_retry(pool) as conn:
                     result = await conn.fetchrow(
                         f"SELECT operation_id FROM {fq_table('async_operations')} WHERE operation_id = $1",
                         uuid.UUID(operation_id),
                     )
                     if not result:
-                        # Operation was cancelled, skip processing
                         logger.info(f"Skipping cancelled operation: {operation_id}")
                         return
             except Exception as e:
                 logger.error(f"Failed to check operation status {operation_id}: {e}")
-                # Continue with processing if we can't check status
 
         try:
             if task_type == "access_count_update":
-                await self._handle_access_count_update(task_dict)
+                await self._retain._handle_access_count_update(task_dict)
             elif task_type == "reinforce_opinion":
-                await self._handle_reinforce_opinion(task_dict)
+                await self._reflect._handle_reinforce_opinion(task_dict)
             elif task_type == "form_opinion":
-                await self._handle_form_opinion(task_dict)
+                await self._reflect._handle_form_opinion(task_dict)
             elif task_type == "reconsolidate_engrams":
-                await self._handle_reconsolidate_engrams(task_dict)
+                await self._reflect._handle_reconsolidate_engrams(task_dict)
             elif task_type == "batch_retain":
-                await self._handle_batch_retain(task_dict)
+                await self._retain._handle_batch_retain(task_dict)
             elif task_type == "regenerate_observations":
-                await self._handle_regenerate_observations(task_dict)
+                await self._entity._handle_regenerate_observations(task_dict)
             else:
                 logger.error(f"Unknown task type: {task_type}")
-                # Don't retry unknown task types
                 if operation_id:
-                    await self._delete_operation_record(operation_id)
+                    await self._ctx.delete_operation_record(operation_id)
                 return
 
-            # Task succeeded - delete operation record
             if operation_id:
-                await self._delete_operation_record(operation_id)
+                await self._ctx.delete_operation_record(operation_id)
 
         except Exception as e:
-            # Task failed - check if we should retry
             logger.error(
                 f"Task execution failed (attempt {retry_count + 1}/{max_retries + 1}): {task_type}, error: {e}"
             )
@@ -540,4367 +345,379 @@ class MemoryEngine(MemoryEngineInterface):
             traceback.print_exc()
 
             if retry_count < max_retries:
-                # Reschedule with incremented retry count
                 task_dict["retry_count"] = retry_count + 1
                 logger.info(f"Rescheduling task {task_type} (retry {retry_count + 1}/{max_retries})")
-                await self._task_backend.submit_task(task_dict)
+                await self._ctx._task_backend.submit_task(task_dict)
             else:
-                # Max retries exceeded - mark operation as failed
                 logger.error(f"Max retries exceeded for task {task_type}, marking as failed")
                 if operation_id:
-                    await self._mark_operation_failed(operation_id, str(e), error_traceback)
+                    await self._ctx.mark_operation_failed(operation_id, str(e), error_traceback)
 
-    async def _delete_operation_record(self, operation_id: str):
-        """Helper to delete an operation record from the database."""
-        try:
-            pool = await self._get_pool()
-            async with acquire_with_retry(pool) as conn:
-                await conn.execute(
-                    f"DELETE FROM {fq_table('async_operations')} WHERE operation_id = $1", uuid.UUID(operation_id)
-                )
-        except Exception as e:
-            logger.error(f"Failed to delete async operation record {operation_id}: {e}")
+    # ------------------------------------------------------------------
+    # Private helpers (backward compat — used by tests/lifespan via self)
+    # ------------------------------------------------------------------
 
-    async def _mark_operation_failed(self, operation_id: str, error_message: str, error_traceback: str):
-        """Helper to mark an operation as failed in the database."""
-        try:
-            pool = await self._get_pool()
-            # Truncate error message to avoid extremely long strings
-            full_error = f"{error_message}\n\nTraceback:\n{error_traceback}"
-            truncated_error = full_error[:5000] if len(full_error) > 5000 else full_error
+    async def _authenticate_tenant(self, request_context):
+        return await self._ctx.authenticate_tenant(request_context)
 
-            async with acquire_with_retry(pool) as conn:
-                await conn.execute(
-                    f"""
-                    UPDATE {fq_table("async_operations")}
-                    SET status = 'failed', error_message = $2
-                    WHERE operation_id = $1
-                    """,
-                    uuid.UUID(operation_id),
-                    truncated_error,
-                )
-            logger.info(f"Marked async operation as failed: {operation_id}")
-        except Exception as e:
-            logger.error(f"Failed to mark operation as failed {operation_id}: {e}")
+    async def _validate_operation(self, validation_coro):
+        return await self._ctx.validate_operation(validation_coro)
 
-    async def initialize(self):
-        """Initialize the connection pool, models, and background workers.
+    def _get_session_manager(self):
+        return self._ctx.get_session_manager()
 
-        Loads models (embeddings, cross-encoder) in parallel with pg0 startup
-        for faster overall initialization.
-        """
-        if self._initialized:
-            return
+    def _resolve_session_config(self, session):
+        return self._ctx.resolve_session_config(session)
 
-        # Run model loading in thread pool (CPU-bound) in parallel with pg0 startup
-        loop = asyncio.get_event_loop()
+    async def _get_pool(self):
+        return await self._ctx.get_pool()
 
-        async def start_pg0():
-            """Start pg0 if configured."""
-            if self._use_pg0:
-                kwargs = {"name": self._pg0_instance_name}
-                if self._pg0_port is not None:
-                    kwargs["port"] = self._pg0_port
-                pg0 = EmbeddedPostgres(**kwargs)  # type: ignore[invalid-argument-type] - dict kwargs
-                # Check if pg0 is already running before we start it
-                was_already_running = await pg0.is_running()
-                self.db_url = await pg0.ensure_running()
-                # Only track pg0 (to stop later) if WE started it
-                if not was_already_running:
-                    self._pg0 = pg0
+    async def _delete_operation_record(self, operation_id):
+        return await self._ctx.delete_operation_record(operation_id)
 
-        async def init_embeddings():
-            """Initialize embedding model."""
-            # For local providers, run in thread pool to avoid blocking event loop
-            if self.embeddings.provider_name == "local":
-                await loop.run_in_executor(None, lambda: asyncio.run(self.embeddings.initialize()))
-            else:
-                await self.embeddings.initialize()
-
-        async def init_cross_encoder():
-            """Initialize cross-encoder model."""
-            cross_encoder = self._cross_encoder_reranker.cross_encoder
-            # For local providers, run in thread pool to avoid blocking event loop
-            if cross_encoder.provider_name == "local":
-                await loop.run_in_executor(None, lambda: asyncio.run(cross_encoder.initialize()))
-            else:
-                await cross_encoder.initialize()
-            # Mark reranker as initialized
-            self._cross_encoder_reranker._initialized = True
-
-        async def init_query_analyzer():
-            """Initialize query analyzer model."""
-            # Query analyzer load is sync and CPU-bound
-            await loop.run_in_executor(None, self.query_analyzer.load)
-
-        async def verify_llm():
-            """Verify LLM connections are working for all unique configs."""
-            if not self._skip_llm_verification:
-                # Verify default config
-                await self._llm_config.verify_connection()
-                # Verify retain config if different from default
-                retain_is_different = (
-                    self._retain_llm_config.provider != self._llm_config.provider
-                    or self._retain_llm_config.model != self._llm_config.model
-                )
-                if retain_is_different:
-                    await self._retain_llm_config.verify_connection()
-                # Verify reflect config if different from default and retain
-                reflect_is_different = (
-                    self._reflect_llm_config.provider != self._llm_config.provider
-                    or self._reflect_llm_config.model != self._llm_config.model
-                ) and (
-                    self._reflect_llm_config.provider != self._retain_llm_config.provider
-                    or self._reflect_llm_config.model != self._retain_llm_config.model
-                )
-                if reflect_is_different:
-                    await self._reflect_llm_config.verify_connection()
-
-        # Build list of initialization tasks
-        init_tasks = [
-            start_pg0(),
-            init_embeddings(),
-            init_query_analyzer(),
-        ]
-
-        # Only init cross-encoder eagerly if not using lazy initialization
-        if not self._lazy_reranker:
-            init_tasks.append(init_cross_encoder())
-
-        # Only verify LLM if not skipping
-        if not self._skip_llm_verification:
-            init_tasks.append(verify_llm())
-
-        # Run pg0 and selected model initializations in parallel
-        await asyncio.gather(*init_tasks)
-
-        # Run database migrations if enabled
-        if self._run_migrations:
-            from ..migrations import ensure_embedding_dimension, run_migrations
-
-            if not self.db_url:
-                raise ValueError("Database URL is required for migrations")
-            logger.info("Running database migrations...")
-            run_migrations(self.db_url)
-
-            # Ensure embedding column dimension matches the model's dimension
-            # This is done after migrations and after embeddings.initialize()
-            ensure_embedding_dimension(self.db_url, self.embeddings.dimension)
-
-        logger.info(f"Connecting to PostgreSQL at {self.db_url}")
-
-        # Create connection pool
-        # For read-heavy workloads with many parallel think/search operations,
-        # we need a larger pool. Read operations don't need strong isolation.
-        self._pool = await asyncpg.create_pool(
-            self.db_url,
-            min_size=self._pool_min_size,
-            max_size=self._pool_max_size,
-            command_timeout=self._db_command_timeout,
-            statement_cache_size=0,  # Disable prepared statement cache
-            timeout=self._db_acquire_timeout,  # Connection acquisition timeout (seconds)
-        )
-
-        # Initialize entity resolver with pool
-        self.entity_resolver = EntityResolver(self._pool)
-
-        # Set executor for task backend and initialize
-        self._task_backend.set_executor(self.execute_task)
-        await self._task_backend.initialize()
-
-        self._initialized = True
-        logger.info("Memory system initialized (pool and task backend started)")
-
-    async def _get_pool(self) -> asyncpg.Pool:
-        """Get the connection pool (must call initialize() first)."""
-        if not self._initialized:
-            await self.initialize()
-        return self._pool
-
-    async def _acquire_connection(self):
-        """
-        Acquire a connection from the pool with retry logic.
-
-        Returns an async context manager that yields a connection.
-        Retries on transient connection errors with exponential backoff.
-        """
-        pool = await self._get_pool()
-
-        async def acquire():
-            return await pool.acquire()
-
-        return await _retry_with_backoff(acquire)
-
-    async def health_check(self) -> dict:
-        """
-        Perform a health check by querying the database.
-
-        Returns:
-            dict with status and optional error message
-
-        Note:
-            Returns unhealthy until initialize() has completed successfully.
-        """
-        # Not healthy until fully initialized
-        if not self._initialized:
-            return {"status": "unhealthy", "reason": "not_initialized"}
-
-        try:
-            pool = await self._get_pool()
-            async with pool.acquire() as conn:
-                result = await conn.fetchval("SELECT 1")
-                if result == 1:
-                    return {"status": "healthy", "database": "connected"}
-                else:
-                    return {"status": "unhealthy", "database": "unexpected response"}
-        except Exception as e:
-            return {"status": "unhealthy", "database": "error", "error": str(e)}
-
-    async def close(self):
-        """Close the connection pool and shutdown background workers."""
-        logger.info("close() started")
-
-        # Shutdown task backend
-        await self._task_backend.shutdown()
-
-        # Close pool
-        if self._pool is not None:
-            self._pool.terminate()
-            self._pool = None
-
-        self._initialized = False
-
-        # Stop pg0 if we started it
-        if self._pg0 is not None:
-            logger.info("Stopping pg0...")
-            await self._pg0.stop()
-            self._pg0 = None
-            logger.info("pg0 stopped")
-
-    async def wait_for_background_tasks(self):
-        """
-        Wait for all pending background tasks to complete.
-
-        This is useful in tests to ensure background tasks (like opinion reinforcement)
-        complete before making assertions.
-        """
-        if hasattr(self._task_backend, "wait_for_pending_tasks"):
-            await self._task_backend.wait_for_pending_tasks()
-
-    def _format_readable_date(self, dt: datetime) -> str:
-        """
-        Format a datetime into a readable string for temporal matching.
-
-        Examples:
-            - June 2024
-            - January 15, 2024
-            - December 2023
-
-        This helps queries like "camping in June" match facts that happened in June.
-
-        Args:
-            dt: datetime object to format
-
-        Returns:
-            Readable date string
-        """
-        # Format as "Month Year" for most cases
-        # Could be extended to include day for very specific dates if needed
-        month_name = dt.strftime("%B")  # Full month name (e.g., "June")
-        year = dt.strftime("%Y")  # Year (e.g., "2024")
-
-        # For now, use "Month Year" format
-        # Could check if day is significant (not 1st or 15th) and include it
-        return f"{month_name} {year}"
+    async def _mark_operation_failed(self, operation_id, error_message, error_traceback):
+        return await self._ctx.mark_operation_failed(operation_id, error_message, error_traceback)
 
     async def _find_duplicate_facts_batch(
-        self,
-        conn,
-        bank_id: str,
-        texts: list[str],
-        embeddings: list[list[float]],
-        event_date: datetime,
-        time_window_hours: int = 24,
-        similarity_threshold: float = 0.95,
-    ) -> list[DuplicateResult]:
-        """
-        Check which facts are duplicates using semantic similarity + temporal window.
-
-        For each new fact, checks if a semantically similar fact already exists
-        within the time window. Also fetches thalamus_overall and strength from
-        engram_dictionary so score-aware resolution can compare both sides.
-
-        Args:
-            conn: Database connection
-            bank_id: bank IDentifier
-            texts: List of fact texts to check
-            embeddings: Corresponding embeddings
-            event_date: Event date for temporal filtering
-            time_window_hours: Hours before/after event_date to search (default: 24)
-            similarity_threshold: Minimum cosine similarity to consider duplicate (default: 0.95)
-
-        Returns:
-            List of DuplicateResult objects (same length as texts)
-        """
-        if not texts:
-            return []
-
-        # Handle edge cases where event_date is at datetime boundaries
-        try:
-            time_lower = event_date - timedelta(hours=time_window_hours)
-        except OverflowError:
-            time_lower = datetime.min
-        try:
-            time_upper = event_date + timedelta(hours=time_window_hours)
-        except OverflowError:
-            time_upper = datetime.max
-
-        # Fetch ALL existing facts in time window ONCE, with engram_dictionary scores
-        import time as time_mod
-
-        existing_facts = await conn.fetch(
-            f"""
-            SELECT mu.id, mu.text, mu.embedding,
-                   ed.thalamus_overall, ed.strength
-            FROM {fq_table("memory_units")} mu
-            LEFT JOIN {fq_table("engram_dictionary")} ed ON ed.engram_id = mu.id
-            WHERE mu.bank_id = $1
-              AND mu.event_date BETWEEN $2 AND $3
-            """,
-            bank_id,
-            time_lower,
-            time_upper,
+        self, conn, bank_id, texts, embeddings, event_date, time_window_hours=24, similarity_threshold=0.95
+    ):
+        return await self._retain._find_duplicate_facts_batch(
+            conn, bank_id, texts, embeddings, event_date, time_window_hours, similarity_threshold
         )
 
-        if not existing_facts:
-            return [DuplicateResult(is_duplicate=False)] * len(texts)
+    def _format_readable_date(self, dt):
+        return self._retain._format_readable_date(dt)
 
-        # Convert existing embeddings to numpy for vectorised similarity
-        embedding_arrays = []
-        for row in existing_facts:
-            raw_emb = row["embedding"]
-            if isinstance(raw_emb, str):
-                import json
+    # ------------------------------------------------------------------
+    # Retain
+    # ------------------------------------------------------------------
 
-                emb = np.array(json.loads(raw_emb), dtype=np.float32)
-            elif isinstance(raw_emb, (list, tuple)):
-                emb = np.array(raw_emb, dtype=np.float32)
-            else:
-                emb = np.array(raw_emb, dtype=np.float32)
-            embedding_arrays.append(emb)
-
-        if not embedding_arrays:
-            existing_embeddings = np.array([])
-        elif len(embedding_arrays) == 1:
-            existing_embeddings = embedding_arrays[0].reshape(1, -1)
-        else:
-            existing_embeddings = np.vstack(embedding_arrays)
-
-        results: list[DuplicateResult] = []
-        for embedding in embeddings:
-            emb_array = np.array(embedding)
-            similarities = np.dot(existing_embeddings, emb_array)
-            max_sim = float(np.max(similarities)) if len(similarities) > 0 else 0.0
-
-            if max_sim > similarity_threshold:
-                best_idx = int(np.argmax(similarities))
-                row = existing_facts[best_idx]
-                results.append(
-                    DuplicateResult(
-                        is_duplicate=True,
-                        existing_unit_id=str(row["id"]),
-                        existing_score=row["thalamus_overall"],
-                        existing_strength=row["strength"],
-                        similarity=max_sim,
-                    )
-                )
-            else:
-                results.append(DuplicateResult(is_duplicate=False, similarity=max_sim))
-
-        return results
-
-    def retain(
-        self,
-        bank_id: str,
-        content: str,
-        context: str = "",
-        event_date: datetime | None = None,
-        request_context: "RequestContext | None" = None,
-    ) -> list[str]:
-        """
-        Store content as memory units (synchronous wrapper).
-
-        This is a synchronous wrapper around retain_async() for convenience.
-        For best performance, use retain_async() directly.
-
-        Args:
-            bank_id: Unique identifier for the bank
-            content: Text content to store
-            context: Context about when/why this memory was formed
-            event_date: When the event occurred (defaults to now)
-            request_context: Request context for authentication (optional, uses internal context if not provided)
-
-        Returns:
-            List of created unit IDs
-        """
-        # Run async version synchronously
-        from hindsight_api.models import RequestContext as RC
-
-        ctx = request_context if request_context is not None else RC()
-        return asyncio.run(self.retain_async(bank_id, content, context, event_date, request_context=ctx))
+    def retain(self, bank_id, content, context="", event_date=None, request_context=None):
+        return self._retain.retain(bank_id, content, context, event_date, request_context)
 
     async def retain_async(
         self,
-        bank_id: str,
-        content: str,
-        context: str = "",
-        event_date: datetime | None = None,
-        document_id: str | None = None,
-        fact_type_override: str | None = None,
-        confidence_score: float | None = None,
+        bank_id,
+        content,
+        context="",
+        event_date=None,
+        document_id=None,
+        fact_type_override=None,
+        confidence_score=None,
         *,
-        request_context: "RequestContext",
-    ) -> list[str]:
-        """
-        Store content as memory units with temporal and semantic links (ASYNC version).
-
-        This is a convenience wrapper around retain_batch_async for a single content item.
-
-        Args:
-            bank_id: Unique identifier for the bank
-            content: Text content to store
-            context: Context about when/why this memory was formed
-            event_date: When the event occurred (defaults to now)
-            document_id: Optional document ID for tracking (always upserts if document already exists)
-            fact_type_override: Override fact type ('world', 'experience', 'opinion')
-            confidence_score: Confidence score for opinions (0.0 to 1.0)
-            request_context: Request context for authentication.
-
-        Returns:
-            List of created unit IDs
-        """
-        # Build content dict
-        content_dict: RetainContentDict = {"content": content, "context": context}  # type: ignore[typeddict-item] - building incrementally
-        if event_date:
-            content_dict["event_date"] = event_date
-        if document_id:
-            content_dict["document_id"] = document_id
-
-        # Use retain_batch_async with a single item (avoids code duplication)
-        result = await self.retain_batch_async(
-            bank_id=bank_id,
-            contents=[content_dict],
+        request_context,
+    ):
+        return await self._retain.retain_async(
+            bank_id,
+            content,
+            context,
+            event_date,
+            document_id,
+            fact_type_override,
+            confidence_score,
             request_context=request_context,
-            fact_type_override=fact_type_override,
-            confidence_score=confidence_score,
         )
-
-        # Return the first (and only) list of unit IDs
-        return result[0] if result else []
 
     async def retain_batch_async(
         self,
-        bank_id: str,
-        contents: list[RetainContentDict],
+        bank_id,
+        contents,
         *,
-        session: "Session | None" = None,
-        request_context: "RequestContext",
-        document_id: str | None = None,
-        fact_type_override: str | None = None,
-        confidence_score: float | None = None,
-        return_usage: bool = False,
+        session=None,
+        request_context,
+        document_id=None,
+        fact_type_override=None,
+        confidence_score=None,
+        return_usage=False,
     ):
-        """
-        Store multiple content items as memory units in ONE batch operation.
-
-        This is MUCH more efficient than calling retain_async multiple times:
-        - Extracts facts from all contents in parallel
-        - Generates ALL embeddings in ONE batch
-        - Does ALL database operations in ONE transaction
-        - Automatically chunks large batches to prevent timeouts
-
-        Args:
-            bank_id: Unique identifier for the bank
-            contents: List of dicts with keys:
-                - "content" (required): Text content to store
-                - "context" (optional): Context about the memory
-                - "event_date" (optional): When the event occurred
-                - "document_id" (optional): Document ID for this specific content item
-            document_id: **DEPRECATED** - Use "document_id" key in each content dict instead.
-                        Applies the same document_id to ALL content items that don't specify their own.
-            fact_type_override: Override fact type for all facts ('world', 'experience', 'opinion')
-            confidence_score: Confidence score for opinions (0.0 to 1.0)
-            return_usage: If True, returns tuple of (unit_ids, TokenUsage). Default False for backward compatibility.
-
-        Returns:
-            If return_usage=False: List of lists of unit IDs (one list per content item)
-            If return_usage=True: Tuple of (unit_ids, TokenUsage)
-
-        Example (new style - per-content document_id):
-            unit_ids = await memory.retain_batch_async(
-                bank_id="user123",
-                contents=[
-                    {"content": "Alice works at Google", "document_id": "doc1"},
-                    {"content": "Bob loves Python", "document_id": "doc2"},
-                    {"content": "More about Alice", "document_id": "doc1"},
-                ]
-            )
-            # Returns: [["unit-id-1"], ["unit-id-2"], ["unit-id-3"]]
-
-        Example (deprecated style - batch-level document_id):
-            unit_ids = await memory.retain_batch_async(
-                bank_id="user123",
-                contents=[
-                    {"content": "Alice works at Google"},
-                    {"content": "Bob loves Python"},
-                ],
-                document_id="meeting-2024-01-15"
-            )
-            # Returns: [["unit-id-1"], ["unit-id-2"]]
-        """
-        start_time = time.time()
-
-        if not contents:
-            if return_usage:
-                return [], TokenUsage()
-            return []
-
-        # Authenticate tenant and set schema in context (for fq_table())
-        await self._authenticate_tenant(request_context)
-
-        # Validate operation if validator is configured
-        contents_copy = [dict(c) for c in contents]  # Convert TypedDict to regular dict for extension
-        if self._operation_validator:
-            from hindsight_api.extensions import RetainContext
-
-            ctx = RetainContext(
-                bank_id=bank_id,
-                contents=contents_copy,
-                request_context=request_context,
-                document_id=document_id,
-                fact_type_override=fact_type_override,
-                confidence_score=confidence_score,
-            )
-            await self._validate_operation(self._operation_validator.validate_retain(ctx))
-
-        # Apply batch-level document_id to contents that don't have their own (backwards compatibility)
-        if document_id:
-            for item in contents:
-                if "document_id" not in item:
-                    item["document_id"] = document_id
-
-        # --- Thalamus Filter Gate (Epic 04) ---
-        # Runs per-content BEFORE chunking and orchestration.
-        # Episodes below the mode-dependent threshold are dropped; those above are enriched
-        # with ThalamusScores and passed on. Gate scores serve as baseline for fact extraction.
-        original_count = len(contents)
-        passed_indices: list[int] | None = None  # None = no filtering applied
-
-        if self.engram_storage is not None:
-            if self._thalamus is None:
-                from .thalamus import ThalamusFilter
-
-                self._thalamus = ThalamusFilter(
-                    qdrant=self.engram_storage._qdrant,
-                    embeddings=self.embeddings,
-                    llm=self._llm_registry.get_llm("retain", "thalamus_scoring"),
-                )
-
-            from .response_models import Session as _Session
-
-            effective_session = session or _Session.default()
-            mode_config = self._resolve_session_config(effective_session)
-            logger.debug(
-                "Retain mode_config: mode=%s strength_pre_filter=%.2f reconsolidation=%s bank=%s",
-                effective_session.mode.value,
-                mode_config.strength_pre_filter,
-                mode_config.reconsolidation_level,
-                bank_id,
-            )
-            threshold = ThalamusFilter.threshold_for_mode(effective_session.mode)
-            passed_contents: list[RetainContentDict] = []
-            passed_indices = []
-            dropped = 0
-            total_score = 0.0
-
-            for i, item in enumerate(contents):
-                scores = await self._thalamus.score(item.get("content", ""), effective_session, bank_id=bank_id)
-                total_score += scores.overall
-                if scores.overall < threshold:
-                    dropped += 1
-                    logger.info(
-                        "Thalamus: dropped content (score=%.3f, threshold=%.3f, bank=%s)",
-                        scores.overall,
-                        threshold,
-                        bank_id,
-                    )
-                else:
-                    enriched = dict(item)
-                    enriched["thalamus_scores"] = scores
-                    passed_contents.append(enriched)
-                    passed_indices.append(i)
-
-            logger.info(
-                "Thalamus: passed=%d dropped=%d avg_score=%.3f bank=%s mode=%s",
-                len(passed_contents),
-                dropped,
-                total_score / original_count,
-                bank_id,
-                effective_session.mode,
-            )
-
-            if not passed_contents:
-                if return_usage:
-                    return [[] for _ in range(original_count)], TokenUsage()
-                return [[] for _ in range(original_count)]
-
-            contents = passed_contents
-
-        # Auto-chunk large batches by character count to avoid timeouts and memory issues
-        # Calculate total character count
-        total_chars = sum(len(item.get("content", "")) for item in contents)
-        total_usage = TokenUsage()
-
-        CHARS_PER_BATCH = 600_000
-
-        if total_chars > CHARS_PER_BATCH:
-            # Split into smaller batches based on character count
-            logger.info(
-                f"Large batch detected ({total_chars:,} chars from {len(contents)} items). Splitting into sub-batches of ~{CHARS_PER_BATCH:,} chars each..."
-            )
-
-            sub_batches = []
-            current_batch = []
-            current_batch_chars = 0
-
-            for item in contents:
-                item_chars = len(item.get("content", ""))
-
-                # If adding this item would exceed the limit, start a new batch
-                # (unless current batch is empty - then we must include it even if it's large)
-                if current_batch and current_batch_chars + item_chars > CHARS_PER_BATCH:
-                    sub_batches.append(current_batch)
-                    current_batch = [item]
-                    current_batch_chars = item_chars
-                else:
-                    current_batch.append(item)
-                    current_batch_chars += item_chars
-
-            # Add the last batch
-            if current_batch:
-                sub_batches.append(current_batch)
-
-            logger.info(f"Split into {len(sub_batches)} sub-batches: {[len(b) for b in sub_batches]} items each")
-
-            # Process each sub-batch using internal method (skip chunking check)
-            all_results = []
-            for i, sub_batch in enumerate(sub_batches, 1):
-                sub_batch_chars = sum(len(item.get("content", "")) for item in sub_batch)
-                logger.info(
-                    f"Processing sub-batch {i}/{len(sub_batches)}: {len(sub_batch)} items, {sub_batch_chars:,} chars"
-                )
-
-                sub_results, sub_usage = await self._retain_batch_async_internal(
-                    bank_id=bank_id,
-                    contents=sub_batch,
-                    document_id=document_id,
-                    is_first_batch=i == 1,  # Only upsert on first batch
-                    fact_type_override=fact_type_override,
-                    confidence_score=confidence_score,
-                    session=session,
-                )
-                all_results.extend(sub_results)
-                total_usage = total_usage + sub_usage
-
-            total_time = time.time() - start_time
-            logger.info(
-                f"RETAIN_BATCH_ASYNC (chunked) COMPLETE: {len(all_results)} results from {len(contents)} contents in {total_time:.3f}s"
-            )
-            result = all_results
-        else:
-            # Small batch - use internal method directly
-            result, total_usage = await self._retain_batch_async_internal(
-                bank_id=bank_id,
-                contents=contents,
-                document_id=document_id,
-                is_first_batch=True,
-                fact_type_override=fact_type_override,
-                confidence_score=confidence_score,
-                session=session,
-            )
-
-        # Reconstruct full result shape when thalamus filtering dropped some contents.
-        # Dropped positions get [] so the caller's index mapping stays intact.
-        if passed_indices is not None and len(passed_indices) < original_count:
-            full_result: list[list[str]] = [[] for _ in range(original_count)]
-            for filtered_idx, orig_idx in enumerate(passed_indices):
-                if filtered_idx < len(result):
-                    full_result[orig_idx] = result[filtered_idx]
-            result = full_result
-
-        # Call post-operation hook if validator is configured
-        if self._operation_validator:
-            from hindsight_api.extensions import RetainResult
-
-            result_ctx = RetainResult(
-                bank_id=bank_id,
-                contents=contents_copy,
-                request_context=request_context,
-                document_id=document_id,
-                fact_type_override=fact_type_override,
-                confidence_score=confidence_score,
-                unit_ids=result,
-                success=True,
-                error=None,
-            )
-            try:
-                await self._operation_validator.on_retain_complete(result_ctx)
-            except Exception as e:
-                logger.warning(f"Post-retain hook error (non-fatal): {e}")
-
-        if return_usage:
-            return result, total_usage
-        return result
+        return await self._retain.retain_batch_async(
+            bank_id,
+            contents,
+            session=session,
+            request_context=request_context,
+            document_id=document_id,
+            fact_type_override=fact_type_override,
+            confidence_score=confidence_score,
+            return_usage=return_usage,
+        )
 
     async def _retain_batch_async_internal(
         self,
-        bank_id: str,
-        contents: list[RetainContentDict],
-        document_id: str | None = None,
-        is_first_batch: bool = True,
-        fact_type_override: str | None = None,
-        confidence_score: float | None = None,
-        session: "Session | None" = None,
-    ) -> tuple[list[list[str]], "TokenUsage"]:
-        """
-        Internal method for batch processing without chunking logic.
-
-        Assumes contents are already appropriately sized (< 50k chars).
-        Called by retain_batch_async after chunking large batches.
-
-        Uses semaphore for backpressure to limit concurrent retains.
-
-        Args:
-            bank_id: Unique identifier for the bank
-            contents: List of dicts with content, context, event_date
-            document_id: Optional document ID (always upserts if exists)
-            is_first_batch: Whether this is the first batch (for chunked operations, only delete on first batch)
-            fact_type_override: Override fact type for all facts
-            confidence_score: Confidence score for opinions
-            session: Optional Session for embedding enrichment (task_context, mode)
-
-        Returns:
-            Tuple of (unit ID lists, token usage for fact extraction)
-        """
-        # Backpressure: limit concurrent retains to prevent database contention
-        async with self._put_semaphore:
-            # Use the new modular orchestrator
-            from .retain import orchestrator
-
-            pool = await self._get_pool()
-            return await orchestrator.retain_batch(
-                pool=pool,
-                embeddings_model=self.embeddings,
-                llm_registry=self._llm_registry,
-                entity_resolver=self.entity_resolver,
-                task_backend=self._task_backend,
-                format_date_fn=self._format_readable_date,
-                duplicate_checker_fn=self._find_duplicate_facts_batch,
-                bank_id=bank_id,
-                contents_dicts=contents,
-                document_id=document_id,
-                is_first_batch=is_first_batch,
-                fact_type_override=fact_type_override,
-                confidence_score=confidence_score,
-                session=session,
-            )
-
-    def recall(
-        self,
-        bank_id: str,
-        query: str,
-        fact_type: str,
-        budget: Budget = Budget.MID,
-        max_tokens: int = 4096,
-        enable_trace: bool = False,
-    ) -> tuple[list[dict[str, Any]], Any | None]:
-        """
-        Recall memories using 4-way parallel retrieval (synchronous wrapper).
-
-        This is a synchronous wrapper around recall_async() for convenience.
-        For best performance, use recall_async() directly.
-
-        Args:
-            bank_id: bank ID to recall for
-            query: Recall query
-            fact_type: Required filter for fact type ('world', 'experience', or 'opinion')
-            budget: Budget level for graph traversal (low=100, mid=300, high=600 units)
-            max_tokens: Maximum tokens to return (counts only 'text' field, default 4096)
-            enable_trace: If True, returns detailed trace object
-
-        Returns:
-            Tuple of (results, trace)
-        """
-        # Run async version synchronously - deprecated sync method, passing None for request_context
-        from hindsight_api.models import RequestContext
-
-        return asyncio.run(
-            self.recall_async(
-                bank_id,
-                query,
-                budget=budget,
-                max_tokens=max_tokens,
-                enable_trace=enable_trace,
-                fact_type=[fact_type],
-                request_context=RequestContext(),
-            )
+        bank_id,
+        contents,
+        document_id=None,
+        is_first_batch=True,
+        fact_type_override=None,
+        confidence_score=None,
+        session=None,
+    ):
+        return await self._retain._retain_batch_async_internal(
+            bank_id, contents, document_id, is_first_batch, fact_type_override, confidence_score, session
         )
+
+    # ------------------------------------------------------------------
+    # Recall
+    # ------------------------------------------------------------------
+
+    def recall(self, bank_id, query, fact_type, budget=Budget.MID, max_tokens=4096, enable_trace=False):
+        return self._recall.recall(bank_id, query, fact_type, budget, max_tokens, enable_trace)
 
     async def recall_async(
         self,
-        bank_id: str,
-        query: str,
+        bank_id,
+        query,
         *,
-        budget: Budget | None = None,
-        max_tokens: int = 4096,
-        enable_trace: bool = False,
-        fact_type: list[str] | None = None,
-        question_date: datetime | None = None,
-        include_entities: bool = False,
-        max_entity_tokens: int = 500,
-        include_chunks: bool = False,
-        max_chunk_tokens: int = 8192,
-        session: "Session | None" = None,
-        request_context: "RequestContext",
-        tags: list[str] | None = None,
-        shared_bank_id: str | None = None,
-    ) -> RecallResultModel:
-        """
-        Recall memories using 4-way parallel retrieval with optional Engram tag filtering.
-
-        This implements the core RECALL operation:
-        1. Retrieval: Single 4-way parallel retrieval (semantic vector, BM25 keyword, graph activation, temporal graph)
-        2. Merge: Combine using Reciprocal Rank Fusion (RRF)
-        3. Rerank: Score using selected reranker (heuristic or cross-encoder)
-        4. Diversify: Apply MMR for diversity
-        5. Token Filter: Return results up to max_tokens budget
-
-        Args:
-            bank_id: bank ID to recall for
-            query: Recall query
-            fact_type: List of fact types to recall (e.g., ['world', 'experience'])
-            budget: Budget level for graph traversal (low=100, mid=300, high=600 units)
-            max_tokens: Maximum tokens to return (counts only 'text' field, default 4096)
-                       Results are returned until token budget is reached, stopping before
-                       including a fact that would exceed the limit
-            enable_trace: Whether to return trace for debugging (deprecated)
-            question_date: Optional date when question was asked (for temporal filtering)
-            include_entities: Whether to include entity observations in the response
-            max_entity_tokens: Maximum tokens for entity observations (default 500)
-            include_chunks: Whether to include raw chunks in the response
-            max_chunk_tokens: Maximum tokens for chunks (default 8192)
-
-        Returns:
-            RecallResultModel containing:
-            - results: List of MemoryFact objects
-            - trace: Optional trace information for debugging
-            - entities: Optional dict of entity states (if include_entities=True)
-            - chunks: Optional dict of chunks (if include_chunks=True)
-        """
-        # Authenticate tenant and set schema in context (for fq_table())
-        await self._authenticate_tenant(request_context)
-
-        # Resolve ModeConfig for session-aware retrieval (Epic 06 wire-through; used in Epic 07)
-        mode_config = self._resolve_session_config(session)
-        retrieval_mode = session.mode if session else None
-        logger.debug(
-            "Recall mode_config: mode=%s strength_pre_filter=%.2f weak_links=%s traversal=%s bank=%s",
-            retrieval_mode.value if retrieval_mode else "precision",
-            mode_config.strength_pre_filter,
-            mode_config.weak_link_policy,
-            mode_config.traversal_depth,
+        budget=None,
+        max_tokens=4096,
+        enable_trace=False,
+        fact_type=None,
+        question_date=None,
+        include_entities=False,
+        max_entity_tokens=500,
+        include_chunks=False,
+        max_chunk_tokens=8192,
+        session=None,
+        request_context,
+        tags=None,
+        shared_bank_id=None,
+    ):
+        return await self._recall.recall_async(
             bank_id,
+            query,
+            budget=budget,
+            max_tokens=max_tokens,
+            enable_trace=enable_trace,
+            fact_type=fact_type,
+            question_date=question_date,
+            include_entities=include_entities,
+            max_entity_tokens=max_entity_tokens,
+            include_chunks=include_chunks,
+            max_chunk_tokens=max_chunk_tokens,
+            session=session,
+            request_context=request_context,
+            tags=tags,
+            shared_bank_id=shared_bank_id,
         )
 
-        # Default to all fact types if not specified
-        if fact_type is None:
-            fact_type = list(VALID_RECALL_FACT_TYPES)
-
-        # Validate fact types early
-        invalid_types = set(fact_type) - VALID_RECALL_FACT_TYPES
-        if invalid_types:
-            raise ValueError(
-                f"Invalid fact type(s): {', '.join(sorted(invalid_types))}. "
-                f"Must be one of: {', '.join(sorted(VALID_RECALL_FACT_TYPES))}"
-            )
-
-        # Validate operation if validator is configured
-        if self._operation_validator:
-            from hindsight_api.extensions import RecallContext
-
-            ctx = RecallContext(
-                bank_id=bank_id,
-                query=query,
-                request_context=request_context,
-                budget=budget,
-                max_tokens=max_tokens,
-                enable_trace=enable_trace,
-                fact_types=list(fact_type),
-                question_date=question_date,
-                include_entities=include_entities,
-                max_entity_tokens=max_entity_tokens,
-                include_chunks=include_chunks,
-                max_chunk_tokens=max_chunk_tokens,
-            )
-            await self._validate_operation(self._operation_validator.validate_recall(ctx))
-
-        # Map budget enum to thinking_budget number (default to MID if None)
-        budget_mapping = {Budget.LOW: 100, Budget.MID: 300, Budget.HIGH: 1000}
-        effective_budget = budget if budget is not None else Budget.MID
-        thinking_budget = budget_mapping[effective_budget]
-
-        # Backpressure: limit concurrent recalls to prevent overwhelming the database
-        result = None
-        _top_scored: list = []
-        error_msg = None
-        async with self._search_semaphore:
-            # Retry loop for connection errors
-            max_retries = 3
-            for attempt in range(max_retries + 1):
-                try:
-                    result, _top_scored = await self._search_with_retries(
-                        bank_id,
-                        query,
-                        fact_type,
-                        thinking_budget,
-                        max_tokens,
-                        enable_trace,
-                        question_date,
-                        include_entities,
-                        max_entity_tokens,
-                        include_chunks,
-                        max_chunk_tokens,
-                        request_context,
-                        tags=tags,
-                        mode=retrieval_mode,
-                        shared_bank_id=shared_bank_id,
-                    )
-                    break  # Success - exit retry loop
-                except Exception as e:
-                    # Check if it's a connection error
-                    is_connection_error = (
-                        isinstance(e, asyncpg.TooManyConnectionsError)
-                        or isinstance(e, asyncpg.CannotConnectNowError)
-                        or (isinstance(e, asyncpg.PostgresError) and "connection" in str(e).lower())
-                    )
-
-                    if is_connection_error and attempt < max_retries:
-                        # Wait with exponential backoff before retry
-                        wait_time = 0.5 * (2**attempt)  # 0.5s, 1s, 2s
-                        logger.warning(
-                            f"Connection error on search attempt {attempt + 1}/{max_retries + 1}: {str(e)}. "
-                            f"Retrying in {wait_time:.1f}s..."
-                        )
-                        await asyncio.sleep(wait_time)
-                    else:
-                        # Not a connection error or out of retries - call post-hook and raise
-                        error_msg = str(e)
-                        if self._operation_validator:
-                            from hindsight_api.extensions.operation_validator import RecallResult
-
-                            result_ctx = RecallResult(
-                                bank_id=bank_id,
-                                query=query,
-                                request_context=request_context,
-                                budget=budget,
-                                max_tokens=max_tokens,
-                                enable_trace=enable_trace,
-                                fact_types=list(fact_type),
-                                question_date=question_date,
-                                include_entities=include_entities,
-                                max_entity_tokens=max_entity_tokens,
-                                include_chunks=include_chunks,
-                                max_chunk_tokens=max_chunk_tokens,
-                                result=None,
-                                success=False,
-                                error=error_msg,
-                            )
-                            try:
-                                await self._operation_validator.on_recall_complete(result_ctx)
-                            except Exception as hook_err:
-                                logger.warning(f"Post-recall hook error (non-fatal): {hook_err}")
-                        raise
-            else:
-                # Exceeded max retries
-                error_msg = "Exceeded maximum retries for search due to connection errors."
-                if self._operation_validator:
-                    from hindsight_api.extensions.operation_validator import RecallResult
-
-                    result_ctx = RecallResult(
-                        bank_id=bank_id,
-                        query=query,
-                        request_context=request_context,
-                        budget=budget,
-                        max_tokens=max_tokens,
-                        enable_trace=enable_trace,
-                        fact_types=list(fact_type),
-                        question_date=question_date,
-                        include_entities=include_entities,
-                        max_entity_tokens=max_entity_tokens,
-                        include_chunks=include_chunks,
-                        max_chunk_tokens=max_chunk_tokens,
-                        result=None,
-                        success=False,
-                        error=error_msg,
-                    )
-                    try:
-                        await self._operation_validator.on_recall_complete(result_ctx)
-                    except Exception as hook_err:
-                        logger.warning(f"Post-recall hook error (non-fatal): {hook_err}")
-                raise Exception(error_msg)
-
-        # Populate WorkingContext if a session is active (Epic 08 S2)
-        if session is not None and result is not None and _top_scored:
-            wc = self._get_session_manager().get_working_context(session.session_id)
-            if wc is not None:
-                active_goal = wc.goal_stack[-1] if wc.goal_stack else None
-                wc.populate_from_recall(_top_scored, active_goal=active_goal)
-
-                # Co-activation tracking — T3/T4 (Epic 09 S1)
-                # Extract IDs from Focus + Supporting tiers (high-activation only).
-                # Bio mapping: Hebbian learning — only strongly activated representations
-                # form new synaptic associations; peripheral activation is too weak.
-                focus_ids = [ref.engram_id for ref in wc.active_engrams.focus]
-                supporting_ids = [ref.engram_id for ref in wc.active_engrams.supporting]
-                active_ids = focus_ids + supporting_ids
-                if active_ids:
-                    wc.co_activation_tracker.track_recall(active_ids)
-
-                # Periodic flush: write eligible CO_ACTIVATED links to Neo4j every N recalls.
-                # neo4j_client comes from EngramRetriever if active; None → graceful no-op.
-                if wc.co_activation_tracker.should_flush():
-                    from .search.engram_retrieval import EngramRetriever
-                    from .search.retrieval import get_default_graph_retriever
-
-                    _retriever = get_default_graph_retriever()
-                    _neo4j = _retriever._neo4j if isinstance(_retriever, EngramRetriever) else None
-                    await wc.co_activation_tracker.flush_to_neo4j(_neo4j)
-
-                # Association Window — T4 (Epic 09 S3)
-                # Check temporal proximity between Focus+Supporting Engrams (STC mechanism).
-                # Periodic: every check_every_n recalls to limit DB writes.
-                wc.association_window.check_associations(wc.active_engrams)
-                if wc.association_window.should_flush():
-                    from .search.engram_retrieval import EngramRetriever
-                    from .search.retrieval import get_default_graph_retriever
-
-                    _retriever = get_default_graph_retriever()
-                    _neo4j = _retriever._neo4j if isinstance(_retriever, EngramRetriever) else None
-                    await wc.association_window.flush_to_neo4j(_neo4j)
-
-                # Construction Pipeline (Epic 11 S2) — builds ConstructedAnswer from scored results.
-                # Runs after WorkingContext population so WC already reflects the current recall.
-                # Bio mapping: PFC semantic integration — retrieved fragments reconstructed into
-                # a coherent answer with inferences and gap detection.
-                try:
-                    from .constructive.pipeline import ConstructionPipeline
-
-                    mode_config = self._resolve_session_config(session)
-                    _pipeline = ConstructionPipeline(
-                        llm=self._llm_registry.get_llm("reflect", "constructive_memory_inference"),
-                        mode_config=mode_config,
-                    )
-                    result.constructed_answer = await _pipeline.construct(
-                        scored_results=_top_scored,
-                        query=query,
-                        working_context=wc,
-                    )
-                except Exception as _pipeline_err:
-                    logger.warning("[CONSTRUCTION] Pipeline failed (non-fatal): %s", _pipeline_err)
-
-                # Prediction Error Detection (Epic 11 S3) — runs after construction when
-                # session.current_expectation is set.
-                # Bio mapping: dopaminergic PE signal — mismatch drives reconsolidation + mode shift.
-                if (
-                    result.constructed_answer is not None
-                    and session.current_expectation
-                    and self._reflect_llm_config is not None
-                ):
-                    try:
-                        from .constructive.prediction_error import (
-                            PredictionErrorDetector,
-                            apply_prediction_error_feedback,
-                        )
-
-                        _pe_detector = PredictionErrorDetector(
-                            llm=self._llm_registry.get_llm("reflect", "prediction_error_detection")
-                        )
-                        _pe = await _pe_detector.detect(
-                            answer=result.constructed_answer,
-                            expectation=session.current_expectation,
-                        )
-                        if _pe is not None:
-                            _sm = self._get_session_manager()
-                            _pe_registry = _sm.get_prediction_error_registry(session.session_id)
-                            if _pe_registry is None:
-                                from .reflect.prediction_error_registry import PredictionErrorRegistry as _PEReg
-
-                                _pe_registry = _PEReg()
-                            await apply_prediction_error_feedback(
-                                error=_pe,
-                                session_id=session.session_id,
-                                session_manager=_sm,
-                                prediction_error_registry=_pe_registry,
-                            )
-                            result.constructed_answer.construction_metadata["prediction_error"] = {
-                                "severity": _pe.severity,
-                                "level": _pe.level,
-                                "description": _pe.description,
-                                "conflicting_fact_ids": _pe.conflicting_fact_ids,
-                                "expected_summary": _pe.expected_summary,
-                                "actual_summary": _pe.actual_summary,
-                            }
-                    except Exception as _pe_err:
-                        logger.warning("[PE] Prediction error detection failed (non-fatal): %s", _pe_err)
-
-        # Call post-operation hook for success
-        if self._operation_validator and result is not None:
-            from hindsight_api.extensions.operation_validator import RecallResult
-
-            result_ctx = RecallResult(
-                bank_id=bank_id,
-                query=query,
-                request_context=request_context,
-                budget=budget,
-                max_tokens=max_tokens,
-                enable_trace=enable_trace,
-                fact_types=list(fact_type),
-                question_date=question_date,
-                include_entities=include_entities,
-                max_entity_tokens=max_entity_tokens,
-                include_chunks=include_chunks,
-                max_chunk_tokens=max_chunk_tokens,
-                result=result,
-                success=True,
-                error=None,
-            )
-            try:
-                await self._operation_validator.on_recall_complete(result_ctx)
-            except Exception as e:
-                logger.warning(f"Post-recall hook error (non-fatal): {e}")
-
-        return result
+    def _filter_by_token_budget(self, results, max_tokens):
+        return self._recall._filter_by_token_budget(results, max_tokens)
 
     async def _search_with_retries(
         self,
-        bank_id: str,
-        query: str,
-        fact_type: list[str],
-        thinking_budget: int,
-        max_tokens: int,
-        enable_trace: bool,
-        question_date: datetime | None = None,
-        include_entities: bool = False,
-        max_entity_tokens: int = 500,
-        include_chunks: bool = False,
-        max_chunk_tokens: int = 8192,
-        request_context: "RequestContext" = None,
-        tags: list[str] | None = None,
-        mode=None,  # RetrievalMode | None — forwarded to retrieve_parallel for MPFP pattern selection
-        shared_bank_id: str | None = None,  # Optional second bank for dual-bank parallel query (S5)
-    ) -> RecallResultModel:
-        """
-        Search implementation with modular retrieval and reranking.
-
-        Architecture:
-        1. Retrieval: 4-way parallel (semantic, keyword, graph, temporal graph)
-        2. Merge: RRF to combine ranked lists
-        3. Reranking: Pluggable strategy (heuristic or cross-encoder)
-        4. Diversity: MMR with λ=0.5
-        5. Token Filter: Limit results to max_tokens budget
-
-        Args:
-            bank_id: bank IDentifier
-            query: Search query
-            fact_type: Deprecated — kept for backward compat, no longer used for retrieval filtering
-            thinking_budget: Nodes to explore in graph traversal
-            max_tokens: Maximum tokens to return (counts only 'text' field)
-            enable_trace: Whether to return search trace (deprecated)
-            include_entities: Whether to include entity observations
-            max_entity_tokens: Maximum tokens for entity observations
-            include_chunks: Whether to include raw chunks
-            max_chunk_tokens: Maximum tokens for chunks
-            tags: Optional Engram tag filter — only return Engrams whose tags contain all given values.
-
-        Returns:
-            RecallResultModel with results, trace, optional entities, and optional chunks
-        """
-        # Initialize tracer if requested
-        from .search.tracer import SearchTracer
-
-        tracer = SearchTracer(query, thinking_budget, max_tokens) if enable_trace else None
-        if tracer:
-            tracer.start()
-
-        pool = await self._get_pool()
-        recall_start = time.time()
-
-        # Buffer logs for clean output in concurrent scenarios
-        recall_id = f"{bank_id[:8]}-{int(time.time() * 1000) % 100000}"
-        log_buffer = []
-        log_buffer.append(
-            f"[RECALL {recall_id}] Query: '{query[:50]}...' (budget={thinking_budget}, max_tokens={max_tokens})"
-        )
-
-        try:
-            # Step 1: Generate query embedding (for semantic search)
-            step_start = time.time()
-            query_embedding = embedding_utils.generate_embedding(self.embeddings, query)
-            step_duration = time.time() - step_start
-            log_buffer.append(f"  [1] Generate query embedding: {step_duration:.3f}s")
-
-            if tracer:
-                tracer.record_query_embedding(query_embedding)
-                tracer.add_phase_metric("generate_query_embedding", step_duration)
-
-            # Step 2: N*4-Way Parallel Retrieval (N fact types × 4 retrieval methods)
-            step_start = time.time()
-            query_embedding_str = str(query_embedding)
-
-            from .search.bank_merge import merge_parallel_results
-            from .search.retrieval import get_default_graph_retriever, retrieve_parallel
-            from .search.temporal_extraction import extract_temporal_constraint
-
-            # Track each retrieval start time
-            retrieval_start = time.time()
-
-            # Pre-extract temporal constraint once (shared across all fact types)
-            tc_start = time.time()
-            temporal_constraint = extract_temporal_constraint(
-                query, reference_date=question_date, analyzer=self.query_analyzer
-            )
-            tc_duration = time.time() - tc_start
-
-            # 4-way parallel retrieval — optionally dual-bank (S5)
-            # Disposition does NOT influence retrieval (only reflect_async); mode drives everything.
-            parallel_start = time.time()
-            if shared_bank_id:
-                # CLS dual-bank: agent bank (episodic) + shared bank (semantic) in parallel
-                agent_rr, shared_rr = await asyncio.gather(
-                    retrieve_parallel(
-                        pool,
-                        query,
-                        query_embedding_str,
-                        bank_id,
-                        thinking_budget,
-                        question_date,
-                        self.query_analyzer,
-                        temporal_constraint=temporal_constraint,
-                        tags=tags,
-                        mode=mode,
-                    ),
-                    retrieve_parallel(
-                        pool,
-                        query,
-                        query_embedding_str,
-                        shared_bank_id,
-                        thinking_budget,
-                        question_date,
-                        self.query_analyzer,
-                        temporal_constraint=temporal_constraint,
-                        tags=tags,
-                        mode=mode,
-                    ),
-                )
-                rr = merge_parallel_results(agent_rr, shared_rr, mode)
-            else:
-                rr = await retrieve_parallel(
-                    pool,
-                    query,
-                    query_embedding_str,
-                    bank_id,
-                    thinking_budget,
-                    question_date,
-                    self.query_analyzer,
-                    temporal_constraint=temporal_constraint,
-                    tags=tags,
-                    mode=mode,
-                )
-            parallel_duration = time.time() - parallel_start
-
-            semantic_results = rr.semantic
-            bm25_results = rr.bm25
-            graph_results = rr.graph
-            temporal_results = rr.temporal
-            aggregated_timings = rr.timings
-            all_mpfp_timings = rr.mpfp_timings
-            detected_temporal_constraint = rr.temporal_constraint
-
-            logger.debug(
-                "[RECALL %s] Retrieval: semantic=%d, bm25=%d, graph=%d, temporal=%d",
-                recall_id,
-                len(semantic_results),
-                len(bm25_results),
-                len(graph_results),
-                len(temporal_results) if temporal_results else 0,
-            )
-
-            # Sort by score (descending) for stable RRF input ordering
-            semantic_results.sort(key=lambda r: r.similarity or 0.0, reverse=True)
-            bm25_results.sort(key=lambda r: r.bm25_score or 0.0, reverse=True)
-            graph_results.sort(key=lambda r: r.activation or 0.0, reverse=True)
-            if temporal_results:
-                temporal_results.sort(key=lambda r: r.temporal_score or 0.0, reverse=True)
-
-            retrieval_duration = time.time() - retrieval_start
-
-            step_duration = time.time() - step_start
-            # Format per-method timings (these are the actual parallel retrieval times)
-            timing_parts = [
-                f"semantic={len(semantic_results)}({aggregated_timings['semantic']:.3f}s)",
-                f"bm25={len(bm25_results)}({aggregated_timings['bm25']:.3f}s)",
-                f"graph={len(graph_results)}({aggregated_timings['graph']:.3f}s)",
-            ]
-            temporal_info = ""
-            if detected_temporal_constraint:
-                start_dt, end_dt = detected_temporal_constraint
-                temporal_count = len(temporal_results) if temporal_results else 0
-                timing_parts.append(f"temporal={temporal_count}({aggregated_timings['temporal']:.3f}s)")
-                temporal_info = f" | temporal_range={start_dt.strftime('%Y-%m-%d')} to {end_dt.strftime('%Y-%m-%d')}"
-            # Only tc is sequential setup now (adjacency loads in parallel with retrieval)
-            setup_info = f", tc={tc_duration:.3f}s" if tc_duration > 0.01 else ""
-            log_buffer.append(
-                f"  [2] Parallel retrieval: {', '.join(timing_parts)} in {parallel_duration:.3f}s{setup_info}{temporal_info}"
-            )
-
-            # Log MPFP timing breakdown if available
-            if all_mpfp_timings:
-                mpfp_total = all_mpfp_timings[0]  # Take first fact type's timing as representative
-                mpfp_parts = [
-                    f"db_queries={mpfp_total.db_queries}",
-                    f"edge_load={mpfp_total.edge_load_time:.3f}s",
-                    f"edges={mpfp_total.edge_count}",
-                    f"patterns={mpfp_total.pattern_count}",
-                ]
-                if mpfp_total.seeds_time > 0.01:
-                    mpfp_parts.append(f"seeds={mpfp_total.seeds_time:.3f}s")
-                log_buffer.append(f"      [MPFP] {', '.join(mpfp_parts)}")
-
-            # Record retrieval results for tracer
-            if tracer:
-                # Convert RetrievalResult to old tuple format for tracer
-                def to_tuple_format(results):
-                    return [(r.id, r.__dict__) for r in results]
-
-                tracer.add_retrieval_results(
-                    method_name="semantic",
-                    results=to_tuple_format(semantic_results),
-                    duration_seconds=aggregated_timings.get("semantic", 0.0),
-                    score_field="similarity",
-                    metadata={"limit": thinking_budget},
-                )
-                tracer.add_retrieval_results(
-                    method_name="bm25",
-                    results=to_tuple_format(bm25_results),
-                    duration_seconds=aggregated_timings.get("bm25", 0.0),
-                    score_field="bm25_score",
-                    metadata={"limit": thinking_budget},
-                )
-                tracer.add_retrieval_results(
-                    method_name="graph",
-                    results=to_tuple_format(graph_results),
-                    duration_seconds=aggregated_timings.get("graph", 0.0),
-                    score_field="activation",
-                    metadata={"budget": thinking_budget},
-                )
-                if temporal_results is not None:
-                    tracer.add_retrieval_results(
-                        method_name="temporal",
-                        results=to_tuple_format(temporal_results),
-                        duration_seconds=aggregated_timings.get("temporal", 0.0),
-                        score_field="temporal_score",
-                        metadata={"budget": thinking_budget},
-                    )
-
-                # Record entry points (from semantic results) for legacy graph view
-                for rank, retrieval in enumerate(semantic_results[:10], start=1):  # Top 10 as entry points
-                    tracer.add_entry_point(retrieval.id, retrieval.text, retrieval.similarity or 0.0, rank)
-
-                tracer.add_phase_metric(
-                    "parallel_retrieval",
-                    step_duration,
-                    {
-                        "semantic_count": len(semantic_results),
-                        "bm25_count": len(bm25_results),
-                        "graph_count": len(graph_results),
-                        "temporal_count": len(temporal_results) if temporal_results else 0,
-                    },
-                )
-
-            # Step 3: Merge with RRF
-            step_start = time.time()
-            from .search.fusion import reciprocal_rank_fusion
-
-            # Merge 3 or 4 result lists depending on temporal constraint
-            if temporal_results:
-                merged_candidates = reciprocal_rank_fusion(
-                    [semantic_results, bm25_results, graph_results, temporal_results]
-                )
-            else:
-                merged_candidates = reciprocal_rank_fusion([semantic_results, bm25_results, graph_results])
-
-            step_duration = time.time() - step_start
-            log_buffer.append(f"  [3] RRF merge: {len(merged_candidates)} unique candidates in {step_duration:.3f}s")
-
-            if tracer:
-                # Convert MergedCandidate to old tuple format for tracer
-                tracer_merged = [
-                    (mc.id, mc.retrieval.__dict__, {"rrf_score": mc.rrf_score, **mc.source_ranks})
-                    for mc in merged_candidates
-                ]
-                tracer.add_rrf_merged(tracer_merged)
-                tracer.add_phase_metric("rrf_merge", step_duration, {"candidates_merged": len(merged_candidates)})
-
-            # Step 3.5: Fetch engram_dictionary data (strength + thalamus) + strength pre-filter
-            # Bio-mapping: PFC-gated pre-filter removes low-consolidation Engrams before expensive CE stage.
-            # Default strength=0.5 is used when no engram_dictionary row exists (e.g. legacy facts).
-            from .search.scoring import (
-                calculate_combined_score,
-                calculate_recency_weight,
-                calculate_strength_weight,
-                calculate_thalamus_weight,
-            )
-            from .session.mode_config import get_mode_config as _get_mode_config
-
-            engram_data: dict[str, dict] = {}
-            scoring_weights = None
-            mode_boost_dim: str | None = None
-            if merged_candidates:
-                candidate_ids = [mc.id for mc in merged_candidates]
-                async with acquire_with_retry(pool) as conn:
-                    rows = await conn.fetch(
-                        """
-                        SELECT engram_id::text, strength,
-                               novelty, surprise, task_relevance, emotional_valence
-                        FROM engram_dictionary
-                        WHERE bank_id = $1 AND engram_id::text = ANY($2::text[])
-                        """,
-                        bank_id,
-                        candidate_ids,
-                    )
-                for row in rows:
-                    engram_data[row["engram_id"]] = dict(row)
-
-            if mode is not None:
-                _mc = _get_mode_config(mode)
-                scoring_weights = _mc.scoring_weights
-                mode_boost_dim = _mc.thalamus_boost_dimension
-                threshold = _mc.strength_pre_filter
-                if threshold > 0.0 and merged_candidates:
-                    before = len(merged_candidates)
-                    merged_candidates = [
-                        mc for mc in merged_candidates if engram_data.get(mc.id, {}).get("strength", 0.5) >= threshold
-                    ]
-                    filtered = before - len(merged_candidates)
-                    if filtered:
-                        log_buffer.append(
-                            f"  [3.5] Strength pre-filter: removed {filtered}/{before} below threshold={threshold}"
-                        )
-
-            # Step 4: Rerank using cross-encoder (MergedCandidate -> ScoredResult)
-            step_start = time.time()
-            reranker_instance = self._cross_encoder_reranker
-
-            # Ensure reranker is initialized (for lazy initialization mode)
-            await reranker_instance.ensure_initialized()
-
-            # Rerank using cross-encoder
-            scored_results = await reranker_instance.rerank(query, merged_candidates)
-
-            step_duration = time.time() - step_start
-            log_buffer.append(f"  [4] Reranking: {len(scored_results)} candidates scored in {step_duration:.3f}s")
-
-            # Step 4.5: Combine cross-encoder score with retrieval signals
-            # Extended scoring: w1×CE + w2×RRF + w3×Temporal + w4×Recency(strength-modulated)
-            #                   + w5×Engram_Strength + w6×Thalamus_Weighted  (concept.md § 8)
-            # Fallback (no mode): original 60/20/10/10 split for backward compat.
-            if scored_results:
-                # Normalize RRF scores to [0, 1] range using min-max normalization
-                rrf_scores = [sr.candidate.rrf_score for sr in scored_results]
-                max_rrf = max(rrf_scores) if rrf_scores else 0.0
-                min_rrf = min(rrf_scores) if rrf_scores else 0.0
-                rrf_range = max_rrf - min_rrf  # Don't force to 1.0, let fallback handle it
-
-                now = utcnow()
-                for sr in scored_results:
-                    # Normalize RRF score (0-1 range, 0.5 if all same)
-                    if rrf_range > 0:
-                        sr.rrf_normalized = (sr.candidate.rrf_score - min_rrf) / rrf_range
-                    else:
-                        sr.rrf_normalized = 0.5
-
-                    # Populate engram strength + thalamus from pre-fetched data
-                    edata = engram_data.get(sr.id, {})
-                    sr.engram_strength = edata.get("strength", 0.5)
-                    thalamus_dims = (
-                        {k: edata.get(k, 0.0) for k in ("novelty", "surprise", "task_relevance", "emotional_valence")}
-                        if edata
-                        else None
-                    )
-                    sr.thalamus_score = calculate_thalamus_weight(thalamus_dims, mode_boost_dim)
-
-                    # Recency with strength-modulated half-life (concept.md § S4)
-                    sr.recency = 0.5  # default for missing dates
-                    if sr.retrieval.occurred_start:
-                        occurred = sr.retrieval.occurred_start
-                        if hasattr(occurred, "tzinfo") and occurred.tzinfo is None:
-                            occurred = occurred.replace(tzinfo=UTC)
-                        days_ago = (now - occurred).total_seconds() / 86400
-                        sr.recency = calculate_recency_weight(days_ago, strength=sr.engram_strength)
-
-                    # Get temporal proximity if available (already 0-1)
-                    sr.temporal = (
-                        sr.retrieval.temporal_proximity if sr.retrieval.temporal_proximity is not None else 0.5
-                    )
-
-                    if scoring_weights is not None:
-                        # Extended 6-term formula with mode-specific weights
-                        sr.combined_score = calculate_combined_score(
-                            ce=sr.cross_encoder_score_normalized,
-                            rrf=sr.rrf_normalized,
-                            temporal=sr.temporal,
-                            recency=sr.recency,
-                            strength_weight=calculate_strength_weight(sr.engram_strength),
-                            thalamus_weight=sr.thalamus_score,
-                            weights=scoring_weights,
-                        )
-                    else:
-                        # Fallback: original Hindsight weights (60/20/10/10)
-                        sr.combined_score = (
-                            0.6 * sr.cross_encoder_score_normalized
-                            + 0.2 * sr.rrf_normalized
-                            + 0.1 * sr.temporal
-                            + 0.1 * sr.recency
-                        )
-                    sr.weight = sr.combined_score
-
-                # Fix 2: Apply weak-link boost to combined_score for Analogy mode.
-                # The 1.5× boost was applied to activation_map in EngramRetriever but is lost
-                # after enrichment (scoring uses CE/RRF, not activation). Re-apply here so
-                # weak-link results actually rank higher in Analogy mode output.
-                # Bio mapping: Analogy retrieval preferentially follows associative bridges —
-                # weak-link hits should surface above equivalent strong-link hits.
-                if mode is not None and mode.value == "analogy":
-                    from .search.engram_retrieval import WEAK_LINK_PREFER_BOOST
-
-                    for sr in scored_results:
-                        if getattr(sr.candidate.retrieval, "traversal_source", None) == "weak_link":
-                            sr.combined_score = min(sr.combined_score * WEAK_LINK_PREFER_BOOST, 1.0)
-                            sr.weight = sr.combined_score
-
-                # Re-sort by combined score
-                scored_results.sort(key=lambda x: x.weight, reverse=True)
-
-            # Add reranked results to tracer AFTER combined scoring (so normalized values are included)
-            if tracer:
-                results_dict = [sr.to_dict() for sr in scored_results]
-                tracer_merged = [
-                    (mc.id, mc.retrieval.__dict__, {"rrf_score": mc.rrf_score, **mc.source_ranks})
-                    for mc in merged_candidates
-                ]
-                tracer.add_reranked(results_dict, tracer_merged)
-                tracer.add_phase_metric(
-                    "reranking",
-                    step_duration,
-                    {"reranker_type": "cross-encoder", "candidates_reranked": len(scored_results)},
-                )
-
-            # Step 5: Truncate to thinking_budget * 2 for token filtering
-            rerank_limit = thinking_budget * 2
-            top_scored = scored_results[:rerank_limit]
-
-            # Step 6: Token budget filtering
-            step_start = time.time()
-
-            # Convert to dict for token filtering (backward compatibility)
-            top_dicts = [sr.to_dict() for sr in top_scored]
-            filtered_dicts, total_tokens = self._filter_by_token_budget(top_dicts, max_tokens)
-
-            # Convert back to list of IDs and filter scored_results
-            filtered_ids = {d["id"] for d in filtered_dicts}
-            top_scored = [sr for sr in top_scored if sr.id in filtered_ids]
-
-            step_duration = time.time() - step_start
-            log_buffer.append(
-                f"  [5] Token filtering: {len(top_scored)} results, {total_tokens}/{max_tokens} tokens in {step_duration:.3f}s"
-            )
-
-            if tracer:
-                tracer.add_phase_metric(
-                    "token_filtering",
-                    step_duration,
-                    {"results_selected": len(top_scored), "tokens_used": total_tokens, "max_tokens": max_tokens},
-                )
-
-            # Record visits for all retrieved nodes
-            if tracer:
-                for sr in scored_results:
-                    tracer.visit_node(
-                        node_id=sr.id,
-                        text=sr.retrieval.text,
-                        context=sr.retrieval.context or "",
-                        event_date=sr.retrieval.occurred_start,
-                        access_count=sr.retrieval.access_count,
-                        is_entry_point=(sr.id in [ep.node_id for ep in tracer.entry_points]),
-                        parent_node_id=None,  # In parallel retrieval, there's no clear parent
-                        link_type=None,
-                        link_weight=None,
-                        activation=sr.candidate.rrf_score,  # Use RRF score as activation
-                        semantic_similarity=sr.retrieval.similarity or 0.0,
-                        recency=sr.recency,
-                        frequency=0.0,
-                        final_weight=sr.weight,
-                    )
-
-            # Step 8: Queue access count updates for visited nodes
-            visited_ids = list(set([sr.id for sr in scored_results[:50]]))  # Top 50
-            if visited_ids:
-                await self._task_backend.submit_task({"type": "access_count_update", "node_ids": visited_ids})
-
-            # Log fact_type distribution in results
-            fact_type_counts = {}
-            for sr in top_scored:
-                ft = sr.retrieval.fact_type
-                fact_type_counts[ft] = fact_type_counts.get(ft, 0) + 1
-
-            fact_type_summary = ", ".join([f"{ft}={count}" for ft, count in sorted(fact_type_counts.items())])
-
-            # Convert ScoredResult to dicts with ISO datetime strings
-            top_results_dicts = []
-            for sr in top_scored:
-                result_dict = sr.to_dict()
-                # Convert datetime objects to ISO strings for JSON serialization
-                if result_dict.get("occurred_start"):
-                    occurred_start = result_dict["occurred_start"]
-                    result_dict["occurred_start"] = (
-                        occurred_start.isoformat() if hasattr(occurred_start, "isoformat") else occurred_start
-                    )
-                if result_dict.get("occurred_end"):
-                    occurred_end = result_dict["occurred_end"]
-                    result_dict["occurred_end"] = (
-                        occurred_end.isoformat() if hasattr(occurred_end, "isoformat") else occurred_end
-                    )
-                if result_dict.get("mentioned_at"):
-                    mentioned_at = result_dict["mentioned_at"]
-                    result_dict["mentioned_at"] = (
-                        mentioned_at.isoformat() if hasattr(mentioned_at, "isoformat") else mentioned_at
-                    )
-                top_results_dicts.append(result_dict)
-
-            # Get entities for each fact if include_entities is requested
-            step_start = time.time()
-            fact_entity_map = {}  # unit_id -> list of (entity_id, entity_name)
-            if include_entities and top_scored:
-                unit_ids = [uuid.UUID(sr.id) for sr in top_scored]
-                if unit_ids:
-                    async with acquire_with_retry(pool) as entity_conn:
-                        entity_rows = await entity_conn.fetch(
-                            f"""
-                            SELECT ue.unit_id, e.id as entity_id, e.canonical_name
-                            FROM {fq_table("unit_entities")} ue
-                            JOIN {fq_table("entities")} e ON ue.entity_id = e.id
-                            WHERE ue.unit_id = ANY($1::uuid[])
-                            """,
-                            unit_ids,
-                        )
-                        for row in entity_rows:
-                            unit_id = str(row["unit_id"])
-                            if unit_id not in fact_entity_map:
-                                fact_entity_map[unit_id] = []
-                            fact_entity_map[unit_id].append(
-                                {"entity_id": str(row["entity_id"]), "canonical_name": row["canonical_name"]}
-                            )
-            entity_map_duration = time.time() - step_start
-
-            # Convert results to MemoryFact objects
-            memory_facts = []
-            for result_dict in top_results_dicts:
-                result_id = str(result_dict.get("id"))
-                # Get entity names for this fact
-                entity_names = None
-                if include_entities and result_id in fact_entity_map:
-                    entity_names = [e["canonical_name"] for e in fact_entity_map[result_id]]
-
-                memory_facts.append(
-                    MemoryFact(
-                        id=result_id,
-                        text=result_dict.get("text"),
-                        fact_type=result_dict.get("fact_type", "world"),
-                        entities=entity_names,
-                        context=result_dict.get("context"),
-                        occurred_start=result_dict.get("occurred_start"),
-                        occurred_end=result_dict.get("occurred_end"),
-                        mentioned_at=result_dict.get("mentioned_at"),
-                        document_id=result_dict.get("document_id"),
-                        chunk_id=result_dict.get("chunk_id"),
-                    )
-                )
-
-            # Fetch entity observations if requested
-            step_start = time.time()
-            entities_dict = None
-            total_entity_tokens = 0
-            total_chunk_tokens = 0
-            if include_entities and fact_entity_map:
-                # Collect unique entities in order of fact relevance (preserving order from top_scored)
-                # Use a list to maintain order, but track seen entities to avoid duplicates
-                entities_ordered = []  # list of (entity_id, entity_name) tuples
-                seen_entity_ids = set()
-
-                # Iterate through facts in relevance order
-                for sr in top_scored:
-                    unit_id = sr.id
-                    if unit_id in fact_entity_map:
-                        for entity in fact_entity_map[unit_id]:
-                            entity_id = entity["entity_id"]
-                            entity_name = entity["canonical_name"]
-                            if entity_id not in seen_entity_ids:
-                                entities_ordered.append((entity_id, entity_name))
-                                seen_entity_ids.add(entity_id)
-
-                # Fetch all observations in a single batched query
-                entity_ids = [eid for eid, _ in entities_ordered]
-                all_observations = await self.get_entity_observations_batch(
-                    bank_id, entity_ids, limit_per_entity=5, request_context=request_context
-                )
-
-                # Build entities_dict respecting token budget, in relevance order
-                entities_dict = {}
-                encoding = _get_tiktoken_encoding()
-
-                for entity_id, entity_name in entities_ordered:
-                    if total_entity_tokens >= max_entity_tokens:
-                        break
-
-                    observations = all_observations.get(entity_id, [])
-
-                    # Calculate tokens for this entity's observations
-                    entity_tokens = 0
-                    included_observations = []
-                    for obs in observations:
-                        obs_tokens = len(encoding.encode(obs.text))
-                        if total_entity_tokens + entity_tokens + obs_tokens <= max_entity_tokens:
-                            included_observations.append(obs)
-                            entity_tokens += obs_tokens
-                        else:
-                            break
-
-                    if included_observations:
-                        entities_dict[entity_name] = EntityState(
-                            entity_id=entity_id, canonical_name=entity_name, observations=included_observations
-                        )
-                        total_entity_tokens += entity_tokens
-            entity_obs_duration = time.time() - step_start
-
-            # Fetch chunks if requested
-            step_start = time.time()
-            chunks_dict = None
-            if include_chunks and top_scored:
-                from .response_models import ChunkInfo
-
-                # Collect chunk_ids in order of fact relevance (preserving order from top_scored)
-                # Use a list to maintain order, but track seen chunks to avoid duplicates
-                chunk_ids_ordered = []
-                seen_chunk_ids = set()
-                for sr in top_scored:
-                    chunk_id = sr.retrieval.chunk_id
-                    if chunk_id and chunk_id not in seen_chunk_ids:
-                        chunk_ids_ordered.append(chunk_id)
-                        seen_chunk_ids.add(chunk_id)
-
-                if chunk_ids_ordered:
-                    # Fetch chunk data from database using chunk_ids (no ORDER BY to preserve input order)
-                    async with acquire_with_retry(pool) as conn:
-                        chunks_rows = await conn.fetch(
-                            f"""
-                            SELECT chunk_id, chunk_text, chunk_index
-                            FROM {fq_table("chunks")}
-                            WHERE chunk_id = ANY($1::text[])
-                            """,
-                            chunk_ids_ordered,
-                        )
-
-                    # Create a lookup dict for fast access
-                    chunks_lookup = {row["chunk_id"]: row for row in chunks_rows}
-
-                    # Apply token limit and build chunks_dict in the order of chunk_ids_ordered
-                    chunks_dict = {}
-                    encoding = _get_tiktoken_encoding()
-
-                    for chunk_id in chunk_ids_ordered:
-                        if chunk_id not in chunks_lookup:
-                            continue
-
-                        row = chunks_lookup[chunk_id]
-                        chunk_text = row["chunk_text"]
-                        chunk_tokens = len(encoding.encode(chunk_text))
-
-                        # Check if adding this chunk would exceed the limit
-                        if total_chunk_tokens + chunk_tokens > max_chunk_tokens:
-                            # Truncate the chunk to fit within the remaining budget
-                            remaining_tokens = max_chunk_tokens - total_chunk_tokens
-                            if remaining_tokens > 0:
-                                # Truncate to remaining tokens
-                                truncated_text = encoding.decode(encoding.encode(chunk_text)[:remaining_tokens])
-                                chunks_dict[chunk_id] = ChunkInfo(
-                                    chunk_text=truncated_text, chunk_index=row["chunk_index"], truncated=True
-                                )
-                                total_chunk_tokens = max_chunk_tokens
-                            # Stop adding more chunks once we hit the limit
-                            break
-                        else:
-                            chunks_dict[chunk_id] = ChunkInfo(
-                                chunk_text=chunk_text, chunk_index=row["chunk_index"], truncated=False
-                            )
-                            total_chunk_tokens += chunk_tokens
-            chunks_duration = time.time() - step_start
-
-            # Log entity/chunk fetch timing (only if any enrichment was requested)
-            log_buffer.append(
-                f"  [6] Response enrichment: entity_map={entity_map_duration:.3f}s, entity_obs={entity_obs_duration:.3f}s, chunks={chunks_duration:.3f}s"
-            )
-
-            # Finalize trace if enabled
-            trace_dict = None
-            if tracer:
-                trace = tracer.finalize(top_results_dicts)
-                trace_dict = trace.to_dict() if trace else None
-
-            # Log final recall stats
-            total_time = time.time() - recall_start
-            num_chunks = len(chunks_dict) if chunks_dict else 0
-            num_entities = len(entities_dict) if entities_dict else 0
-            log_buffer.append(
-                f"[RECALL {recall_id}] Complete: {len(top_scored)} facts ({total_tokens} tok), {num_chunks} chunks ({total_chunk_tokens} tok), {num_entities} entities ({total_entity_tokens} tok) | {fact_type_summary} | {total_time:.3f}s"
-            )
-            logger.info("\n" + "\n".join(log_buffer))
-
-            return (
-                RecallResultModel(results=memory_facts, trace=trace_dict, entities=entities_dict, chunks=chunks_dict),
-                top_scored,
-            )
-
-        except Exception as e:
-            log_buffer.append(f"[RECALL {recall_id}] ERROR after {time.time() - recall_start:.3f}s: {str(e)}")
-            logger.error("\n" + "\n".join(log_buffer))
-            raise Exception(f"Failed to search memories: {str(e)}")
-
-    def _filter_by_token_budget(
-        self, results: list[dict[str, Any]], max_tokens: int
-    ) -> tuple[list[dict[str, Any]], int]:
-        """
-        Filter results to fit within token budget.
-
-        Counts tokens only for the 'text' field using tiktoken (cl100k_base encoding).
-        Stops before including a fact that would exceed the budget.
-
-        Args:
-            results: List of search results
-            max_tokens: Maximum tokens allowed
-
-        Returns:
-            Tuple of (filtered_results, total_tokens_used)
-        """
-        encoding = _get_tiktoken_encoding()
-
-        filtered_results = []
-        total_tokens = 0
-
-        for result in results:
-            text = result.get("text", "")
-            text_tokens = len(encoding.encode(text))
-
-            # Check if adding this result would exceed budget
-            if total_tokens + text_tokens <= max_tokens:
-                filtered_results.append(result)
-                total_tokens += text_tokens
-            else:
-                # Stop before including a fact that would exceed limit
-                break
-
-        return filtered_results, total_tokens
-
-    async def get_document(
-        self,
-        document_id: str,
-        bank_id: str,
-        *,
-        request_context: "RequestContext",
-    ) -> dict[str, Any] | None:
-        """
-        Retrieve document metadata and statistics.
-
-        Args:
-            document_id: Document ID to retrieve
-            bank_id: bank ID that owns the document
-            request_context: Request context for authentication.
-
-        Returns:
-            Dictionary with document info or None if not found
-        """
-        await self._authenticate_tenant(request_context)
-        pool = await self._get_pool()
-        async with acquire_with_retry(pool) as conn:
-            doc = await conn.fetchrow(
-                f"""
-                SELECT d.id, d.bank_id, d.original_text, d.content_hash,
-                       d.created_at, d.updated_at, COUNT(mu.id) as unit_count
-                FROM {fq_table("documents")} d
-                LEFT JOIN {fq_table("memory_units")} mu ON mu.document_id = d.id
-                WHERE d.id = $1 AND d.bank_id = $2
-                GROUP BY d.id, d.bank_id, d.original_text, d.content_hash, d.created_at, d.updated_at
-                """,
-                document_id,
-                bank_id,
-            )
-
-            if not doc:
-                return None
-
-            return {
-                "id": doc["id"],
-                "bank_id": doc["bank_id"],
-                "original_text": doc["original_text"],
-                "content_hash": doc["content_hash"],
-                "memory_unit_count": doc["unit_count"],
-                "created_at": doc["created_at"].isoformat() if doc["created_at"] else None,
-                "updated_at": doc["updated_at"].isoformat() if doc["updated_at"] else None,
-            }
-
-    async def delete_document(
-        self,
-        document_id: str,
-        bank_id: str,
-        *,
-        request_context: "RequestContext",
-    ) -> dict[str, int]:
-        """
-        Delete a document and all its associated memory units and links.
-
-        Args:
-            document_id: Document ID to delete
-            bank_id: bank ID that owns the document
-            request_context: Request context for authentication.
-
-        Returns:
-            Dictionary with counts of deleted items
-        """
-        await self._authenticate_tenant(request_context)
-        pool = await self._get_pool()
-        async with acquire_with_retry(pool) as conn:
-            async with conn.transaction():
-                # Count units before deletion
-                units_count = await conn.fetchval(
-                    f"SELECT COUNT(*) FROM {fq_table('memory_units')} WHERE document_id = $1", document_id
-                )
-
-                # Delete document (cascades to memory_units and all their links)
-                deleted = await conn.fetchval(
-                    f"DELETE FROM {fq_table('documents')} WHERE id = $1 AND bank_id = $2 RETURNING id",
-                    document_id,
-                    bank_id,
-                )
-
-                return {"document_deleted": 1 if deleted else 0, "memory_units_deleted": units_count if deleted else 0}
-
-    async def delete_memory_unit(
-        self,
-        unit_id: str,
-        *,
-        request_context: "RequestContext",
-    ) -> dict[str, Any]:
-        """
-        Delete a single memory unit and all its associated links.
-
-        Due to CASCADE DELETE constraints, this will automatically delete:
-        - All links from this unit (memory_links where from_unit_id = unit_id)
-        - All links to this unit (memory_links where to_unit_id = unit_id)
-        - All entity associations (unit_entities where unit_id = unit_id)
-
-        Args:
-            unit_id: UUID of the memory unit to delete
-            request_context: Request context for authentication.
-
-        Returns:
-            Dictionary with deletion result
-        """
-        await self._authenticate_tenant(request_context)
-        pool = await self._get_pool()
-        async with acquire_with_retry(pool) as conn:
-            async with conn.transaction():
-                # Delete the memory unit (cascades to links and associations)
-                deleted = await conn.fetchval(
-                    f"DELETE FROM {fq_table('memory_units')} WHERE id = $1 RETURNING id", unit_id
-                )
-
-                return {
-                    "success": deleted is not None,
-                    "unit_id": str(deleted) if deleted else None,
-                    "message": "Memory unit and all its links deleted successfully"
-                    if deleted
-                    else "Memory unit not found",
-                }
-
-    async def delete_bank(
-        self,
-        bank_id: str,
-        fact_type: str | None = None,
-        *,
-        request_context: "RequestContext",
-    ) -> dict[str, int]:
-        """
-        Delete all data for a specific agent (multi-tenant cleanup).
-
-        This is much more efficient than dropping all tables and allows
-        multiple agents to coexist in the same database.
-
-        Deletes (with CASCADE):
-        - All memory units for this bank (optionally filtered by fact_type)
-        - All entities for this bank (if deleting all memory units)
-        - All associated links, unit-entity associations, and co-occurrences
-
-        Args:
-            bank_id: bank ID to delete
-            fact_type: Optional fact type filter (world, experience, opinion). If provided, only deletes memories of that type.
-            request_context: Request context for authentication.
-
-        Returns:
-            Dictionary with counts of deleted items
-        """
-        await self._authenticate_tenant(request_context)
-        pool = await self._get_pool()
-        async with acquire_with_retry(pool) as conn:
-            async with conn.transaction():
-                # Ensure transaction is not in read-only mode (can happen with connection poolers)
-                # Using SET LOCAL so it only affects this transaction, not the session
-                await conn.execute("SET LOCAL transaction_read_only TO off")
-                try:
-                    if fact_type:
-                        # Delete only memories of a specific fact type
-                        units_count = await conn.fetchval(
-                            f"SELECT COUNT(*) FROM {fq_table('memory_units')} WHERE bank_id = $1 AND fact_type = $2",
-                            bank_id,
-                            fact_type,
-                        )
-                        await conn.execute(
-                            f"DELETE FROM {fq_table('memory_units')} WHERE bank_id = $1 AND fact_type = $2",
-                            bank_id,
-                            fact_type,
-                        )
-
-                        # Note: We don't delete entities when fact_type is specified,
-                        # as they may be referenced by other memory units
-                        return {"memory_units_deleted": units_count, "entities_deleted": 0}
-                    else:
-                        # Delete all data for the bank
-                        units_count = await conn.fetchval(
-                            f"SELECT COUNT(*) FROM {fq_table('memory_units')} WHERE bank_id = $1", bank_id
-                        )
-                        entities_count = await conn.fetchval(
-                            f"SELECT COUNT(*) FROM {fq_table('entities')} WHERE bank_id = $1", bank_id
-                        )
-                        documents_count = await conn.fetchval(
-                            f"SELECT COUNT(*) FROM {fq_table('documents')} WHERE bank_id = $1", bank_id
-                        )
-
-                        # Delete documents (cascades to chunks)
-                        await conn.execute(f"DELETE FROM {fq_table('documents')} WHERE bank_id = $1", bank_id)
-
-                        # Delete memory units (cascades to unit_entities, memory_links)
-                        await conn.execute(f"DELETE FROM {fq_table('memory_units')} WHERE bank_id = $1", bank_id)
-
-                        # Delete entities (cascades to unit_entities, entity_cooccurrences, memory_links with entity_id)
-                        await conn.execute(f"DELETE FROM {fq_table('entities')} WHERE bank_id = $1", bank_id)
-
-                        # Delete the bank profile itself
-                        await conn.execute(f"DELETE FROM {fq_table('banks')} WHERE bank_id = $1", bank_id)
-
-                        return {
-                            "memory_units_deleted": units_count,
-                            "entities_deleted": entities_count,
-                            "documents_deleted": documents_count,
-                            "bank_deleted": True,
-                        }
-
-                except Exception as e:
-                    raise Exception(f"Failed to delete agent data: {str(e)}")
-
-    async def get_graph_data(
-        self,
-        bank_id: str | None = None,
-        fact_type: str | None = None,
-        *,
-        limit: int = 1000,
-        request_context: "RequestContext",
+        bank_id,
+        query,
+        fact_type,
+        thinking_budget,
+        max_tokens,
+        enable_trace,
+        question_date=None,
+        include_entities=False,
+        max_entity_tokens=500,
+        include_chunks=False,
+        max_chunk_tokens=8192,
+        request_context=None,
+        tags=None,
+        mode=None,
+        shared_bank_id=None,
     ):
-        """
-        Get graph data for visualization.
-
-        Args:
-            bank_id: Filter by bank ID
-            fact_type: Filter by fact type (world, experience, opinion)
-            limit: Maximum number of items to return (default: 1000)
-            request_context: Request context for authentication.
-
-        Returns:
-            Dict with nodes, edges, table_rows, total_units, and limit
-        """
-        await self._authenticate_tenant(request_context)
-        pool = await self._get_pool()
-        async with acquire_with_retry(pool) as conn:
-            # Get memory units, optionally filtered by bank_id and fact_type
-            query_conditions = []
-            query_params = []
-            param_count = 0
-
-            if bank_id:
-                param_count += 1
-                query_conditions.append(f"bank_id = ${param_count}")
-                query_params.append(bank_id)
-
-            if fact_type:
-                param_count += 1
-                query_conditions.append(f"fact_type = ${param_count}")
-                query_params.append(fact_type)
-
-            where_clause = "WHERE " + " AND ".join(query_conditions) if query_conditions else ""
-
-            # Get total count first
-            total_count_result = await conn.fetchrow(
-                f"""
-                SELECT COUNT(*) as total
-                FROM {fq_table("memory_units")}
-                {where_clause}
-            """,
-                *query_params,
-            )
-            total_count = total_count_result["total"] if total_count_result else 0
-
-            # Get units with limit
-            param_count += 1
-            units = await conn.fetch(
-                f"""
-                SELECT id, text, event_date, context, occurred_start, occurred_end, mentioned_at, document_id, chunk_id, fact_type
-                FROM {fq_table("memory_units")}
-                {where_clause}
-                ORDER BY mentioned_at DESC NULLS LAST, event_date DESC
-                LIMIT ${param_count}
-            """,
-                *query_params,
-                limit,
-            )
-
-            # Get links, filtering to only include links between units of the selected agent
-            # Use DISTINCT ON with LEAST/GREATEST to deduplicate bidirectional links
-            unit_ids = [row["id"] for row in units]
-            if unit_ids:
-                links = await conn.fetch(
-                    f"""
-                    SELECT DISTINCT ON (LEAST(ml.from_unit_id, ml.to_unit_id), GREATEST(ml.from_unit_id, ml.to_unit_id), ml.link_type, COALESCE(ml.entity_id, '00000000-0000-0000-0000-000000000000'::uuid))
-                        ml.from_unit_id,
-                        ml.to_unit_id,
-                        ml.link_type,
-                        ml.weight,
-                        e.canonical_name as entity_name
-                    FROM {fq_table("memory_links")} ml
-                    LEFT JOIN {fq_table("entities")} e ON ml.entity_id = e.id
-                    WHERE ml.from_unit_id = ANY($1::uuid[]) AND ml.to_unit_id = ANY($1::uuid[])
-                    ORDER BY LEAST(ml.from_unit_id, ml.to_unit_id), GREATEST(ml.from_unit_id, ml.to_unit_id), ml.link_type, COALESCE(ml.entity_id, '00000000-0000-0000-0000-000000000000'::uuid), ml.weight DESC
-                """,
-                    unit_ids,
-                )
-            else:
-                links = []
-
-            # Get entity information
-            unit_entities = await conn.fetch(f"""
-                SELECT ue.unit_id, e.canonical_name
-                FROM {fq_table("unit_entities")} ue
-                JOIN {fq_table("entities")} e ON ue.entity_id = e.id
-                ORDER BY ue.unit_id
-            """)
-
-        # Build entity mapping
-        entity_map = {}
-        for row in unit_entities:
-            unit_id = row["unit_id"]
-            entity_name = row["canonical_name"]
-            if unit_id not in entity_map:
-                entity_map[unit_id] = []
-            entity_map[unit_id].append(entity_name)
-
-        # Build nodes
-        nodes = []
-        for row in units:
-            unit_id = row["id"]
-            text = row["text"]
-            event_date = row["event_date"]
-            context = row["context"]
-
-            entities = entity_map.get(unit_id, [])
-            entity_count = len(entities)
-
-            # Color by entity count
-            if entity_count == 0:
-                color = "#e0e0e0"
-            elif entity_count == 1:
-                color = "#90caf9"
-            else:
-                color = "#42a5f5"
-
-            nodes.append(
-                {
-                    "data": {
-                        "id": str(unit_id),
-                        "label": f"{text[:30]}..." if len(text) > 30 else text,
-                        "text": text,
-                        "date": event_date.isoformat() if event_date else "",
-                        "context": context if context else "",
-                        "entities": ", ".join(entities) if entities else "None",
-                        "color": color,
-                    }
-                }
-            )
-
-        # Build edges
-        edges = []
-        for row in links:
-            from_id = str(row["from_unit_id"])
-            to_id = str(row["to_unit_id"])
-            link_type = row["link_type"]
-            weight = row["weight"]
-            entity_name = row["entity_name"]
-
-            # Color by link type
-            if link_type == "temporal":
-                color = "#00bcd4"
-                line_style = "dashed"
-            elif link_type == "semantic":
-                color = "#ff69b4"
-                line_style = "solid"
-            elif link_type == "entity":
-                color = "#ffd700"
-                line_style = "solid"
-            else:
-                color = "#999999"
-                line_style = "solid"
-
-            edges.append(
-                {
-                    "data": {
-                        "id": f"{from_id}-{to_id}-{link_type}",
-                        "source": from_id,
-                        "target": to_id,
-                        "linkType": link_type,
-                        "weight": weight,
-                        "entityName": entity_name if entity_name else "",
-                        "color": color,
-                        "lineStyle": line_style,
-                    }
-                }
-            )
-
-        # Build table rows
-        table_rows = []
-        for row in units:
-            unit_id = row["id"]
-            entities = entity_map.get(unit_id, [])
-
-            table_rows.append(
-                {
-                    "id": str(unit_id),
-                    "text": row["text"],
-                    "context": row["context"] if row["context"] else "N/A",
-                    "occurred_start": row["occurred_start"].isoformat() if row["occurred_start"] else None,
-                    "occurred_end": row["occurred_end"].isoformat() if row["occurred_end"] else None,
-                    "mentioned_at": row["mentioned_at"].isoformat() if row["mentioned_at"] else None,
-                    "date": row["event_date"].strftime("%Y-%m-%d %H:%M")
-                    if row["event_date"]
-                    else "N/A",  # Deprecated, kept for backwards compatibility
-                    "entities": ", ".join(entities) if entities else "None",
-                    "document_id": row["document_id"],
-                    "chunk_id": row["chunk_id"] if row["chunk_id"] else None,
-                    "fact_type": row["fact_type"],
-                }
-            )
-
-        return {"nodes": nodes, "edges": edges, "table_rows": table_rows, "total_units": total_count, "limit": limit}
-
-    async def list_memory_units(
-        self,
-        bank_id: str,
-        *,
-        fact_type: str | None = None,
-        search_query: str | None = None,
-        limit: int = 100,
-        offset: int = 0,
-        request_context: "RequestContext",
-    ):
-        """
-        List memory units for table view with optional full-text search.
-
-        Args:
-            bank_id: Filter by bank ID
-            fact_type: Filter by fact type (world, experience, opinion)
-            search_query: Full-text search query (searches text and context fields)
-            limit: Maximum number of results to return
-            offset: Offset for pagination
-            request_context: Request context for authentication.
-
-        Returns:
-            Dict with items (list of memory units) and total count
-        """
-        await self._authenticate_tenant(request_context)
-        pool = await self._get_pool()
-        async with acquire_with_retry(pool) as conn:
-            # Build query conditions
-            query_conditions = []
-            query_params = []
-            param_count = 0
-
-            if bank_id:
-                param_count += 1
-                query_conditions.append(f"bank_id = ${param_count}")
-                query_params.append(bank_id)
-
-            if fact_type:
-                param_count += 1
-                query_conditions.append(f"fact_type = ${param_count}")
-                query_params.append(fact_type)
-
-            if search_query:
-                # Full-text search on text and context fields using ILIKE
-                param_count += 1
-                query_conditions.append(f"(text ILIKE ${param_count} OR context ILIKE ${param_count})")
-                query_params.append(f"%{search_query}%")
-
-            where_clause = "WHERE " + " AND ".join(query_conditions) if query_conditions else ""
-
-            # Get total count
-            count_query = f"""
-                SELECT COUNT(*) as total
-                FROM {fq_table("memory_units")}
-                {where_clause}
-            """
-            count_result = await conn.fetchrow(count_query, *query_params)
-            total = count_result["total"]
-
-            # Get units with limit and offset
-            param_count += 1
-            limit_param = f"${param_count}"
-            query_params.append(limit)
-
-            param_count += 1
-            offset_param = f"${param_count}"
-            query_params.append(offset)
-
-            units = await conn.fetch(
-                f"""
-                SELECT id, text, event_date, context, fact_type, mentioned_at, occurred_start, occurred_end, chunk_id
-                FROM {fq_table("memory_units")}
-                {where_clause}
-                ORDER BY mentioned_at DESC NULLS LAST, created_at DESC
-                LIMIT {limit_param} OFFSET {offset_param}
-            """,
-                *query_params,
-            )
-
-            # Get entity information for these units
-            if units:
-                unit_ids = [row["id"] for row in units]
-                unit_entities = await conn.fetch(
-                    f"""
-                    SELECT ue.unit_id, e.canonical_name
-                    FROM {fq_table("unit_entities")} ue
-                    JOIN {fq_table("entities")} e ON ue.entity_id = e.id
-                    WHERE ue.unit_id = ANY($1::uuid[])
-                    ORDER BY ue.unit_id
-                """,
-                    unit_ids,
-                )
-            else:
-                unit_entities = []
-
-            # Build entity mapping
-            entity_map = {}
-            for row in unit_entities:
-                unit_id = row["unit_id"]
-                entity_name = row["canonical_name"]
-                if unit_id not in entity_map:
-                    entity_map[unit_id] = []
-                entity_map[unit_id].append(entity_name)
-
-            # Build result items
-            items = []
-            for row in units:
-                unit_id = row["id"]
-                entities = entity_map.get(unit_id, [])
-
-                items.append(
-                    {
-                        "id": str(unit_id),
-                        "text": row["text"],
-                        "context": row["context"] if row["context"] else "",
-                        "date": row["event_date"].isoformat() if row["event_date"] else "",
-                        "fact_type": row["fact_type"],
-                        "mentioned_at": row["mentioned_at"].isoformat() if row["mentioned_at"] else None,
-                        "occurred_start": row["occurred_start"].isoformat() if row["occurred_start"] else None,
-                        "occurred_end": row["occurred_end"].isoformat() if row["occurred_end"] else None,
-                        "entities": ", ".join(entities) if entities else "",
-                        "chunk_id": row["chunk_id"] if row["chunk_id"] else None,
-                    }
-                )
-
-            return {"items": items, "total": total, "limit": limit, "offset": offset}
-
-    async def list_documents(
-        self,
-        bank_id: str,
-        *,
-        search_query: str | None = None,
-        limit: int = 100,
-        offset: int = 0,
-        request_context: "RequestContext",
-    ):
-        """
-        List documents with optional search and pagination.
-
-        Args:
-            bank_id: bank ID (required)
-            search_query: Search in document ID
-            limit: Maximum number of results
-            offset: Offset for pagination
-            request_context: Request context for authentication.
-
-        Returns:
-            Dict with items (list of documents without original_text) and total count
-        """
-        await self._authenticate_tenant(request_context)
-        pool = await self._get_pool()
-        async with acquire_with_retry(pool) as conn:
-            # Build query conditions
-            query_conditions = []
-            query_params = []
-            param_count = 0
-
-            param_count += 1
-            query_conditions.append(f"bank_id = ${param_count}")
-            query_params.append(bank_id)
-
-            if search_query:
-                # Search in document ID
-                param_count += 1
-                query_conditions.append(f"id ILIKE ${param_count}")
-                query_params.append(f"%{search_query}%")
-
-            where_clause = "WHERE " + " AND ".join(query_conditions) if query_conditions else ""
-
-            # Get total count
-            count_query = f"""
-                SELECT COUNT(*) as total
-                FROM {fq_table("documents")}
-                {where_clause}
-            """
-            count_result = await conn.fetchrow(count_query, *query_params)
-            total = count_result["total"]
-
-            # Get documents with limit and offset (without original_text for performance)
-            param_count += 1
-            limit_param = f"${param_count}"
-            query_params.append(limit)
-
-            param_count += 1
-            offset_param = f"${param_count}"
-            query_params.append(offset)
-
-            documents = await conn.fetch(
-                f"""
-                SELECT
-                    id,
-                    bank_id,
-                    content_hash,
-                    created_at,
-                    updated_at,
-                    LENGTH(original_text) as text_length,
-                    retain_params
-                FROM {fq_table("documents")}
-                {where_clause}
-                ORDER BY created_at DESC
-                LIMIT {limit_param} OFFSET {offset_param}
-            """,
-                *query_params,
-            )
-
-            # Get memory unit count for each document
-            if documents:
-                doc_ids = [(row["id"], row["bank_id"]) for row in documents]
-
-                # Create placeholders for the query
-                placeholders = []
-                params_for_count = []
-                for i, (doc_id, bank_id_val) in enumerate(doc_ids):
-                    idx_doc = i * 2 + 1
-                    idx_agent = i * 2 + 2
-                    placeholders.append(f"(document_id = ${idx_doc} AND bank_id = ${idx_agent})")
-                    params_for_count.extend([doc_id, bank_id_val])
-
-                where_clause_count = " OR ".join(placeholders)
-
-                unit_counts = await conn.fetch(
-                    f"""
-                    SELECT document_id, bank_id, COUNT(*) as unit_count
-                    FROM {fq_table("memory_units")}
-                    WHERE {where_clause_count}
-                    GROUP BY document_id, bank_id
-                """,
-                    *params_for_count,
-                )
-            else:
-                unit_counts = []
-
-            # Build count mapping
-            count_map = {(row["document_id"], row["bank_id"]): row["unit_count"] for row in unit_counts}
-
-            # Build result items
-            items = []
-            for row in documents:
-                doc_id = row["id"]
-                bank_id_val = row["bank_id"]
-                unit_count = count_map.get((doc_id, bank_id_val), 0)
-
-                items.append(
-                    {
-                        "id": doc_id,
-                        "bank_id": bank_id_val,
-                        "content_hash": row["content_hash"],
-                        "created_at": row["created_at"].isoformat() if row["created_at"] else "",
-                        "updated_at": row["updated_at"].isoformat() if row["updated_at"] else "",
-                        "text_length": row["text_length"] or 0,
-                        "memory_unit_count": unit_count,
-                        "retain_params": row["retain_params"] if row["retain_params"] else None,
-                    }
-                )
-
-            return {"items": items, "total": total, "limit": limit, "offset": offset}
-
-    async def get_chunk(
-        self,
-        chunk_id: str,
-        *,
-        request_context: "RequestContext",
-    ):
-        """
-        Get a specific chunk by its ID.
-
-        Args:
-            chunk_id: Chunk ID (format: bank_id_document_id_chunk_index)
-            request_context: Request context for authentication.
-
-        Returns:
-            Dict with chunk details including chunk_text, or None if not found
-        """
-        await self._authenticate_tenant(request_context)
-        pool = await self._get_pool()
-        async with acquire_with_retry(pool) as conn:
-            chunk = await conn.fetchrow(
-                f"""
-                SELECT
-                    chunk_id,
-                    document_id,
-                    bank_id,
-                    chunk_index,
-                    chunk_text,
-                    created_at
-                FROM {fq_table("chunks")}
-                WHERE chunk_id = $1
-            """,
-                chunk_id,
-            )
-
-            if not chunk:
-                return None
-
-            return {
-                "chunk_id": chunk["chunk_id"],
-                "document_id": chunk["document_id"],
-                "bank_id": chunk["bank_id"],
-                "chunk_index": chunk["chunk_index"],
-                "chunk_text": chunk["chunk_text"],
-                "created_at": chunk["created_at"].isoformat() if chunk["created_at"] else "",
-            }
-
-    async def _evaluate_opinion_update_async(
-        self,
-        opinion_text: str,
-        opinion_confidence: float,
-        new_event_text: str,
-        entity_name: str,
-    ) -> dict[str, Any] | None:
-        """
-        Evaluate if an opinion should be updated based on a new event.
-
-        Args:
-            opinion_text: Current opinion text (includes reasons)
-            opinion_confidence: Current confidence score (0.0-1.0)
-            new_event_text: Text of the new event
-            entity_name: Name of the entity this opinion is about
-
-        Returns:
-            Dict with 'action' ('keep'|'update'), 'new_confidence', 'new_text' (if action=='update')
-            or None if no changes needed
-        """
-
-        class OpinionEvaluation(BaseModel):
-            """Evaluation of whether an opinion should be updated."""
-
-            action: str = Field(description="Action to take: 'keep' (no change) or 'update' (modify opinion)")
-            reasoning: str = Field(description="Brief explanation of why this action was chosen")
-            new_confidence: float = Field(
-                description="New confidence score (0.0-1.0). Can be higher, lower, or same as before."
-            )
-            new_opinion_text: str | None = Field(
-                default=None,
-                description="If action is 'update', the revised opinion text that acknowledges the previous view. Otherwise None.",
-            )
-
-        evaluation_prompt = f"""You are evaluating whether an existing opinion should be updated based on new information.
-
-ENTITY: {entity_name}
-
-EXISTING OPINION:
-{opinion_text}
-Current confidence: {opinion_confidence:.2f}
-
-NEW EVENT:
-{new_event_text}
-
-Evaluate whether this new event:
-1. REINFORCES the opinion (increase confidence, keep text)
-2. WEAKENS the opinion (decrease confidence, keep text)
-3. CHANGES the opinion (update both text and confidence, noting "Previously I thought X, but now Y...")
-4. IRRELEVANT (keep everything as is)
-
-Guidelines:
-- Only suggest 'update' action if the new event genuinely contradicts or significantly modifies the opinion
-- If updating the text, acknowledge the previous opinion and explain the change
-- Confidence should reflect accumulated evidence (0.0 = no confidence, 1.0 = very confident)
-- Small changes in confidence are normal; large jumps should be rare"""
-
-        try:
-            result = await self._llm_registry.get_llm("reflect", "opinion_extraction").call(
-                messages=[
-                    {"role": "system", "content": "You evaluate and update opinions based on new information."},
-                    {"role": "user", "content": evaluation_prompt},
-                ],
-                response_format=OpinionEvaluation,
-                scope="memory_evaluate_opinion",
-                temperature=0.3,  # Lower temperature for more consistent evaluation
-            )
-
-            # Only return updates if something actually changed
-            if result.action == "keep" and abs(result.new_confidence - opinion_confidence) < 0.01:
-                return None
-
-            return {
-                "action": result.action,
-                "reasoning": result.reasoning,
-                "new_confidence": result.new_confidence,
-                "new_text": result.new_opinion_text if result.action == "update" else None,
-            }
-
-        except Exception as e:
-            logger.warning(f"Failed to evaluate opinion update: {str(e)}")
-            return None
-
-    async def _handle_form_opinion(self, task_dict: dict[str, Any]):
-        """
-        Handler for form opinion tasks.
-
-        Args:
-            task_dict: Dict with keys: 'bank_id', 'answer_text', 'query', 'tenant_id'
-        """
-        bank_id = task_dict["bank_id"]
-        answer_text = task_dict["answer_text"]
-        query = task_dict["query"]
-        tenant_id = task_dict.get("tenant_id")
-
-        await self._extract_and_store_opinions_async(
-            bank_id=bank_id, answer_text=answer_text, query=query, tenant_id=tenant_id
+        return await self._recall._search_with_retries(
+            bank_id,
+            query,
+            fact_type,
+            thinking_budget,
+            max_tokens,
+            enable_trace,
+            question_date,
+            include_entities,
+            max_entity_tokens,
+            include_chunks,
+            max_chunk_tokens,
+            request_context,
+            tags=tags,
+            mode=mode,
+            shared_bank_id=shared_bank_id,
         )
 
-    async def _handle_reconsolidate_engrams(self, task_dict: dict[str, Any]) -> None:
-        """
-        Handler for reconsolidate_engrams background tasks (RF1+RF3 — Epic 10).
-
-        Args:
-            task_dict: Dict with keys:
-                'bank_id'               — bank to reconsolidate
-                'reconsolidation_level' — 'minimal'|'moderate'|'schema_update'|'aggressive'
-                'prediction_error_ids'  — list[str] of Engram IDs flagged by PE (Epic 11)
-                'query'                 — original reflect query (RF3: Qdrant semantic trigger)
-                'tenant_id'             — optional tenant for auth
-        """
-        bank_id = task_dict["bank_id"]
-        reconsolidation_level = task_dict.get("reconsolidation_level", "moderate")
-        prediction_error_ids: list[str] = task_dict.get("prediction_error_ids", [])
-        query: str = task_dict.get("query", "")
-
-        await self._reconsolidate_engrams_async(
-            bank_id=bank_id,
-            reconsolidation_level=reconsolidation_level,
-            prediction_error_ids=prediction_error_ids,
-            query=query,
-        )
-
-    async def _reconsolidate_engrams_async(
-        self,
-        bank_id: str,
-        reconsolidation_level: str,
-        prediction_error_ids: list[str],
-        query: str = "",
-    ) -> None:
-        """
-        RF1+RF3: Priority-based reconsolidation triggered by semantic similarity (Qdrant).
-
-        Steps:
-        1. Generate query embedding → Qdrant similarity search (RF3: semantic trigger)
-        2. Entity-match fallback (RF2): union of Qdrant + entity-match candidates
-        3. Fetch FullEngram objects for candidates only (not all active Engrams)
-        4. Build priority queue: PE-flagged → weak (strength < 0.3) → rest by last_accessed
-        5. For each Engram in top-N: evaluate via LLM → CONFIRMED/MODIFIED/CONTRADICTION
-        6. Apply strength delta and persist to engram_dictionary
-
-        Bio mapping:
-        - Qdrant trigger (≥0.6 cosine) → hippocampal pattern completion: similar activation
-                                          reopens the lability window for reconsolidation
-        - Entity fallback              → direct associative recall (always available)
-        - Weak Engrams first           → BCM rule: plasticity highest at low-weight synapses
-        - PE Engrams prioritised       → Dopaminergic error signal gates LTP/LTD
-        - Budget cap                   → Energy cost of offline reconsolidation is bounded
-
-        Concept reference: docs/engram/concept.md — Chapter 10 (RF1, RF2, RF3)
-        """
-        from .engram_dictionary import filter_entries, update_strength
-        from .reflect.prediction_error_registry import PredictionErrorRegistry
-        from .reflect.reconsolidation_queue import (
-            ReconsolidationOutcome,
-            apply_strength_delta,
-            build_reconsolidation_queue,
-        )
-        from .reflect.semantic_trigger import (
-            find_entity_match_candidates,
-            find_reconsolidation_candidates,
-            merge_candidates,
-        )
-        from .response_models import EngramMetadata, FullEngram
-        from .session.session_manager import RetrievalMode
-
-        try:
-            pool = await self._get_pool()
-
-            # Step 1: Semantic trigger — Qdrant similarity search (RF3)
-            qdrant_candidates = []
-            if query:
-                try:
-                    from .retain import embedding_utils
-                    from .search.engram_retrieval import EngramRetriever
-                    from .search.retrieval import get_default_graph_retriever
-
-                    query_embedding = embedding_utils.generate_embedding(self.embeddings, query)
-                    _retriever = get_default_graph_retriever()
-                    _qdrant = _retriever._qdrant if isinstance(_retriever, EngramRetriever) else None
-                    if _qdrant is not None:
-                        qdrant_candidates = await find_reconsolidation_candidates(
-                            qdrant_client=_qdrant,
-                            query_embedding=query_embedding,
-                            bank_id=bank_id,
-                        )
-                except Exception as e:
-                    logger.warning("[RECON] Semantic trigger failed, continuing: %s", e)
-
-            # Step 2: Entity-match fallback (RF2) — extract potential entity names from query.
-            # Heuristic: capitalized tokens after the first word are likely proper nouns / entity names.
-            # Bio mapping: associative recall via named-entity binding (always available, no embedding needed).
-            _entity_names: list[str] = []
-            if query:
-                _tokens = query.split()
-                _entity_names = [t.rstrip("?.,;!") for t in _tokens[1:] if t and t[0].isupper()]
-            entity_candidates = await find_entity_match_candidates(
-                pool=pool,
-                bank_id=bank_id,
-                entity_names=_entity_names,
-                fq_table_fn=fq_table,
-            )
-            merged = merge_candidates(qdrant_candidates, entity_candidates)
-
-            # Step 3: Fetch FullEngram objects — candidates if Qdrant found matches, else all active
-            if merged:
-                candidate_ids = {c.engram_id for c in merged}
-                rows = await filter_entries(pool, bank_id=bank_id, status="active", limit=500)
-                rows = [r for r in rows if str(r.get("engram_id", "")) in candidate_ids]
-            else:
-                # No semantic candidates → skip reconsolidation.
-                # Without a semantic trigger there is no lability window to open — processing
-                # arbitrary Engrams would be speculative and wasteful.
-                # Bio mapping: no partial-cue activation → no reconsolidation window.
-                logger.debug("[RECON] No semantic candidates for bank %s — skipping reconsolidation.", bank_id)
-                return
-
-            if not rows:
-                return
-
-            # Build FullEngram objects from dict rows
-            engrams: list[FullEngram] = []
-            for row in rows:
-                meta = EngramMetadata(
-                    engram_id=row["engram_id"],
-                    bank_id=bank_id,
-                    strength=float(row.get("strength", 0.0)),
-                    last_accessed=row.get("last_accessed"),
-                )
-                engrams.append(FullEngram(engram_id=row["engram_id"], metadata=meta))
-
-            # Step 2: Build priority queue with PE registry
-            pe_registry = PredictionErrorRegistry()
-            for eid in prediction_error_ids:
-                pe_registry.flag_prediction_error(eid, "prediction_error_from_task")
-
-            # Build ModeConfig with the given reconsolidation_level (base from PRECISION profile)
-            from .session.mode_config import MODE_PROFILES
-
-            base_config = MODE_PROFILES[RetrievalMode.PRECISION].with_overrides(
-                reconsolidation_level=reconsolidation_level
-            )
-            queue = build_reconsolidation_queue(engrams, pe_registry, base_config)
-
-            if not queue:
-                return
-
-            logger.debug(
-                "[RECON] bank=%s level=%s queue_size=%d",
-                bank_id,
-                reconsolidation_level,
-                len(queue),
-            )
-
-            # RF4 (T4): Load bank disposition → DispositionProfile for modulated strength updates
-            from .reflect.disposition_profile import NEUTRAL as _NEUTRAL_DISPOSITION
-            from .reflect.disposition_profile import get_disposition_profile
-            from .retain.bank_utils import get_bank_profile
-
-            try:
-                bank_profile = await get_bank_profile(pool, bank_id)
-                disposition = get_disposition_profile(bank_profile["disposition"])
-            except Exception as e:
-                logger.warning("[RECON] Could not load disposition for bank %s, using neutral: %s", bank_id, e)
-                disposition = _NEUTRAL_DISPOSITION
-
-            # Build similarity score lookup for prompt context (RF3+RF4)
-            similarity_lookup: dict[str, float] = {c.engram_id: c.similarity_score for c in merged}
-
-            # Step 3 + 4: LLM evaluation → modulated strength update (RF4)
-            from .reflect.disposition_profile import apply_modulated_strength_delta
-            from .reflect.reconsolidation_queue import STRENGTH_DELTA, ReconsolidationOutcome
-
-            for engram in queue:
-                eid = str(engram.engram_id)
-                current_strength = engram.metadata.strength if engram.metadata else 0.0
-                sim_score = similarity_lookup.get(eid, 0.0)
-
-                try:
-                    outcome = await self._evaluate_engram_reconsolidation_async(
-                        eid,
-                        bank_id,
-                        new_context=query,
-                        similarity_score=sim_score,
-                        disposition_name=disposition.name,
-                    )
-                    if outcome is None:
-                        continue
-
-                    # RF4: modulate delta by disposition (evidence_weight, update_bias, contradiction_tolerance)
-
-                    raw_delta = STRENGTH_DELTA[outcome]
-                    new_strength = apply_modulated_strength_delta(
-                        current_strength=current_strength,
-                        raw_delta=raw_delta,
-                        outcome_is_confirmed=(outcome == ReconsolidationOutcome.CONFIRMED),
-                        similarity_score=sim_score,
-                        disposition=disposition,
-                    )
-                    if abs(new_strength - current_strength) > 0.001:
-                        await update_strength(pool, eid, new_strength)
-                        logger.debug(
-                            "[RECON] engram=%s outcome=%s disposition=%s strength %.3f → %.3f",
-                            eid,
-                            outcome.value,
-                            disposition.name,
-                            current_strength,
-                            new_strength,
-                        )
-                except Exception as e:
-                    logger.warning("[RECON] Failed to reconsolidate engram %s: %s", eid, e)
-
-        except Exception as e:
-            logger.warning("[RECON] Reconsolidation failed for bank %s: %s", bank_id, e)
-
-    async def _evaluate_engram_reconsolidation_async(
-        self,
-        engram_id: str,
-        bank_id: str,
-        new_context: str = "",
-        similarity_score: float = 0.0,
-        disposition_name: str = "neutral",
-    ) -> "ReconsolidationOutcome | None":
-        """
-        Evaluate whether an Engram should be confirmed, modified, or marked as contradiction.
-
-        Fetches the Engram text from memory_units and asks the LLM to assess its validity
-        given the new context that triggered reconsolidation (RF4 — T4).
-
-        Args:
-            engram_id:        Engram to evaluate.
-            bank_id:          Bank scope (used for DB fetch).
-            new_context:      The query/content that triggered reconsolidation via semantic
-                              similarity — gives the LLM the "new information" lens.
-            similarity_score: Cosine similarity that triggered this reconsolidation (0.0 if
-                              entity-match fallback). Included in the prompt so the LLM
-                              can calibrate how closely related the new context is.
-            disposition_name: Agent personality for prompt framing — one of
-                              'analytical', 'optimistic', 'conservative', 'neutral'.
-
-        Returns None if evaluation is skipped (LLM unavailable or Engram has no text).
-
-        Bio mapping: post-retrieval lability window — new_context acts as the "new information"
-        that can trigger LTP (CONFIRMED) or LTD (CONTRADICTION) at the reconsolidated synapse.
-        """
-        from uuid import UUID
-
-        from .reflect.reconsolidation_queue import ReconsolidationOutcome
-
-        if self._reflect_llm_config is None:
-            return None
-
-        try:
-            pool = await self._get_pool()
-            async with acquire_with_retry(pool) as conn:
-                row = await conn.fetchrow(
-                    f"SELECT text, confidence_score FROM {fq_table('memory_units')} WHERE id = $1",
-                    UUID(engram_id),
-                )
-            if row is None or not row["text"]:
-                return None
-
-            engram_text = row["text"]
-            confidence = float(row["confidence_score"] or 0.5)
-
-            context_section = ""
-            if new_context:
-                context_section = f"\nNEW CONTEXT (similarity={similarity_score:.2f}): {new_context}\n"
-
-            disposition_desc = _DISPOSITION_DESCRIPTIONS.get(disposition_name, _DISPOSITION_DESCRIPTIONS["neutral"])
-            disposition_section = f"\nAGENT PERSPECTIVE: This agent tends to {disposition_desc}. Apply this perspective when evaluating conflicting evidence.\n"
-
-            prompt = f"""Evaluate and update this stored memory given the new context provided.
-
-STORED MEMORY: {engram_text}
-CURRENT CONFIDENCE: {confidence:.2f}{context_section}{disposition_section}
-Assess whether this memory is:
-1. CONFIRMED — still accurate and relevant given the new context
-2. MODIFIED — partially outdated or needs updating in light of the new context
-3. CONTRADICTION — conflicts with the new context or is clearly wrong
-
-Respond with one of: confirmed, modified, contradiction"""
-
-            result = await self._llm_registry.get_llm("reflect", "reconsolidation").call(
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You evaluate stored memory entries for validity given new information.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                response_format=_ReconsolidationEval,
-                scope="memory_reconsolidate",
-                temperature=0.2,
-            )
-
-            outcome_map = {
-                "confirmed": ReconsolidationOutcome.CONFIRMED,
-                "modified": ReconsolidationOutcome.MODIFIED,
-                "contradiction": ReconsolidationOutcome.CONTRADICTION,
-            }
-            return outcome_map.get(result.outcome.lower(), ReconsolidationOutcome.CONFIRMED)
-
-        except Exception as e:
-            logger.warning("[RECON] LLM eval failed for engram %s: %s", engram_id, e)
-            return None
-
-    async def _handle_reinforce_opinion(self, task_dict: dict[str, Any]):
-        """
-        Handler for reinforce opinion tasks.
-
-        Args:
-            task_dict: Dict with keys: 'bank_id', 'created_unit_ids', 'unit_texts', 'unit_entities'
-        """
-        bank_id = task_dict["bank_id"]
-        created_unit_ids = task_dict["created_unit_ids"]
-        unit_texts = task_dict["unit_texts"]
-        unit_entities = task_dict["unit_entities"]
-
-        await self._reinforce_opinions_async(
-            bank_id=bank_id, created_unit_ids=created_unit_ids, unit_texts=unit_texts, unit_entities=unit_entities
-        )
-
-    async def _reinforce_opinions_async(
-        self,
-        bank_id: str,
-        created_unit_ids: list[str],
-        unit_texts: list[str],
-        unit_entities: list[list[dict[str, str]]],
-    ):
-        """
-        Background task to reinforce opinions based on newly ingested events.
-
-        This runs asynchronously and does not block the put operation.
-
-        Args:
-            bank_id: bank ID
-            created_unit_ids: List of newly created memory unit IDs
-            unit_texts: Texts of the newly created units
-            unit_entities: Entities extracted from each unit
-        """
-        try:
-            # Extract all unique entity names from the new units
-            entity_names = set()
-            for entities_list in unit_entities:
-                for entity in entities_list:
-                    # Handle both Entity objects and dicts
-                    if hasattr(entity, "text"):
-                        entity_names.add(entity.text)
-                    elif isinstance(entity, dict):
-                        entity_names.add(entity["text"])
-
-            if not entity_names:
-                return
-
-            pool = await self._get_pool()
-            async with acquire_with_retry(pool) as conn:
-                # Find all opinions related to these entities
-                opinions = await conn.fetch(
-                    f"""
-                    SELECT DISTINCT mu.id, mu.text, mu.confidence_score, e.canonical_name
-                    FROM {fq_table("memory_units")} mu
-                    JOIN {fq_table("unit_entities")} ue ON mu.id = ue.unit_id
-                    JOIN {fq_table("entities")} e ON ue.entity_id = e.id
-                    WHERE mu.bank_id = $1
-                      AND mu.fact_type = 'opinion'
-                      AND e.canonical_name = ANY($2::text[])
-                    """,
-                    bank_id,
-                    list(entity_names),
-                )
-
-                if not opinions:
-                    return
-
-                # Use cached LLM config
-                if self._reflect_llm_config is None:
-                    logger.error("[REINFORCE] LLM config not available, skipping opinion reinforcement")
-                    return
-
-                # Evaluate each opinion against the new events
-                updates_to_apply = []
-                for opinion in opinions:
-                    opinion_id = str(opinion["id"])
-                    opinion_text = opinion["text"]
-                    opinion_confidence = opinion["confidence_score"]
-                    entity_name = opinion["canonical_name"]
-
-                    # Find all new events mentioning this entity
-                    relevant_events = []
-                    for unit_text, entities_list in zip(unit_texts, unit_entities):
-                        if any(e["text"] == entity_name for e in entities_list):
-                            relevant_events.append(unit_text)
-
-                    if not relevant_events:
-                        continue
-
-                    # Combine all relevant events
-                    combined_events = "\n".join(relevant_events)
-
-                    # Evaluate if opinion should be updated
-                    evaluation = await self._evaluate_opinion_update_async(
-                        opinion_text, opinion_confidence, combined_events, entity_name
-                    )
-
-                    if evaluation:
-                        updates_to_apply.append({"opinion_id": opinion_id, "evaluation": evaluation})
-
-                # Apply all updates in a single transaction
-                if updates_to_apply:
-                    async with conn.transaction():
-                        for update in updates_to_apply:
-                            opinion_id = update["opinion_id"]
-                            evaluation = update["evaluation"]
-
-                            if evaluation["action"] == "update" and evaluation["new_text"]:
-                                # Update both text and confidence
-                                await conn.execute(
-                                    f"""
-                                    UPDATE {fq_table("memory_units")}
-                                    SET text = $1, confidence_score = $2, updated_at = NOW()
-                                    WHERE id = $3
-                                    """,
-                                    evaluation["new_text"],
-                                    evaluation["new_confidence"],
-                                    uuid.UUID(opinion_id),
-                                )
-                            else:
-                                # Only update confidence
-                                await conn.execute(
-                                    f"""
-                                    UPDATE {fq_table("memory_units")}
-                                    SET confidence_score = $1, updated_at = NOW()
-                                    WHERE id = $2
-                                    """,
-                                    evaluation["new_confidence"],
-                                    uuid.UUID(opinion_id),
-                                )
-
-                else:
-                    pass  # No opinions to update
-
-        except Exception as e:
-            logger.error(f"[REINFORCE] Error during opinion reinforcement: {str(e)}")
-            import traceback
-
-            traceback.print_exc()
-
-    # ==================== bank profile Methods ====================
-
-    async def get_bank_profile(
-        self,
-        bank_id: str,
-        *,
-        request_context: "RequestContext",
-    ) -> dict[str, Any]:
-        """
-        Get bank profile (name, disposition + background).
-        Auto-creates agent with default values if not exists.
-
-        Args:
-            bank_id: bank IDentifier
-            request_context: Request context for authentication.
-
-        Returns:
-            Dict with name, disposition traits, and background
-        """
-        await self._authenticate_tenant(request_context)
-        pool = await self._get_pool()
-        profile = await bank_utils.get_bank_profile(pool, bank_id)
-        disposition = profile["disposition"]
-        return {
-            "bank_id": bank_id,
-            "name": profile["name"],
-            "disposition": disposition,
-            "background": profile["background"],
-        }
-
-    async def update_bank_disposition(
-        self,
-        bank_id: str,
-        disposition: dict[str, int],
-        *,
-        request_context: "RequestContext",
-    ) -> None:
-        """
-        Update bank disposition traits.
-
-        Args:
-            bank_id: bank IDentifier
-            disposition: Dict with skepticism, literalism, empathy (all 1-5)
-            request_context: Request context for authentication.
-        """
-        await self._authenticate_tenant(request_context)
-        pool = await self._get_pool()
-        await bank_utils.update_bank_disposition(pool, bank_id, disposition)
-
-    async def merge_bank_background(
-        self,
-        bank_id: str,
-        new_info: str,
-        *,
-        update_disposition: bool = True,
-        request_context: "RequestContext",
-    ) -> dict[str, Any]:
-        """
-        Merge new background information with existing background using LLM.
-        Normalizes to first person ("I") and resolves conflicts.
-        Optionally infers disposition traits from the merged background.
-
-        Args:
-            bank_id: bank IDentifier
-            new_info: New background information to add/merge
-            update_disposition: If True, infer Big Five traits from background (default: True)
-            request_context: Request context for authentication.
-
-        Returns:
-            Dict with 'background' (str) and optionally 'disposition' (dict) keys
-        """
-        await self._authenticate_tenant(request_context)
-        pool = await self._get_pool()
-        return await bank_utils.merge_bank_background(
-            pool, self._reflect_llm_config, bank_id, new_info, update_disposition
-        )
-
-    async def list_banks(
-        self,
-        *,
-        request_context: "RequestContext",
-    ) -> list[dict[str, Any]]:
-        """
-        List all agents in the system.
-
-        Args:
-            request_context: Request context for authentication.
-
-        Returns:
-            List of dicts with bank_id, name, disposition, background, created_at, updated_at
-        """
-        await self._authenticate_tenant(request_context)
-        pool = await self._get_pool()
-        return await bank_utils.list_banks(pool)
-
-    # ==================== Reflect Methods ====================
+    # ------------------------------------------------------------------
+    # Reflect
+    # ------------------------------------------------------------------
 
     async def reflect_async(
         self,
-        bank_id: str,
-        query: str,
+        bank_id,
+        query,
         *,
-        budget: Budget | None = None,
-        context: str | None = None,
-        max_tokens: int = 4096,
-        response_schema: dict | None = None,
-        session: "Session | None" = None,
-        request_context: "RequestContext",
-    ) -> ReflectResult:
-        """
-        Reflect and formulate an answer using bank identity, world facts, and opinions.
-
-        This method:
-        1. Retrieves experience (conversations and events)
-        2. Retrieves world facts (general knowledge)
-        3. Retrieves existing opinions (bank's formed perspectives)
-        4. Uses LLM to formulate an answer
-        5. Extracts and stores any new opinions formed during reflection
-        6. Optionally generates structured output based on response_schema
-        7. Returns plain text answer and the facts used
-
-        Args:
-            bank_id: bank identifier
-            query: Question to answer
-            budget: Budget level for memory exploration (low=100, mid=300, high=600 units)
-            context: Additional context string to include in LLM prompt (not used in recall)
-            response_schema: Optional JSON Schema for structured output
-
-        Returns:
-            ReflectResult containing:
-                - text: Plain text answer (no markdown)
-                - based_on: Dict with 'world', 'experience', and 'opinion' fact lists (MemoryFact objects)
-                - new_opinions: List of newly formed opinions
-                - structured_output: Optional dict if response_schema was provided
-        """
-        # Use cached LLM config
-        if self._reflect_llm_config is None:
-            raise ValueError("Memory LLM API key not set. Set HINDSIGHT_API_LLM_API_KEY environment variable.")
-
-        # Authenticate tenant and set schema in context (for fq_table())
-        await self._authenticate_tenant(request_context)
-
-        # Resolve ModeConfig for session-aware reflect (Epic 06 wire-through; used in Epic 10)
-        mode_config = self._resolve_session_config(session)
-        logger.debug(
-            "Reflect mode_config: mode=%s reconsolidation=%s construction=%s bank=%s",
-            session.mode.value if session else "precision",
-            mode_config.reconsolidation_level,
-            mode_config.construction_style,
-            bank_id,
-        )
-
-        # Validate operation if validator is configured
-        if self._operation_validator:
-            from hindsight_api.extensions import ReflectContext
-
-            ctx = ReflectContext(
-                bank_id=bank_id,
-                query=query,
-                request_context=request_context,
-                budget=budget,
-                context=context,
-            )
-            await self._validate_operation(self._operation_validator.validate_reflect(ctx))
-
-        reflect_start = time.time()
-        reflect_id = f"{bank_id[:8]}-{int(time.time() * 1000) % 100000}"
-        log_buffer = []
-        log_buffer.append(f"[REFLECT {reflect_id}] Query: '{query[:50]}...'")
-
-        # Steps 1-3: Run multi-fact-type search (12-way retrieval: 4 methods × 3 fact types)
-        recall_start = time.time()
-        metrics = get_metrics_collector()
-        with metrics.record_operation(
-            "recall", bank_id=bank_id, source="reflect", budget=budget.value if budget else None
-        ):
-            search_result = await self.recall_async(
-                bank_id=bank_id,
-                query=query,
-                budget=budget,
-                max_tokens=4096,
-                enable_trace=False,
-                fact_type=["experience", "world", "opinion"],
-                include_entities=True,
-                request_context=request_context,
-            )
-        recall_time = time.time() - recall_start
-
-        all_results = search_result.results
-
-        # Split results by fact type for structured response
-        agent_results = [r for r in all_results if r.fact_type == "experience"]
-        world_results = [r for r in all_results if r.fact_type == "world"]
-        opinion_results = [r for r in all_results if r.fact_type == "opinion"]
-
-        log_buffer.append(
-            f"[REFLECT {reflect_id}] Recall: {len(all_results)} facts (experience={len(agent_results)}, world={len(world_results)}, opinion={len(opinion_results)}) in {recall_time:.3f}s"
-        )
-
-        # Format facts for LLM
-        agent_facts_text = think_utils.format_facts_for_prompt(agent_results)
-        world_facts_text = think_utils.format_facts_for_prompt(world_results)
-        opinion_facts_text = think_utils.format_facts_for_prompt(opinion_results)
-
-        # Get bank profile (name, disposition + background)
-        profile = await self.get_bank_profile(bank_id, request_context=request_context)
-        name = profile["name"]
-        disposition = profile["disposition"]  # Typed as DispositionTraits
-        background = profile["background"]
-
-        # Build the prompt
-        prompt = think_utils.build_think_prompt(
-            agent_facts_text=agent_facts_text,
-            world_facts_text=world_facts_text,
-            opinion_facts_text=opinion_facts_text,
-            query=query,
-            name=name,
-            disposition=disposition,
-            background=background,
-            context=context,
-        )
-
-        log_buffer.append(f"[REFLECT {reflect_id}] Prompt: {len(prompt)} chars")
-
-        system_message = think_utils.get_system_message(disposition)
-        messages = [{"role": "system", "content": system_message}, {"role": "user", "content": prompt}]
-
-        # Prepare response_format if schema provided
-        response_format = None
-        if response_schema is not None:
-            # Wrapper class to provide Pydantic-like interface for raw JSON schemas
-            class JsonSchemaWrapper:
-                def __init__(self, schema: dict):
-                    self._schema = schema
-
-                def model_json_schema(self):
-                    return self._schema
-
-            response_format = JsonSchemaWrapper(response_schema)
-
-        llm_start = time.time()
-        llm_result, usage = await self._llm_registry.get_llm("reflect", "think").call(
-            messages=messages,
-            scope="memory_reflect",
-            max_completion_tokens=max_tokens,
-            response_format=response_format,
-            skip_validation=True if response_format else False,
-            # Don't enforce strict_schema - not all providers support it and may retry forever
-            # Soft enforcement (schema in prompt + json_object mode) is sufficient
-            strict_schema=False,
-            return_usage=True,
-        )
-        llm_time = time.time() - llm_start
-
-        # Handle response based on whether structured output was requested
-        if response_schema is not None:
-            structured_output = llm_result
-            answer_text = ""  # Empty for backward compatibility
-            log_buffer.append(f"[REFLECT {reflect_id}] Structured output generated")
-        else:
-            structured_output = None
-            answer_text = llm_result.strip()
-
-        # Submit form_opinion task for background processing
-        # Pass tenant_id from request context for internal authentication in background task
-        await self._task_backend.submit_task(
-            {
-                "type": "form_opinion",
-                "bank_id": bank_id,
-                "answer_text": answer_text,
-                "query": query,
-                "tenant_id": getattr(request_context, "tenant_id", None) if request_context else None,
-            }
-        )
-
-        # RF1+RF3 (Epic 10): Submit reconsolidation task — semantic trigger uses query embedding
-        # PE IDs from session's PredictionErrorRegistry (populated by recall_async, Epic 11).
-        _pe_ids: list[str] = []
-        if session is not None:
-            _pe_reg = self._get_session_manager().get_prediction_error_registry(session.session_id)
-            if _pe_reg is not None:
-                _pe_ids = list(_pe_reg.get_flagged_ids())
-        await self._task_backend.submit_task(
-            {
-                "type": "reconsolidate_engrams",
-                "bank_id": bank_id,
-                "reconsolidation_level": mode_config.reconsolidation_level,
-                "prediction_error_ids": _pe_ids,
-                "query": query,  # RF3: used to generate embedding for Qdrant semantic trigger
-                "tenant_id": getattr(request_context, "tenant_id", None) if request_context else None,
-            }
-        )
-
-        total_time = time.time() - reflect_start
-        log_buffer.append(
-            f"[REFLECT {reflect_id}] Complete: {len(answer_text)} chars response, LLM {llm_time:.3f}s, total {total_time:.3f}s"
-        )
-        logger.info("\n" + "\n".join(log_buffer))
-
-        # Return response with facts split by type
-        result = ReflectResult(
-            text=answer_text,
-            based_on={"world": world_results, "experience": agent_results, "opinion": opinion_results},
-            new_opinions=[],  # Opinions are being extracted asynchronously
-            structured_output=structured_output,
-            usage=usage,
-        )
-
-        # Call post-operation hook if validator is configured
-        if self._operation_validator:
-            from hindsight_api.extensions.operation_validator import ReflectResultContext
-
-            result_ctx = ReflectResultContext(
-                bank_id=bank_id,
-                query=query,
-                request_context=request_context,
-                budget=budget,
-                context=context,
-                result=result,
-                success=True,
-                error=None,
-            )
-            try:
-                await self._operation_validator.on_reflect_complete(result_ctx)
-            except Exception as e:
-                logger.warning(f"Post-reflect hook error (non-fatal): {e}")
-
-        return result
-
-    async def _extract_and_store_opinions_async(
-        self, bank_id: str, answer_text: str, query: str, tenant_id: str | None = None
+        budget=None,
+        context=None,
+        max_tokens=4096,
+        response_schema=None,
+        session=None,
+        request_context,
     ):
-        """
-        Background task to extract and store opinions from think response.
+        return await self._reflect.reflect_async(
+            bank_id,
+            query,
+            budget=budget,
+            context=context,
+            max_tokens=max_tokens,
+            response_schema=response_schema,
+            session=session,
+            request_context=request_context,
+        )
 
-        This runs asynchronously and does not block the think response.
+    async def _evaluate_opinion_update_async(self, opinion_text, opinion_confidence, new_event_text, entity_name):
+        return await self._reflect._evaluate_opinion_update_async(
+            opinion_text, opinion_confidence, new_event_text, entity_name
+        )
 
-        Args:
-            bank_id: bank IDentifier
-            answer_text: The generated answer text
-            query: The original query
-            tenant_id: Tenant identifier for internal authentication
-        """
-        try:
-            # Extract opinions from the answer
-            new_opinions = await think_utils.extract_opinions_from_text(
-                self._llm_registry.get_llm("reflect", "opinion_extraction"), text=answer_text, query=query
-            )
+    async def _handle_form_opinion(self, task_dict):
+        return await self._reflect._handle_form_opinion(task_dict)
 
-            # Store new opinions
-            if new_opinions:
-                from datetime import datetime
+    async def _handle_reconsolidate_engrams(self, task_dict):
+        return await self._reflect._handle_reconsolidate_engrams(task_dict)
 
-                current_time = datetime.now(UTC)
-                # Use internal context with tenant_id for background authentication
-                # Extension can check internal=True to bypass normal auth
-                from hindsight_api.models import RequestContext
+    async def _reconsolidate_engrams_async(self, bank_id, reconsolidation_level, prediction_error_ids, query=""):
+        return await self._reflect._reconsolidate_engrams_async(
+            bank_id, reconsolidation_level, prediction_error_ids, query
+        )
 
-                internal_context = RequestContext(tenant_id=tenant_id, internal=True)
-                for opinion in new_opinions:
-                    await self.retain_async(
-                        bank_id=bank_id,
-                        content=opinion.opinion,
-                        context=f"formed during thinking about: {query}",
-                        event_date=current_time,
-                        fact_type_override="opinion",
-                        confidence_score=opinion.confidence,
-                        request_context=internal_context,
-                    )
+    async def _evaluate_engram_reconsolidation_async(
+        self, engram_id, bank_id, new_context="", similarity_score=0.0, disposition_name="neutral"
+    ):
+        return await self._reflect._evaluate_engram_reconsolidation_async(
+            engram_id, bank_id, new_context, similarity_score, disposition_name
+        )
 
-        except Exception as e:
-            logger.warning(f"[REFLECT] Failed to extract/store opinions: {str(e)}")
+    async def _handle_reinforce_opinion(self, task_dict):
+        return await self._reflect._handle_reinforce_opinion(task_dict)
 
-    async def get_entity_observations(
-        self,
-        bank_id: str,
-        entity_id: str,
-        *,
-        limit: int = 10,
-        request_context: "RequestContext",
-    ) -> list[Any]:
-        """
-        Get observations linked to an entity.
+    async def _reinforce_opinions_async(self, bank_id, created_unit_ids, unit_texts, unit_entities):
+        return await self._reflect._reinforce_opinions_async(bank_id, created_unit_ids, unit_texts, unit_entities)
 
-        Args:
-            bank_id: bank IDentifier
-            entity_id: Entity UUID to get observations for
-            limit: Maximum number of observations to return
-            request_context: Request context for authentication.
+    async def _extract_and_store_opinions_async(self, bank_id, answer_text, query, tenant_id=None):
+        return await self._reflect._extract_and_store_opinions_async(bank_id, answer_text, query, tenant_id)
 
-        Returns:
-            List of EntityObservation objects
-        """
-        await self._authenticate_tenant(request_context)
-        pool = await self._get_pool()
-        async with acquire_with_retry(pool) as conn:
-            rows = await conn.fetch(
-                f"""
-                SELECT mu.text, mu.mentioned_at
-                FROM {fq_table("memory_units")} mu
-                JOIN {fq_table("unit_entities")} ue ON mu.id = ue.unit_id
-                WHERE mu.bank_id = $1
-                  AND mu.fact_type = 'observation'
-                  AND ue.entity_id = $2
-                ORDER BY mu.mentioned_at DESC
-                LIMIT $3
-                """,
-                bank_id,
-                uuid.UUID(entity_id),
-                limit,
-            )
+    # ------------------------------------------------------------------
+    # Admin operations
+    # ------------------------------------------------------------------
 
-            observations = []
-            for row in rows:
-                mentioned_at = row["mentioned_at"].isoformat() if row["mentioned_at"] else None
-                observations.append(EntityObservation(text=row["text"], mentioned_at=mentioned_at))
-            return observations
+    async def get_document(self, document_id, bank_id, *, request_context):
+        return await self._admin.get_document(document_id, bank_id, request_context=request_context)
 
-    async def get_entity_observations_batch(
-        self,
-        bank_id: str,
-        entity_ids: list[str],
-        *,
-        limit_per_entity: int = 5,
-        request_context: "RequestContext",
-    ) -> dict[str, list[Any]]:
-        """
-        Get observations for multiple entities in a single query.
+    async def delete_document(self, document_id, bank_id, *, request_context):
+        return await self._admin.delete_document(document_id, bank_id, request_context=request_context)
 
-        Args:
-            bank_id: bank IDentifier
-            entity_ids: List of entity UUIDs to get observations for
-            limit_per_entity: Maximum observations per entity
-            request_context: Request context for authentication.
+    async def delete_memory_unit(self, unit_id, *, request_context):
+        return await self._admin.delete_memory_unit(unit_id, request_context=request_context)
 
-        Returns:
-            Dict mapping entity_id -> list of EntityObservation objects
-        """
-        if not entity_ids:
-            return {}
+    async def delete_bank(self, bank_id, fact_type=None, *, request_context):
+        return await self._admin.delete_bank(bank_id, fact_type, request_context=request_context)
 
-        await self._authenticate_tenant(request_context)
-        pool = await self._get_pool()
-        async with acquire_with_retry(pool) as conn:
-            # Use window function to limit observations per entity
-            rows = await conn.fetch(
-                f"""
-                WITH ranked AS (
-                    SELECT
-                        ue.entity_id,
-                        mu.text,
-                        mu.mentioned_at,
-                        ROW_NUMBER() OVER (PARTITION BY ue.entity_id ORDER BY mu.mentioned_at DESC) as rn
-                    FROM {fq_table("memory_units")} mu
-                    JOIN {fq_table("unit_entities")} ue ON mu.id = ue.unit_id
-                    WHERE mu.bank_id = $1
-                      AND mu.fact_type = 'observation'
-                      AND ue.entity_id = ANY($2::uuid[])
-                )
-                SELECT entity_id, text, mentioned_at
-                FROM ranked
-                WHERE rn <= $3
-                ORDER BY entity_id, rn
-                """,
-                bank_id,
-                [uuid.UUID(eid) for eid in entity_ids],
-                limit_per_entity,
-            )
+    async def get_graph_data(self, bank_id=None, fact_type=None, *, limit=1000, request_context):
+        return await self._admin.get_graph_data(bank_id, fact_type, limit=limit, request_context=request_context)
 
-            result: dict[str, list[Any]] = {eid: [] for eid in entity_ids}
-            for row in rows:
-                entity_id = str(row["entity_id"])
-                mentioned_at = row["mentioned_at"].isoformat() if row["mentioned_at"] else None
-                result[entity_id].append(EntityObservation(text=row["text"], mentioned_at=mentioned_at))
-            return result
+    async def list_memory_units(
+        self, bank_id, *, fact_type=None, search_query=None, limit=100, offset=0, request_context
+    ):
+        return await self._admin.list_memory_units(
+            bank_id,
+            fact_type=fact_type,
+            search_query=search_query,
+            limit=limit,
+            offset=offset,
+            request_context=request_context,
+        )
 
-    async def list_entities(
-        self,
-        bank_id: str,
-        *,
-        limit: int = 100,
-        request_context: "RequestContext",
-    ) -> list[dict[str, Any]]:
-        """
-        List all entities for a bank.
+    async def list_documents(self, bank_id, *, search_query=None, limit=100, offset=0, request_context):
+        return await self._admin.list_documents(
+            bank_id,
+            search_query=search_query,
+            limit=limit,
+            offset=offset,
+            request_context=request_context,
+        )
 
-        Args:
-            bank_id: bank IDentifier
-            limit: Maximum number of entities to return
-            request_context: Request context for authentication.
+    async def get_chunk(self, chunk_id, *, request_context):
+        return await self._admin.get_chunk(chunk_id, request_context=request_context)
 
-        Returns:
-            List of entity dicts with id, canonical_name, mention_count, first_seen, last_seen
-        """
-        await self._authenticate_tenant(request_context)
-        pool = await self._get_pool()
-        async with acquire_with_retry(pool) as conn:
-            rows = await conn.fetch(
-                f"""
-                SELECT id, canonical_name, mention_count, first_seen, last_seen, metadata
-                FROM {fq_table("entities")}
-                WHERE bank_id = $1
-                ORDER BY mention_count DESC, last_seen DESC
-                LIMIT $2
-                """,
-                bank_id,
-                limit,
-            )
+    async def get_bank_profile(self, bank_id, *, request_context):
+        return await self._admin.get_bank_profile(bank_id, request_context=request_context)
 
-            entities = []
-            for row in rows:
-                # Handle metadata - may be dict, JSON string, or None
-                metadata = row["metadata"]
-                if metadata is None:
-                    metadata = {}
-                elif isinstance(metadata, str):
-                    import json
+    async def update_bank_disposition(self, bank_id, disposition, *, request_context):
+        return await self._admin.update_bank_disposition(bank_id, disposition, request_context=request_context)
 
-                    try:
-                        metadata = json.loads(metadata)
-                    except json.JSONDecodeError:
-                        metadata = {}
+    async def merge_bank_background(self, bank_id, new_info, *, update_disposition=True, request_context):
+        return await self._admin.merge_bank_background(
+            bank_id, new_info, update_disposition=update_disposition, request_context=request_context
+        )
 
-                entities.append(
-                    {
-                        "id": str(row["id"]),
-                        "canonical_name": row["canonical_name"],
-                        "mention_count": row["mention_count"],
-                        "first_seen": row["first_seen"].isoformat() if row["first_seen"] else None,
-                        "last_seen": row["last_seen"].isoformat() if row["last_seen"] else None,
-                        "metadata": metadata,
-                    }
-                )
-            return entities
+    async def list_banks(self, *, request_context):
+        return await self._admin.list_banks(request_context=request_context)
 
-    async def get_entity_state(
-        self,
-        bank_id: str,
-        entity_id: str,
-        entity_name: str,
-        *,
-        limit: int = 10,
-        request_context: "RequestContext",
-    ) -> EntityState:
-        """
-        Get the current state (mental model) of an entity.
+    async def update_bank(self, bank_id, *, name=None, background=None, request_context):
+        return await self._admin.update_bank(bank_id, name=name, background=background, request_context=request_context)
 
-        Args:
-            bank_id: bank IDentifier
-            entity_id: Entity UUID
-            entity_name: Canonical name of the entity
-            limit: Maximum number of observations to include
-            request_context: Request context for authentication.
+    async def get_bank_stats(self, bank_id, *, request_context):
+        return await self._admin.get_bank_stats(bank_id, request_context=request_context)
 
-        Returns:
-            EntityState with observations
-        """
-        observations = await self.get_entity_observations(
+    async def list_operations(self, bank_id, *, request_context):
+        return await self._admin.list_operations(bank_id, request_context=request_context)
+
+    async def cancel_operation(self, bank_id, operation_id, *, request_context):
+        return await self._admin.cancel_operation(bank_id, operation_id, request_context=request_context)
+
+    async def submit_async_retain(self, bank_id, contents, *, request_context):
+        return await self._admin.submit_async_retain(bank_id, contents, request_context=request_context)
+
+    # ------------------------------------------------------------------
+    # Entity operations
+    # ------------------------------------------------------------------
+
+    async def get_entity_observations(self, bank_id, entity_id, *, limit=10, request_context):
+        return await self._entity.get_entity_observations(
             bank_id, entity_id, limit=limit, request_context=request_context
         )
-        return EntityState(entity_id=entity_id, canonical_name=entity_name, observations=observations)
+
+    async def get_entity_observations_batch(self, bank_id, entity_ids, *, limit_per_entity=5, request_context):
+        return await self._entity.get_entity_observations_batch(
+            bank_id, entity_ids, limit_per_entity=limit_per_entity, request_context=request_context
+        )
+
+    async def list_entities(self, bank_id, *, limit=100, request_context):
+        return await self._entity.list_entities(bank_id, limit=limit, request_context=request_context)
+
+    async def get_entity_state(self, bank_id, entity_id, entity_name, *, limit=10, request_context):
+        return await self._entity.get_entity_state(
+            bank_id, entity_id, entity_name, limit=limit, request_context=request_context
+        )
+
+    async def get_entity(self, bank_id, entity_id, *, request_context):
+        return await self._entity.get_entity(bank_id, entity_id, request_context=request_context)
 
     async def regenerate_entity_observations(
-        self,
-        bank_id: str,
-        entity_id: str,
-        entity_name: str,
-        *,
-        version: str | None = None,
-        conn=None,
-        request_context: "RequestContext",
-    ) -> None:
-        """
-        Regenerate observations for an entity by:
-        1. Checking version for deduplication (if provided)
-        2. Searching all facts mentioning the entity
-        3. Using LLM to synthesize observations (no personality)
-        4. Deleting old observations for this entity
-        5. Storing new observations linked to the entity
-
-        Args:
-            bank_id: bank IDentifier
-            entity_id: Entity UUID
-            entity_name: Canonical name of the entity
-            version: Entity's last_seen timestamp when task was created (for deduplication)
-            conn: Optional database connection (for transactional atomicity with caller)
-            request_context: Request context for authentication.
-        """
-        await self._authenticate_tenant(request_context)
-        pool = await self._get_pool()
-        entity_uuid = uuid.UUID(entity_id)
-
-        # Helper to run a query with provided conn or acquire one
-        async def fetch_with_conn(query, *args):
-            if conn is not None:
-                return await conn.fetch(query, *args)
-            else:
-                async with acquire_with_retry(pool) as acquired_conn:
-                    return await acquired_conn.fetch(query, *args)
-
-        async def fetchval_with_conn(query, *args):
-            if conn is not None:
-                return await conn.fetchval(query, *args)
-            else:
-                async with acquire_with_retry(pool) as acquired_conn:
-                    return await acquired_conn.fetchval(query, *args)
-
-        # Step 1: Check version for deduplication
-        if version:
-            current_last_seen = await fetchval_with_conn(
-                f"""
-                SELECT last_seen
-                FROM {fq_table("entities")}
-                WHERE id = $1 AND bank_id = $2
-                """,
-                entity_uuid,
-                bank_id,
-            )
-
-            if current_last_seen and current_last_seen.isoformat() != version:
-                return []
-
-        # Step 2: Get all facts mentioning this entity (exclude observations themselves)
-        rows = await fetch_with_conn(
-            f"""
-            SELECT mu.id, mu.text, mu.context, mu.occurred_start, mu.fact_type
-            FROM {fq_table("memory_units")} mu
-            JOIN {fq_table("unit_entities")} ue ON mu.id = ue.unit_id
-            WHERE mu.bank_id = $1
-              AND ue.entity_id = $2
-              AND mu.fact_type IN ('world', 'experience')
-            ORDER BY mu.occurred_start DESC
-            LIMIT 50
-            """,
+        self, bank_id, entity_id, entity_name, *, version=None, conn=None, request_context
+    ):
+        return await self._entity.regenerate_entity_observations(
             bank_id,
-            entity_uuid,
+            entity_id,
+            entity_name,
+            version=version,
+            conn=conn,
+            request_context=request_context,
         )
 
-        if not rows:
-            return []
+    async def _regenerate_observations_sync(self, bank_id, entity_ids, min_facts=None, conn=None, request_context=None):
+        return await self._entity._regenerate_observations_sync(bank_id, entity_ids, min_facts, conn, request_context)
 
-        # Convert to MemoryFact objects for the observation extraction
-        facts = []
-        for row in rows:
-            occurred_start = row["occurred_start"].isoformat() if row["occurred_start"] else None
-            facts.append(
-                MemoryFact(
-                    id=str(row["id"]),
-                    text=row["text"],
-                    fact_type=row["fact_type"],
-                    context=row["context"],
-                    occurred_start=occurred_start,
-                )
-            )
+    async def _handle_regenerate_observations(self, task_dict):
+        return await self._entity._handle_regenerate_observations(task_dict)
 
-        # Step 3: Extract observations using LLM (no personality)
-        observations = await observation_utils.extract_observations_from_facts(
-            self._llm_registry.get_llm("retain", "observation_synthesis"), entity_name, facts
-        )
+    # ------------------------------------------------------------------
+    # Access count update and batch retain (backward compat)
+    # ------------------------------------------------------------------
 
-        if not observations:
-            return []
+    async def _handle_access_count_update(self, task_dict):
+        return await self._retain._handle_access_count_update(task_dict)
 
-        # Step 4: Delete old observations and insert new ones
-        # If conn provided, we're already in a transaction - don't start another
-        # If conn is None, acquire one and start a transaction
-        async def do_db_operations(db_conn):
-            # Delete old observations for this entity
-            await db_conn.execute(
-                f"""
-                DELETE FROM {fq_table("memory_units")}
-                WHERE id IN (
-                    SELECT mu.id
-                    FROM {fq_table("memory_units")} mu
-                    JOIN {fq_table("unit_entities")} ue ON mu.id = ue.unit_id
-                    WHERE mu.bank_id = $1
-                      AND mu.fact_type = 'observation'
-                      AND ue.entity_id = $2
-                )
-                """,
-                bank_id,
-                entity_uuid,
-            )
-
-            # Generate embeddings for new observations
-            embeddings = await embedding_utils.generate_embeddings_batch(self.embeddings, observations)
-
-            # Insert new observations
-            current_time = utcnow()
-            created_ids = []
-
-            for obs_text, embedding in zip(observations, embeddings):
-                result = await db_conn.fetchrow(
-                    f"""
-                    INSERT INTO {fq_table("memory_units")} (
-                        bank_id, text, embedding, context, event_date,
-                        occurred_start, occurred_end, mentioned_at,
-                        fact_type, access_count
-                    )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'observation', 0)
-                    RETURNING id
-                    """,
-                    bank_id,
-                    obs_text,
-                    str(embedding),
-                    f"observation about {entity_name}",
-                    current_time,
-                    current_time,
-                    current_time,
-                    current_time,
-                )
-                obs_id = str(result["id"])
-                created_ids.append(obs_id)
-
-                # Link observation to entity
-                await db_conn.execute(
-                    f"""
-                    INSERT INTO {fq_table("unit_entities")} (unit_id, entity_id)
-                    VALUES ($1, $2)
-                    """,
-                    uuid.UUID(obs_id),
-                    entity_uuid,
-                )
-
-            return created_ids
-
-        if conn is not None:
-            # Use provided connection (already in a transaction)
-            return await do_db_operations(conn)
-        else:
-            # Acquire connection and start our own transaction
-            async with acquire_with_retry(pool) as acquired_conn:
-                async with acquired_conn.transaction():
-                    return await do_db_operations(acquired_conn)
-
-    async def _regenerate_observations_sync(
-        self,
-        bank_id: str,
-        entity_ids: list[str],
-        min_facts: int | None = None,
-        conn=None,
-        request_context: "RequestContext | None" = None,
-    ) -> None:
-        """
-        Regenerate observations for entities synchronously (called during retain).
-
-        Processes entities in PARALLEL for faster execution.
-
-        Args:
-            bank_id: Bank identifier
-            entity_ids: List of entity IDs to process
-            min_facts: Minimum facts required to regenerate observations (uses config default if None)
-            conn: Optional database connection (for transactional atomicity)
-        """
-        if not bank_id or not entity_ids:
-            return
-
-        # Use config default if min_facts not specified
-        if min_facts is None:
-            min_facts = get_config().observation_min_facts
-
-        # Convert to UUIDs
-        entity_uuids = [uuid.UUID(eid) if isinstance(eid, str) else eid for eid in entity_ids]
-
-        # Use provided connection or acquire a new one
-        if conn is not None:
-            # Use the provided connection (transactional with caller)
-            entity_rows = await conn.fetch(
-                f"""
-                SELECT id, canonical_name FROM {fq_table("entities")}
-                WHERE id = ANY($1) AND bank_id = $2
-                """,
-                entity_uuids,
-                bank_id,
-            )
-            entity_names = {row["id"]: row["canonical_name"] for row in entity_rows}
-
-            fact_counts = await conn.fetch(
-                f"""
-                SELECT ue.entity_id, COUNT(*) as cnt
-                FROM {fq_table("unit_entities")} ue
-                JOIN {fq_table("memory_units")} mu ON ue.unit_id = mu.id
-                WHERE ue.entity_id = ANY($1) AND mu.bank_id = $2
-                GROUP BY ue.entity_id
-                """,
-                entity_uuids,
-                bank_id,
-            )
-            entity_fact_counts = {row["entity_id"]: row["cnt"] for row in fact_counts}
-        else:
-            # Acquire a new connection (standalone call)
-            pool = await self._get_pool()
-            async with pool.acquire() as acquired_conn:
-                entity_rows = await acquired_conn.fetch(
-                    f"""
-                    SELECT id, canonical_name FROM {fq_table("entities")}
-                    WHERE id = ANY($1) AND bank_id = $2
-                    """,
-                    entity_uuids,
-                    bank_id,
-                )
-                entity_names = {row["id"]: row["canonical_name"] for row in entity_rows}
-
-                fact_counts = await acquired_conn.fetch(
-                    f"""
-                    SELECT ue.entity_id, COUNT(*) as cnt
-                    FROM {fq_table("unit_entities")} ue
-                    JOIN {fq_table("memory_units")} mu ON ue.unit_id = mu.id
-                    WHERE ue.entity_id = ANY($1) AND mu.bank_id = $2
-                    GROUP BY ue.entity_id
-                    """,
-                    entity_uuids,
-                    bank_id,
-                )
-                entity_fact_counts = {row["entity_id"]: row["cnt"] for row in fact_counts}
-
-        # Filter entities that meet the threshold
-        entities_to_process = []
-        for entity_id in entity_ids:
-            entity_uuid = uuid.UUID(entity_id) if isinstance(entity_id, str) else entity_id
-            if entity_uuid not in entity_names:
-                continue
-            fact_count = entity_fact_counts.get(entity_uuid, 0)
-            if fact_count >= min_facts:
-                entities_to_process.append((entity_id, entity_names[entity_uuid]))
-
-        if not entities_to_process:
-            return
-
-        # Use internal context if not provided (for internal/background calls)
-        from hindsight_api.models import RequestContext as RC
-
-        ctx = request_context if request_context is not None else RC()
-
-        # Process all entities in PARALLEL (LLM calls are the bottleneck)
-        async def process_entity(entity_id: str, entity_name: str):
-            try:
-                await self.regenerate_entity_observations(
-                    bank_id, entity_id, entity_name, version=None, conn=conn, request_context=ctx
-                )
-            except Exception as e:
-                logger.error(f"[OBSERVATIONS] Error processing entity {entity_id}: {e}")
-
-        await asyncio.gather(*[process_entity(eid, name) for eid, name in entities_to_process])
-
-    async def _handle_regenerate_observations(self, task_dict: dict[str, Any]):
-        """
-        Handler for regenerate_observations tasks.
-
-        Args:
-            task_dict: Dict with 'bank_id' and either:
-                       - 'entity_ids' (list): Process multiple entities
-                       - 'entity_id', 'entity_name': Process single entity (legacy)
-
-        Raises:
-            ValueError: If required fields are missing
-            Exception: Any exception from regenerate_entity_observations (propagates to execute_task for retry)
-        """
-        bank_id = task_dict.get("bank_id")
-        # Use internal request context for background tasks
-        from hindsight_api.models import RequestContext
-
-        internal_context = RequestContext()
-
-        # New format: multiple entity_ids
-        if "entity_ids" in task_dict:
-            entity_ids = task_dict.get("entity_ids", [])
-            min_facts = task_dict.get("min_facts", 5)
-
-            if not bank_id or not entity_ids:
-                raise ValueError(f"[OBSERVATIONS] Missing required fields in task: {task_dict}")
-
-            # Process each entity
-            pool = await self._get_pool()
-            async with pool.acquire() as conn:
-                for entity_id in entity_ids:
-                    try:
-                        # Fetch entity name and check fact count
-                        import uuid as uuid_module
-
-                        entity_uuid = uuid_module.UUID(entity_id) if isinstance(entity_id, str) else entity_id
-
-                        # First check if entity exists
-                        entity_exists = await conn.fetchrow(
-                            f"SELECT canonical_name FROM {fq_table('entities')} WHERE id = $1 AND bank_id = $2",
-                            entity_uuid,
-                            bank_id,
-                        )
-
-                        if not entity_exists:
-                            logger.debug(f"[OBSERVATIONS] Entity {entity_id} not yet in bank {bank_id}, skipping")
-                            continue
-
-                        entity_name = entity_exists["canonical_name"]
-
-                        # Count facts linked to this entity
-                        fact_count = (
-                            await conn.fetchval(
-                                f"SELECT COUNT(*) FROM {fq_table('unit_entities')} WHERE entity_id = $1",
-                                entity_uuid,
-                            )
-                            or 0
-                        )
-
-                        # Only regenerate if entity has enough facts
-                        if fact_count >= min_facts:
-                            await self.regenerate_entity_observations(
-                                bank_id, entity_id, entity_name, version=None, request_context=internal_context
-                            )
-                        else:
-                            logger.debug(
-                                f"[OBSERVATIONS] Skipping {entity_name} ({fact_count} facts < {min_facts} threshold)"
-                            )
-
-                    except Exception as e:
-                        # Log but continue processing other entities - individual entity failures
-                        # shouldn't fail the whole batch
-                        logger.error(f"[OBSERVATIONS] Error processing entity {entity_id}: {e}")
-                        continue
-
-        # Legacy format: single entity
-        else:
-            entity_id = task_dict.get("entity_id")
-            entity_name = task_dict.get("entity_name")
-            version = task_dict.get("version")
-
-            if not all([bank_id, entity_id, entity_name]):
-                raise ValueError(f"[OBSERVATIONS] Missing required fields in task: {task_dict}")
-
-            # Type assertions after validation
-            assert isinstance(bank_id, str) and isinstance(entity_id, str) and isinstance(entity_name, str)
-            await self.regenerate_entity_observations(
-                bank_id, entity_id, entity_name, version=version, request_context=internal_context
-            )
-
-    # =========================================================================
-    # Statistics & Operations (for HTTP API layer)
-    # =========================================================================
-
-    async def get_bank_stats(
-        self,
-        bank_id: str,
-        *,
-        request_context: "RequestContext",
-    ) -> dict[str, Any]:
-        """Get statistics about memory nodes and links for a bank."""
-        await self._authenticate_tenant(request_context)
-        pool = await self._get_pool()
-
-        async with acquire_with_retry(pool) as conn:
-            # Get node counts by fact_type
-            node_stats = await conn.fetch(
-                f"""
-                SELECT fact_type, COUNT(*) as count
-                FROM {fq_table("memory_units")}
-                WHERE bank_id = $1
-                GROUP BY fact_type
-                """,
-                bank_id,
-            )
-
-            # Get link counts by link_type
-            link_stats = await conn.fetch(
-                f"""
-                SELECT ml.link_type, COUNT(*) as count
-                FROM {fq_table("memory_links")} ml
-                JOIN {fq_table("memory_units")} mu ON ml.from_unit_id = mu.id
-                WHERE mu.bank_id = $1
-                GROUP BY ml.link_type
-                """,
-                bank_id,
-            )
-
-            # Get link counts by fact_type (from nodes)
-            link_fact_type_stats = await conn.fetch(
-                f"""
-                SELECT mu.fact_type, COUNT(*) as count
-                FROM {fq_table("memory_links")} ml
-                JOIN {fq_table("memory_units")} mu ON ml.from_unit_id = mu.id
-                WHERE mu.bank_id = $1
-                GROUP BY mu.fact_type
-                """,
-                bank_id,
-            )
-
-            # Get link counts by fact_type AND link_type
-            link_breakdown_stats = await conn.fetch(
-                f"""
-                SELECT mu.fact_type, ml.link_type, COUNT(*) as count
-                FROM {fq_table("memory_links")} ml
-                JOIN {fq_table("memory_units")} mu ON ml.from_unit_id = mu.id
-                WHERE mu.bank_id = $1
-                GROUP BY mu.fact_type, ml.link_type
-                """,
-                bank_id,
-            )
-
-            # Get pending and failed operations counts
-            ops_stats = await conn.fetch(
-                f"""
-                SELECT status, COUNT(*) as count
-                FROM {fq_table("async_operations")}
-                WHERE bank_id = $1
-                GROUP BY status
-                """,
-                bank_id,
-            )
-
-            return {
-                "bank_id": bank_id,
-                "node_counts": {row["fact_type"]: row["count"] for row in node_stats},
-                "link_counts": {row["link_type"]: row["count"] for row in link_stats},
-                "link_counts_by_fact_type": {row["fact_type"]: row["count"] for row in link_fact_type_stats},
-                "link_breakdown": [
-                    {"fact_type": row["fact_type"], "link_type": row["link_type"], "count": row["count"]}
-                    for row in link_breakdown_stats
-                ],
-                "operations": {row["status"]: row["count"] for row in ops_stats},
-            }
-
-    async def get_entity(
-        self,
-        bank_id: str,
-        entity_id: str,
-        *,
-        request_context: "RequestContext",
-    ) -> dict[str, Any] | None:
-        """Get entity details including metadata and observations."""
-        await self._authenticate_tenant(request_context)
-        pool = await self._get_pool()
-
-        async with acquire_with_retry(pool) as conn:
-            entity_row = await conn.fetchrow(
-                f"""
-                SELECT id, canonical_name, mention_count, first_seen, last_seen, metadata
-                FROM {fq_table("entities")}
-                WHERE bank_id = $1 AND id = $2
-                """,
-                bank_id,
-                uuid.UUID(entity_id),
-            )
-
-        if not entity_row:
-            return None
-
-        # Get observations for the entity
-        observations = await self.get_entity_observations(bank_id, entity_id, limit=20, request_context=request_context)
-
-        return {
-            "id": str(entity_row["id"]),
-            "canonical_name": entity_row["canonical_name"],
-            "mention_count": entity_row["mention_count"],
-            "first_seen": entity_row["first_seen"].isoformat() if entity_row["first_seen"] else None,
-            "last_seen": entity_row["last_seen"].isoformat() if entity_row["last_seen"] else None,
-            "metadata": entity_row["metadata"] or {},
-            "observations": observations,
-        }
-
-    async def list_operations(
-        self,
-        bank_id: str,
-        *,
-        request_context: "RequestContext",
-    ) -> list[dict[str, Any]]:
-        """List async operations for a bank."""
-        await self._authenticate_tenant(request_context)
-        pool = await self._get_pool()
-
-        async with acquire_with_retry(pool) as conn:
-            operations = await conn.fetch(
-                f"""
-                SELECT operation_id, bank_id, operation_type, created_at, status, error_message, result_metadata
-                FROM {fq_table("async_operations")}
-                WHERE bank_id = $1
-                ORDER BY created_at DESC
-                """,
-                bank_id,
-            )
-
-            def parse_metadata(metadata):
-                if metadata is None:
-                    return {}
-                if isinstance(metadata, str):
-                    import json
-
-                    return json.loads(metadata)
-                return metadata
-
-            return [
-                {
-                    "id": str(row["operation_id"]),
-                    "task_type": row["operation_type"],
-                    "items_count": parse_metadata(row["result_metadata"]).get("items_count", 0),
-                    "document_id": parse_metadata(row["result_metadata"]).get("document_id"),
-                    "created_at": row["created_at"].isoformat(),
-                    "status": row["status"],
-                    "error_message": row["error_message"],
-                }
-                for row in operations
-            ]
-
-    async def cancel_operation(
-        self,
-        bank_id: str,
-        operation_id: str,
-        *,
-        request_context: "RequestContext",
-    ) -> dict[str, Any]:
-        """Cancel a pending async operation."""
-        await self._authenticate_tenant(request_context)
-        pool = await self._get_pool()
-
-        op_uuid = uuid.UUID(operation_id)
-
-        async with acquire_with_retry(pool) as conn:
-            # Check if operation exists and belongs to this memory bank
-            result = await conn.fetchrow(
-                f"SELECT bank_id FROM {fq_table('async_operations')} WHERE operation_id = $1 AND bank_id = $2",
-                op_uuid,
-                bank_id,
-            )
-
-            if not result:
-                raise ValueError(f"Operation {operation_id} not found for bank {bank_id}")
-
-            # Delete the operation
-            await conn.execute(f"DELETE FROM {fq_table('async_operations')} WHERE operation_id = $1", op_uuid)
-
-            return {
-                "success": True,
-                "message": f"Operation {operation_id} cancelled",
-                "operation_id": operation_id,
-                "bank_id": bank_id,
-            }
-
-    async def update_bank(
-        self,
-        bank_id: str,
-        *,
-        name: str | None = None,
-        background: str | None = None,
-        request_context: "RequestContext",
-    ) -> dict[str, Any]:
-        """Update bank name and/or background."""
-        await self._authenticate_tenant(request_context)
-        pool = await self._get_pool()
-
-        async with acquire_with_retry(pool) as conn:
-            if name is not None:
-                await conn.execute(
-                    f"""
-                    UPDATE {fq_table("banks")}
-                    SET name = $2, updated_at = NOW()
-                    WHERE bank_id = $1
-                    """,
-                    bank_id,
-                    name,
-                )
-
-            if background is not None:
-                await conn.execute(
-                    f"""
-                    UPDATE {fq_table("banks")}
-                    SET background = $2, updated_at = NOW()
-                    WHERE bank_id = $1
-                    """,
-                    bank_id,
-                    background,
-                )
-
-        # Return updated profile
-        return await self.get_bank_profile(bank_id, request_context=request_context)
-
-    async def submit_async_retain(
-        self,
-        bank_id: str,
-        contents: list[dict[str, Any]],
-        *,
-        request_context: "RequestContext",
-    ) -> dict[str, Any]:
-        """Submit a batch retain operation to run asynchronously."""
-        await self._authenticate_tenant(request_context)
-        pool = await self._get_pool()
-
-        import json
-
-        operation_id = uuid.uuid4()
-
-        # Insert operation record into database
-        async with acquire_with_retry(pool) as conn:
-            await conn.execute(
-                f"""
-                INSERT INTO {fq_table("async_operations")} (operation_id, bank_id, operation_type, result_metadata)
-                VALUES ($1, $2, $3, $4)
-                """,
-                operation_id,
-                bank_id,
-                "retain",
-                json.dumps({"items_count": len(contents)}),
-            )
-
-        # Submit task to background queue
-        await self._task_backend.submit_task(
-            {
-                "type": "batch_retain",
-                "operation_id": str(operation_id),
-                "bank_id": bank_id,
-                "contents": contents,
-            }
-        )
-
-        logger.info(f"Retain task queued for bank_id={bank_id}, {len(contents)} items, operation_id={operation_id}")
-
-        return {
-            "operation_id": str(operation_id),
-            "items_count": len(contents),
-        }
+    async def _handle_batch_retain(self, task_dict):
+        return await self._retain._handle_batch_retain(task_dict)
