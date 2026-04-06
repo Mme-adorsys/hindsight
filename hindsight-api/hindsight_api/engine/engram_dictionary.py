@@ -223,6 +223,42 @@ async def batch_insert(pool: asyncpg.Pool, entries: list[dict[str, Any]]) -> Non
                 )
 
 
+async def list_unconsolidated(
+    pool: asyncpg.Pool,
+    bank_id: str,
+    batch_size: int = 100,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """
+    Return engram_dictionary entries that have not yet been assigned a layer.
+
+    Used by Consolidation1Service to find memory_units ready for the buffer layer.
+    Filter: layer IS NULL AND status = 'active'.
+
+    Args:
+        pool: asyncpg connection pool.
+        bank_id: Required — all queries are bank-scoped.
+        batch_size: Maximum number of entries per call.
+        offset: Pagination offset for batch processing.
+
+    Returns:
+        List of dicts ordered by created_at ASC (oldest first).
+    """
+    async with acquire_with_retry(pool) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT * FROM engram_dictionary
+            WHERE bank_id = $1 AND layer IS NULL AND status = 'active'
+            ORDER BY created_at ASC
+            LIMIT $2 OFFSET $3
+            """,
+            bank_id,
+            batch_size,
+            offset,
+        )
+    return [dict(row) for row in rows]
+
+
 async def update_strength(pool: asyncpg.Pool, engram_id: str, new_strength: float) -> None:
     """Convenience method to update only the strength field."""
     await update_entry(pool, engram_id, {"strength": new_strength})
