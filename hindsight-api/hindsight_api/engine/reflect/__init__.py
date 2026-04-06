@@ -10,10 +10,20 @@ Concept reference: docs/engram/concept.md — Chapter 10 (Reflect & Reconsolidat
 
 from .prediction_error_registry import PredictionErrorEntry, PredictionErrorRegistry
 from .reconsolidation_queue import ReconsolidationOutcome, build_reconsolidation_queue
+from .semantic_trigger import (
+    CandidateEngram,
+    find_entity_match_candidates,
+    find_reconsolidation_candidates,
+    merge_candidates,
+)
 
 __all__ = [
     "PredictionErrorRegistry",
     "PredictionErrorEntry",
     "build_reconsolidation_queue",
     "ReconsolidationOutcome",
+    "CandidateEngram",
+    "find_reconsolidation_candidates",
+    "find_entity_match_candidates",
+    "merge_candidates",
 ]

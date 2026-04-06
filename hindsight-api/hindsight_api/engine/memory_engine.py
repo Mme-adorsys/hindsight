@@ -3284,23 +3284,26 @@ Guidelines:
 
     async def _handle_reconsolidate_engrams(self, task_dict: dict[str, Any]) -> None:
         """
-        Handler for reconsolidate_engrams background tasks (RF1 — Epic 10).
+        Handler for reconsolidate_engrams background tasks (RF1+RF3 — Epic 10).
 
         Args:
             task_dict: Dict with keys:
                 'bank_id'               — bank to reconsolidate
                 'reconsolidation_level' — 'minimal'|'moderate'|'schema_update'|'aggressive'
                 'prediction_error_ids'  — list[str] of Engram IDs flagged by PE (Epic 11)
+                'query'                 — original reflect query (RF3: Qdrant semantic trigger)
                 'tenant_id'             — optional tenant for auth
         """
         bank_id = task_dict["bank_id"]
         reconsolidation_level = task_dict.get("reconsolidation_level", "moderate")
         prediction_error_ids: list[str] = task_dict.get("prediction_error_ids", [])
+        query: str = task_dict.get("query", "")
 
         await self._reconsolidate_engrams_async(
             bank_id=bank_id,
             reconsolidation_level=reconsolidation_level,
             prediction_error_ids=prediction_error_ids,
+            query=query,
         )
 
     async def _reconsolidate_engrams_async(
@@ -3308,39 +3311,85 @@ Guidelines:
         bank_id: str,
         reconsolidation_level: str,
         prediction_error_ids: list[str],
+        query: str = "",
     ) -> None:
         """
-        RF1: Priority-based reconsolidation of ALL Engram types (not just opinions).
+        RF1+RF3: Priority-based reconsolidation triggered by semantic similarity (Qdrant).
 
         Steps:
-        1. Fetch active Engrams from engram_dictionary (all types — no fact_type filter)
-        2. Build priority queue: PE-flagged → weak (strength < 0.3) → rest by last_accessed
-        3. For each Engram in top-N: evaluate via LLM → map to CONFIRMED/MODIFIED/CONTRADICTION
-        4. Apply strength delta and persist to engram_dictionary
+        1. Generate query embedding → Qdrant similarity search (RF3: semantic trigger)
+        2. Entity-match fallback (RF2): union of Qdrant + entity-match candidates
+        3. Fetch FullEngram objects for candidates only (not all active Engrams)
+        4. Build priority queue: PE-flagged → weak (strength < 0.3) → rest by last_accessed
+        5. For each Engram in top-N: evaluate via LLM → CONFIRMED/MODIFIED/CONTRADICTION
+        6. Apply strength delta and persist to engram_dictionary
 
         Bio mapping:
-        - Weak Engrams first    → BCM rule: plasticity highest at low-weight synapses
-        - PE Engrams prioritised → Dopaminergic error signal gates LTP/LTD
-        - Budget cap            → Energy cost of offline reconsolidation is bounded
+        - Qdrant trigger (≥0.6 cosine) → hippocampal pattern completion: similar activation
+                                          reopens the lability window for reconsolidation
+        - Entity fallback              → direct associative recall (always available)
+        - Weak Engrams first           → BCM rule: plasticity highest at low-weight synapses
+        - PE Engrams prioritised       → Dopaminergic error signal gates LTP/LTD
+        - Budget cap                   → Energy cost of offline reconsolidation is bounded
 
-        Concept reference: docs/engram/concept.md — Chapter 10 (RF1)
+        Concept reference: docs/engram/concept.md — Chapter 10 (RF1, RF2, RF3)
         """
-        from .engram_dictionary import list_entries, update_strength
+        from .engram_dictionary import filter_entries, update_strength
         from .reflect.prediction_error_registry import PredictionErrorRegistry
         from .reflect.reconsolidation_queue import (
             ReconsolidationOutcome,
             apply_strength_delta,
             build_reconsolidation_queue,
         )
+        from .reflect.semantic_trigger import (
+            find_entity_match_candidates,
+            find_reconsolidation_candidates,
+            merge_candidates,
+        )
         from .response_models import EngramMetadata, FullEngram
-        from .session.mode_config import ModeConfig
         from .session.session_manager import RetrievalMode
 
         try:
             pool = await self._get_pool()
 
-            # Step 1: Fetch all active Engrams for this bank (no fact_type filter — RF1)
-            rows = await list_entries(pool, bank_id=bank_id, status="active", limit=200)
+            # Step 1: Semantic trigger — Qdrant similarity search (RF3)
+            qdrant_candidates = []
+            if query:
+                try:
+                    from .retain import embedding_utils
+                    from .search.engram_retrieval import EngramRetriever
+                    from .search.retrieval import get_default_graph_retriever
+
+                    query_embedding = embedding_utils.generate_embedding(self.embeddings, query)
+                    _retriever = get_default_graph_retriever()
+                    _qdrant = _retriever._qdrant if isinstance(_retriever, EngramRetriever) else None
+                    if _qdrant is not None:
+                        qdrant_candidates = await find_reconsolidation_candidates(
+                            qdrant_client=_qdrant,
+                            query_embedding=query_embedding,
+                            bank_id=bank_id,
+                        )
+                except Exception as e:
+                    logger.warning("[RECON] Semantic trigger failed, continuing: %s", e)
+
+            # Step 2: Entity-match fallback (RF2) — entity_names populated by Epic 11
+            entity_candidates = await find_entity_match_candidates(
+                pool=pool,
+                bank_id=bank_id,
+                entity_names=[],
+                fq_table_fn=fq_table,
+            )
+            merged = merge_candidates(qdrant_candidates, entity_candidates)
+
+            # Step 3: Fetch FullEngram objects — candidates if Qdrant found matches, else all active
+            if merged:
+                candidate_ids = {c.engram_id for c in merged}
+                rows = await filter_entries(pool, bank_id=bank_id, status="active", limit=500)
+                rows = [r for r in rows if str(r.get("engram_id", "")) in candidate_ids]
+            else:
+                # No semantic candidates → fallback to all active Engrams (RF2 graceful degradation)
+                rows = await filter_entries(pool, bank_id=bank_id, status="active", limit=200)
+
             if not rows:
                 return
 
@@ -3378,13 +3427,21 @@ Guidelines:
                 len(queue),
             )
 
+            # Build similarity score lookup for prompt context (RF4 — T4)
+            similarity_lookup: dict[str, float] = {c.engram_id: c.similarity_score for c in merged}
+
             # Step 3 + 4: LLM evaluation → strength update
             for engram in queue:
                 eid = str(engram.engram_id)
                 current_strength = engram.metadata.strength if engram.metadata else 0.0
 
                 try:
-                    outcome = await self._evaluate_engram_reconsolidation_async(eid, bank_id)
+                    outcome = await self._evaluate_engram_reconsolidation_async(
+                        eid,
+                        bank_id,
+                        new_context=query,
+                        similarity_score=similarity_lookup.get(eid, 0.0),
+                    )
                     if outcome is None:
                         continue
                     new_strength = apply_strength_delta(current_strength, outcome)
@@ -3404,16 +3461,31 @@ Guidelines:
             logger.warning("[RECON] Reconsolidation failed for bank %s: %s", bank_id, e)
 
     async def _evaluate_engram_reconsolidation_async(
-        self, engram_id: str, bank_id: str
+        self,
+        engram_id: str,
+        bank_id: str,
+        new_context: str = "",
+        similarity_score: float = 0.0,
     ) -> "ReconsolidationOutcome | None":
         """
         Evaluate whether an Engram should be confirmed, modified, or marked as contradiction.
 
-        Fetches the Engram text from memory_units and asks the LLM to assess its current validity.
-        Returns None if evaluation is skipped (e.g. LLM unavailable or Engram has no text).
+        Fetches the Engram text from memory_units and asks the LLM to assess its validity
+        given the new context that triggered reconsolidation (RF4 — T4).
 
-        Bio mapping: post-retrieval lability window — LLM acts as the "new information" that
-        can trigger LTP (CONFIRMED) or LTD (CONTRADICTION) at the reconsolidated synapse.
+        Args:
+            engram_id:        Engram to evaluate.
+            bank_id:          Bank scope (used for DB fetch).
+            new_context:      The query/content that triggered reconsolidation via semantic
+                              similarity — gives the LLM the "new information" lens.
+            similarity_score: Cosine similarity that triggered this reconsolidation (0.0 if
+                              entity-match fallback). Included in the prompt so the LLM
+                              can calibrate how closely related the new context is.
+
+        Returns None if evaluation is skipped (LLM unavailable or Engram has no text).
+
+        Bio mapping: post-retrieval lability window — new_context acts as the "new information"
+        that can trigger LTP (CONFIRMED) or LTD (CONTRADICTION) at the reconsolidated synapse.
         """
         from uuid import UUID
 
@@ -3441,21 +3513,27 @@ Guidelines:
                 )
                 reasoning: str = Field(description="Brief reason for the outcome")
 
-            prompt = f"""Assess whether this stored memory unit is still valid:
+            context_section = ""
+            if new_context:
+                context_section = f"\nNEW CONTEXT (similarity={similarity_score:.2f}): {new_context}\n"
 
-MEMORY: {engram_text}
-CURRENT CONFIDENCE: {confidence:.2f}
+            prompt = f"""Evaluate and update this stored memory given the new context provided.
 
-Is this memory:
-1. CONFIRMED — still accurate and relevant
-2. MODIFIED — partially outdated or needs updating
-3. CONTRADICTION — conflicts with known facts or is clearly wrong
+STORED MEMORY: {engram_text}
+CURRENT CONFIDENCE: {confidence:.2f}{context_section}
+Assess whether this memory is:
+1. CONFIRMED — still accurate and relevant given the new context
+2. MODIFIED — partially outdated or needs updating in light of the new context
+3. CONTRADICTION — conflicts with the new context or is clearly wrong
 
 Respond with one of: confirmed, modified, contradiction"""
 
             result = await self._llm_registry.get_llm("reflect", "opinion_extraction").call(
                 messages=[
-                    {"role": "system", "content": "You assess stored memory entries for validity."},
+                    {
+                        "role": "system",
+                        "content": "You evaluate stored memory entries for validity given new information.",
+                    },
                     {"role": "user", "content": prompt},
                 ],
                 response_format=ReconsolidationEval,
@@ -3890,7 +3968,7 @@ Respond with one of: confirmed, modified, contradiction"""
             }
         )
 
-        # RF1 (Epic 10): Submit reconsolidation task for all Engram types — priority queue selects top-N
+        # RF1+RF3 (Epic 10): Submit reconsolidation task — semantic trigger uses query embedding
         # PredictionErrorRegistry is in-memory (Epic 11 populates it); pass empty list until then.
         await self._task_backend.submit_task(
             {
@@ -3898,6 +3976,7 @@ Respond with one of: confirmed, modified, contradiction"""
                 "bank_id": bank_id,
                 "reconsolidation_level": mode_config.reconsolidation_level,
                 "prediction_error_ids": [],  # Populated by Constructive Memory (Epic 11)
+                "query": query,  # RF3: used to generate embedding for Qdrant semantic trigger
                 "tenant_id": getattr(request_context, "tenant_id", None) if request_context else None,
             }
         )
