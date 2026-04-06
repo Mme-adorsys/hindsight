@@ -245,6 +245,28 @@ class QdrantEngineClient:
 
         await _retry_with_backoff(_delete)
 
+    async def set_payload_fields(self, engram_id: str, fields: dict[str, Any]) -> None:
+        """
+        Update specific payload fields without touching the vector.
+
+        Used by NCR Decay to mark Engrams as archived without re-embedding.
+
+        Args:
+            engram_id: UUID string of the point to update.
+            fields:    Payload key/value pairs to set (merged into existing payload).
+        """
+        client = self._require_client()
+        point_id = str(uuid.UUID(engram_id))
+
+        async def _set():
+            await client.set_payload(
+                collection_name=self._collection,
+                payload=fields,
+                points=[point_id],
+            )
+
+        await _retry_with_backoff(_set)
+
     async def batch_upsert(self, points: list[dict[str, Any]]) -> None:
         """
         Insert or update multiple points in a single request.
