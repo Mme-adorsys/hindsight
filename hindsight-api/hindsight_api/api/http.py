@@ -9,12 +9,17 @@ import json
 import logging
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 
 from hindsight_api.config import get_config
+from hindsight_api.engine.consolidation.consolidation1 import Consolidation1Service
+from hindsight_api.engine.consolidation.ncr_decay import DecayProcessor
+from hindsight_api.engine.consolidation.ncr_orchestrator import NCROrchestrator, NCRScheduler
+from hindsight_api.engine.consolidation.ncr_strengthen import StrengthenProcessor
+from hindsight_api.engine.consolidation.schema_processor import NoOpSchemaProcessor
 from hindsight_api.engine.engram_storage import EngramStorageService
 from hindsight_api.engine.neo4j_client import Neo4jEngineClient
 from hindsight_api.engine.qdrant_client import QdrantEngineClient
@@ -1004,6 +1009,7 @@ def create_app(
         logging.info("Neo4j schema ready")
 
         # Wire EngramStorageService into MemoryEngine (Epic 01, Story 04, T8)
+        ncr_scheduler: NCRScheduler | None = None
         if memory._pool is not None:
             memory.engram_storage = EngramStorageService(
                 pool=memory._pool,
@@ -1011,6 +1017,30 @@ def create_app(
                 neo4j=neo4j,
             )
             logging.info("EngramStorageService initialized")
+
+            # Wire NCR Scheduler (Epic 12, Story 05, T4)
+            if _config.ncr_enabled:
+                _consolidation = Consolidation1Service(pool=memory._pool, storage_service=memory.engram_storage)
+                _decay = DecayProcessor(pool=memory._pool, storage_service=memory.engram_storage, qdrant=qdrant)
+                _strengthen = StrengthenProcessor(pool=memory._pool, storage_service=memory.engram_storage)
+                _schema = NoOpSchemaProcessor()
+                _orchestrator = NCROrchestrator(
+                    pool=memory._pool,
+                    consolidation=_consolidation,
+                    decay=_decay,
+                    strengthen=_strengthen,
+                    schema=_schema,
+                )
+                app.state.ncr_orchestrator = _orchestrator
+                ncr_scheduler = NCRScheduler(
+                    orchestrator=_orchestrator,
+                    bank_ids=[],  # populated per-request; scheduler runs on-demand via trigger
+                    interval_hours=_config.ncr_interval_hours,
+                    enabled=True,
+                )
+                app.state.ncr_scheduler = ncr_scheduler
+                ncr_scheduler.start()
+                logging.info("NCR Scheduler started (interval=%.1fh)", _config.ncr_interval_hours)
 
         # Call HTTP extension startup hook
         if http_extension:
@@ -1023,6 +1053,11 @@ def create_app(
         if http_extension:
             await http_extension.on_shutdown()
             logging.info("HTTP extension stopped")
+
+        # Shutdown: Stop NCR Scheduler
+        if ncr_scheduler is not None:
+            await ncr_scheduler.stop()
+            logging.info("NCR Scheduler stopped")
 
         # Shutdown: Close Neo4j driver
         if hasattr(app.state, "neo4j"):
@@ -2228,3 +2263,102 @@ def _register_routes(app: FastAPI):
             error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
             logger.error(f"Error in /v1/default/banks/{bank_id}/memories: {error_detail}")
             raise HTTPException(status_code=500, detail=str(e))
+
+    # ---------------------------------------------------------------------------
+    # NCR Manual Trigger (Epic 12, Story 05, T5)
+    # ---------------------------------------------------------------------------
+
+    # In-process rate-limit: last trigger timestamp per bank
+    _ncr_last_trigger: dict[str, datetime] = {}
+    _NCR_TRIGGER_COOLDOWN_SECONDS = 3600  # 1 hour
+
+    @app.post(
+        "/v1/default/banks/{bank_id}/ncr/trigger",
+        summary="Manually trigger NCR for a bank",
+        description=(
+            "Runs the Nightly Consolidation Run (NCR) pipeline immediately for the given bank.\n\n"
+            "The NCR executes three sequential phases:\n"
+            "1. **Consolidation 1** — Session → Buffer layer upgrade\n"
+            "2. **Decay** — Strength decay + archival of weak Engrams\n"
+            "3. **Strengthen** — Buffer → Neocortex promotion for strong Engrams\n\n"
+            "**Rate-limited:** at most one manual trigger per bank per hour.\n\n"
+            "Returns `503` if NCR is not enabled, `429` if triggered too recently, "
+            "`409` if another NCR run is already in progress (advisory lock held)."
+        ),
+        operation_id="trigger_ncr",
+        tags=["Consolidation"],
+        status_code=200,
+    )
+    async def api_ncr_trigger(bank_id: str):
+        """Manually trigger the NCR pipeline for a bank."""
+        # Check NCR is enabled
+        if not hasattr(app.state, "ncr_orchestrator"):
+            raise HTTPException(
+                status_code=503,
+                detail="NCR is not enabled. Set HINDSIGHT_API_NCR_ENABLED=true to enable.",
+            )
+
+        # Rate-limit: 1 trigger per bank per hour
+        now = datetime.now(timezone.utc)
+        last = _ncr_last_trigger.get(bank_id)
+        if last is not None:
+            elapsed = (now - last).total_seconds()
+            if elapsed < _NCR_TRIGGER_COOLDOWN_SECONDS:
+                retry_after = int(_NCR_TRIGGER_COOLDOWN_SECONDS - elapsed)
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"NCR triggered too recently for bank={bank_id}. Retry after {retry_after}s.",
+                    headers={"Retry-After": str(retry_after)},
+                )
+
+        _ncr_last_trigger[bank_id] = now
+        orchestrator: NCROrchestrator = app.state.ncr_orchestrator
+
+        try:
+            report = await orchestrator.run(bank_id)
+        except Exception as e:
+            import traceback
+
+            error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+            logger.error(f"Error in NCR trigger for bank={bank_id}: {error_detail}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+        if any("advisory lock" in err.lower() or "already running" in err.lower() for err in report.errors):
+            raise HTTPException(
+                status_code=409,
+                detail=f"NCR already running for bank={bank_id}.",
+            )
+
+        return {
+            "bank_id": report.bank_id,
+            "started_at": report.started_at.isoformat(),
+            "completed_at": report.completed_at.isoformat() if report.completed_at else None,
+            "duration_seconds": report.duration_seconds,
+            "consolidation": {
+                "total": report.consolidation.total,
+                "consolidated": report.consolidation.consolidated,
+            }
+            if report.consolidation
+            else None,
+            "phase1_decay": {
+                "total": report.phase1.total,
+                "decayed": report.phase1.decayed,
+                "archived": report.phase1.archived,
+            }
+            if report.phase1
+            else None,
+            "phase2_strengthen": {
+                "total": report.phase2.total,
+                "promoted": report.phase2.promoted,
+            }
+            if report.phase2
+            else None,
+            "phase3_schema": {
+                "created": report.phase3.created,
+                "strengthened": report.phase3.strengthened,
+                "deleted": report.phase3.deleted,
+            }
+            if report.phase3
+            else None,
+            "errors": report.errors,
+        }
