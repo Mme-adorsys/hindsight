@@ -1707,6 +1707,23 @@ class MemoryEngine(MemoryEngineInterface):
                     _neo4j = _retriever._neo4j if isinstance(_retriever, EngramRetriever) else None
                     await wc.association_window.flush_to_neo4j(_neo4j)
 
+                # Construction Pipeline (Epic 11 S2) — builds ConstructedAnswer from scored results.
+                # Runs after WorkingContext population so WC already reflects the current recall.
+                # Bio mapping: PFC semantic integration — retrieved fragments reconstructed into
+                # a coherent answer with inferences and gap detection.
+                try:
+                    from .constructive.pipeline import ConstructionPipeline
+
+                    mode_config = self._resolve_session_config(session)
+                    _pipeline = ConstructionPipeline(llm=self._reflect_llm_config, mode_config=mode_config)
+                    result.constructed_answer = await _pipeline.construct(
+                        scored_results=_top_scored,
+                        query=query,
+                        working_context=wc,
+                    )
+                except Exception as _pipeline_err:
+                    logger.warning("[CONSTRUCTION] Pipeline failed (non-fatal): %s", _pipeline_err)
+
         # Call post-operation hook for success
         if self._operation_validator and result is not None:
             from hindsight_api.extensions.operation_validator import RecallResult

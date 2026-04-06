@@ -26,10 +26,12 @@ from .models import (
     Gap,
     Inference,
 )
+from .pipeline import ConstructionPipeline
 
 __all__ = [
     "ConstructedFact",
     "Inference",
     "Gap",
     "ConstructedAnswer",
+    "ConstructionPipeline",
 ]
