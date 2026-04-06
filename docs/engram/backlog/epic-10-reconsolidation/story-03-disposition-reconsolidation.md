@@ -16,16 +16,16 @@ Verschiedene Agent-Persönlichkeiten (Dispositions) sollten unterschiedlich mit 
 
 ## Akzeptanzkriterien
 
-- [ ] Disposition fließt als Kontext in den Reconsolidation LLM-Prompt
-- [ ] Unterschiedliche Dispositions erzeugen unterschiedliche Reconsolidation-Ergebnisse
-- [ ] 3 Standard-Profiles: Analytical, Optimistic, Conservative
-- [ ] Disposition beeinflusst Strength-Update: Analytical → stärkere Anpassung, Conservative → schwächere
-- [ ] Ohne Disposition: Neutral (keine Bias)
+- [x] Disposition fließt als Kontext in den Reconsolidation LLM-Prompt
+- [x] Unterschiedliche Dispositions erzeugen unterschiedliche Reconsolidation-Ergebnisse
+- [x] 3 Standard-Profiles: Analytical, Optimistic, Conservative
+- [x] Disposition beeinflusst Strength-Update: Analytical → stärkere Anpassung, Conservative → schwächere
+- [x] Ohne Disposition: Neutral (keine Bias)
 
 ## Tasks
 
-- [ ] **T1 — Disposition Profiles:** In `reflect/` oder `session/`: Dataclass `DispositionProfile(name, evidence_weight: float, update_bias: float, contradiction_tolerance: float)`. 3 Defaults: Analytical (evidence=1.2, bias=0.0, contradiction=0.3), Optimistic (evidence=0.8, bias=+0.2, contradiction=0.5), Conservative (evidence=0.8, bias=0.0, contradiction=0.7).
-- [ ] **T2 — LLM Prompt Enrichment:** Disposition als Kontext in den Reconsolidation-Prompt: "This agent tends to {disposition_description}. When evaluating conflicting evidence, apply this perspective." Prompt-Templates pro Disposition.
-- [ ] **T3 — Strength Update Modulation:** Strength-Update aus Story 01 T4 wird durch Disposition moduliert: `strength_delta *= disposition.evidence_weight`. Contradiction Tolerance: Wenn LLM Widerspruch erkennt UND `similarity > disposition.contradiction_tolerance` → kein Strength-Reduction (Agent toleriert Widerspruch).
-- [ ] **T4 — BankProfile → DispositionProfile Mapping:** Bestehende Hindsight `disposition: dict` → `DispositionProfile` konvertieren. Lookup: `get_disposition_profile(bank_profile) → DispositionProfile`. Fallback: Neutral (keine Modification).
-- [ ] **T5 — Unit Tests:** Analytical Disposition → stärkere Evidenz-Gewichtung. Optimistic → positive Bias. Conservative → weniger Updates. Neutral Fallback. Contradiction Tolerance blockiert Strength-Reduction.
+- [x] **T1 — Disposition Profiles:** In `reflect/` oder `session/`: Dataclass `DispositionProfile(name, evidence_weight: float, update_bias: float, contradiction_tolerance: float)`. 3 Defaults: Analytical (evidence=1.2, bias=0.0, contradiction=0.3), Optimistic (evidence=0.8, bias=+0.2, contradiction=0.5), Conservative (evidence=0.8, bias=0.0, contradiction=0.7).
+- [x] **T2 — LLM Prompt Enrichment:** Disposition als Kontext in den Reconsolidation-Prompt: "This agent tends to {disposition_description}. When evaluating conflicting evidence, apply this perspective." Prompt-Templates pro Disposition.
+- [x] **T3 — Strength Update Modulation:** Strength-Update aus Story 01 T4 wird durch Disposition moduliert: `strength_delta *= disposition.evidence_weight`. Contradiction Tolerance: Wenn LLM Widerspruch erkennt UND `similarity > disposition.contradiction_tolerance` → kein Strength-Reduction (Agent toleriert Widerspruch).
+- [x] **T4 — BankProfile → DispositionProfile Mapping:** Bestehende Hindsight `disposition: dict` → `DispositionProfile` konvertieren. Lookup: `get_disposition_profile(bank_profile) → DispositionProfile`. Fallback: Neutral (keine Modification).
+- [x] **T5 — Unit Tests:** Analytical Disposition → stärkere Evidenz-Gewichtung. Optimistic → positive Bias. Conservative → weniger Updates. Neutral Fallback. Contradiction Tolerance blockiert Strength-Reduction.

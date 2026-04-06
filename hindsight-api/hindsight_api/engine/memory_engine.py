@@ -3427,30 +3427,57 @@ Guidelines:
                 len(queue),
             )
 
-            # Build similarity score lookup for prompt context (RF4 — T4)
+            # RF4 (T4): Load bank disposition → DispositionProfile for modulated strength updates
+            from .reflect.disposition_profile import NEUTRAL as _NEUTRAL_DISPOSITION
+            from .reflect.disposition_profile import get_disposition_profile
+            from .retain.bank_utils import get_bank_profile
+
+            try:
+                bank_profile = await get_bank_profile(pool, bank_id)
+                disposition = get_disposition_profile(bank_profile["disposition"])
+            except Exception as e:
+                logger.warning("[RECON] Could not load disposition for bank %s, using neutral: %s", bank_id, e)
+                disposition = _NEUTRAL_DISPOSITION
+
+            # Build similarity score lookup for prompt context (RF3+RF4)
             similarity_lookup: dict[str, float] = {c.engram_id: c.similarity_score for c in merged}
 
-            # Step 3 + 4: LLM evaluation → strength update
+            # Step 3 + 4: LLM evaluation → modulated strength update (RF4)
             for engram in queue:
                 eid = str(engram.engram_id)
                 current_strength = engram.metadata.strength if engram.metadata else 0.0
+                sim_score = similarity_lookup.get(eid, 0.0)
 
                 try:
                     outcome = await self._evaluate_engram_reconsolidation_async(
                         eid,
                         bank_id,
                         new_context=query,
-                        similarity_score=similarity_lookup.get(eid, 0.0),
+                        similarity_score=sim_score,
+                        disposition_name=disposition.name,
                     )
                     if outcome is None:
                         continue
-                    new_strength = apply_strength_delta(current_strength, outcome)
+
+                    # RF4: modulate delta by disposition (evidence_weight, update_bias, contradiction_tolerance)
+                    from .reflect.disposition_profile import apply_modulated_strength_delta
+                    from .reflect.reconsolidation_queue import STRENGTH_DELTA, ReconsolidationOutcome
+
+                    raw_delta = STRENGTH_DELTA[outcome]
+                    new_strength = apply_modulated_strength_delta(
+                        current_strength=current_strength,
+                        raw_delta=raw_delta,
+                        outcome_is_confirmed=(outcome == ReconsolidationOutcome.CONFIRMED),
+                        similarity_score=sim_score,
+                        disposition=disposition,
+                    )
                     if abs(new_strength - current_strength) > 0.001:
                         await update_strength(pool, eid, new_strength)
                         logger.debug(
-                            "[RECON] engram=%s outcome=%s strength %.3f → %.3f",
+                            "[RECON] engram=%s outcome=%s disposition=%s strength %.3f → %.3f",
                             eid,
                             outcome.value,
+                            disposition.name,
                             current_strength,
                             new_strength,
                         )
@@ -3466,6 +3493,7 @@ Guidelines:
         bank_id: str,
         new_context: str = "",
         similarity_score: float = 0.0,
+        disposition_name: str = "neutral",
     ) -> "ReconsolidationOutcome | None":
         """
         Evaluate whether an Engram should be confirmed, modified, or marked as contradiction.
@@ -3481,6 +3509,8 @@ Guidelines:
             similarity_score: Cosine similarity that triggered this reconsolidation (0.0 if
                               entity-match fallback). Included in the prompt so the LLM
                               can calibrate how closely related the new context is.
+            disposition_name: Agent personality for prompt framing — one of
+                              'analytical', 'optimistic', 'conservative', 'neutral'.
 
         Returns None if evaluation is skipped (LLM unavailable or Engram has no text).
 
@@ -3517,10 +3547,19 @@ Guidelines:
             if new_context:
                 context_section = f"\nNEW CONTEXT (similarity={similarity_score:.2f}): {new_context}\n"
 
+            _disposition_descriptions: dict[str, str] = {
+                "analytical": "weigh evidence carefully and update memories when contradictions are clear",
+                "optimistic": "favour confirming existing memories and be tolerant of minor contradictions",
+                "conservative": "retain existing memories unless evidence is very strong and direct",
+                "neutral": "evaluate objectively without any particular bias",
+            }
+            disposition_desc = _disposition_descriptions.get(disposition_name, _disposition_descriptions["neutral"])
+            disposition_section = f"\nAGENT PERSPECTIVE: This agent tends to {disposition_desc}. Apply this perspective when evaluating conflicting evidence.\n"
+
             prompt = f"""Evaluate and update this stored memory given the new context provided.
 
 STORED MEMORY: {engram_text}
-CURRENT CONFIDENCE: {confidence:.2f}{context_section}
+CURRENT CONFIDENCE: {confidence:.2f}{context_section}{disposition_section}
 Assess whether this memory is:
 1. CONFIRMED — still accurate and relevant given the new context
 2. MODIFIED — partially outdated or needs updating in light of the new context

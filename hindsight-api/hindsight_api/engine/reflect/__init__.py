@@ -8,6 +8,15 @@ signal modulates plasticity strength.
 Concept reference: docs/engram/concept.md — Chapter 10 (Reflect & Reconsolidation)
 """
 
+from .disposition_profile import (
+    ANALYTICAL,
+    CONSERVATIVE,
+    NEUTRAL,
+    OPTIMISTIC,
+    DispositionProfile,
+    apply_modulated_strength_delta,
+    get_disposition_profile,
+)
 from .prediction_error_registry import PredictionErrorEntry, PredictionErrorRegistry
 from .reconsolidation_queue import ReconsolidationOutcome, build_reconsolidation_queue
 from .semantic_trigger import (
@@ -26,4 +35,11 @@ __all__ = [
     "find_reconsolidation_candidates",
     "find_entity_match_candidates",
     "merge_candidates",
+    "DispositionProfile",
+    "NEUTRAL",
+    "ANALYTICAL",
+    "OPTIMISTIC",
+    "CONSERVATIVE",
+    "get_disposition_profile",
+    "apply_modulated_strength_delta",
 ]
