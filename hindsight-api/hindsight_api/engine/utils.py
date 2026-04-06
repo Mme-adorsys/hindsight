@@ -1,16 +1,22 @@
 """
 Utility functions for memory system.
+
+Also contains engine-level infrastructure helpers (fq_table, Budget, etc.)
+that were extracted from memory_engine.py to allow orchestrators to import
+them without creating circular imports.
 """
 
+from __future__ import annotations
+
+import contextvars
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
+from enum import Enum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .llm_wrapper import LLMConfig
     from .retain.fact_extraction import Fact
-
-from .retain.fact_extraction import extract_facts_from_text
 
 
 async def extract_facts(
@@ -48,6 +54,8 @@ async def extract_facts(
     """
     if not text or not text.strip():
         return [], []
+
+    from .retain.fact_extraction import extract_facts_from_text  # lazy to avoid circular import
 
     facts, chunks, _ = await extract_facts_from_text(
         text,
@@ -216,3 +224,176 @@ def calculate_temporal_proximity(anchor_a: datetime, anchor_b: datetime, half_li
     proximity = 1.0 / (1.0 + math.log1p(normalized_distance))
 
     return proximity
+
+
+# =============================================================================
+# Engine-level infrastructure helpers (extracted from memory_engine.py)
+# Orchestrators import from here; memory_engine.py re-exports for backward compat.
+# =============================================================================
+
+import tiktoken
+from pydantic import BaseModel, Field
+
+from .db_utils import acquire_with_retry as acquire_with_retry  # noqa: F401 (re-export)
+
+# ---------------------------------------------------------------------------
+# Schema / multi-tenancy helpers
+# ---------------------------------------------------------------------------
+
+# Context variable for current schema (async-safe, per-task isolation)
+_current_schema: contextvars.ContextVar[str] = contextvars.ContextVar("current_schema", default="public")
+
+
+def get_current_schema() -> str:
+    """Get the current schema from context (default: 'public')."""
+    return _current_schema.get()
+
+
+def fq_table(table_name: str) -> str:
+    """
+    Get fully-qualified table name with current schema.
+
+    Example:
+        fq_table("memory_units") -> "public.memory_units"
+        fq_table("memory_units") -> "tenant_xyz.memory_units" (if schema is set)
+    """
+    return f"{get_current_schema()}.{table_name}"
+
+
+# Tables that must be schema-qualified (for runtime validation)
+_PROTECTED_TABLES = frozenset(
+    [
+        "memory_units",
+        "memory_links",
+        "unit_entities",
+        "entities",
+        "entity_cooccurrences",
+        "banks",
+        "documents",
+        "chunks",
+        "async_operations",
+    ]
+)
+
+# Enable runtime SQL validation (can be disabled in production for performance)
+_VALIDATE_SQL_SCHEMAS = True
+
+
+class UnqualifiedTableError(Exception):
+    """Raised when SQL contains unqualified table references."""
+
+    pass
+
+
+def validate_sql_schema(sql: str) -> None:
+    """
+    Validate that SQL doesn't contain unqualified table references.
+
+    This is a runtime safety check to prevent cross-tenant data access.
+    Raises UnqualifiedTableError if any protected table is referenced
+    without a schema prefix.
+
+    Args:
+        sql: The SQL query to validate
+
+    Raises:
+        UnqualifiedTableError: If unqualified table reference found
+    """
+    if not _VALIDATE_SQL_SCHEMAS:
+        return
+
+    import re
+
+    sql_upper = sql.upper()
+
+    for table in _PROTECTED_TABLES:
+        table_upper = table.upper()
+
+        # Pattern: SQL keyword followed by unqualified table name
+        # Matches: FROM memory_units, JOIN memory_units, INTO memory_units, UPDATE memory_units
+        patterns = [
+            rf"FROM\s+{table_upper}(?:\s|$|,|\)|;)",
+            rf"JOIN\s+{table_upper}(?:\s|$|,|\)|;)",
+            rf"INTO\s+{table_upper}(?:\s|$|\()",
+            rf"UPDATE\s+{table_upper}(?:\s|$)",
+            rf"DELETE\s+FROM\s+{table_upper}(?:\s|$|;)",
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, sql_upper)
+            if match:
+                # Check if it's actually qualified (preceded by schema.)
+                # Look backwards from match to see if there's a dot
+                start = match.start()
+                # Find the table name position in the match
+                table_pos = sql_upper.find(table_upper, start)
+                if table_pos > 0:
+                    # Check character before table name (skip whitespace)
+                    prefix = sql[:table_pos].rstrip()
+                    if not prefix.endswith("."):
+                        raise UnqualifiedTableError(
+                            f"Unqualified table reference '{table}' in SQL. "
+                            f"Use fq_table('{table}') for schema safety. "
+                            f"SQL snippet: ...{sql[max(0, start - 10) : start + 50]}..."
+                        )
+
+
+# ---------------------------------------------------------------------------
+# Budget enum
+# ---------------------------------------------------------------------------
+
+
+class Budget(str, Enum):
+    """Budget levels for recall/reflect operations."""
+
+    LOW = "low"
+    MID = "mid"
+    HIGH = "high"
+
+
+# ---------------------------------------------------------------------------
+# UTC helper
+# ---------------------------------------------------------------------------
+
+
+def utcnow() -> datetime:
+    """Get current UTC time with timezone info."""
+    return datetime.now(UTC)
+
+
+# ---------------------------------------------------------------------------
+# Tiktoken cache
+# ---------------------------------------------------------------------------
+
+_TIKTOKEN_ENCODING = None
+
+
+def _get_tiktoken_encoding():
+    """Get cached tiktoken encoding (cl100k_base for GPT-4/3.5)."""
+    global _TIKTOKEN_ENCODING
+    if _TIKTOKEN_ENCODING is None:
+        _TIKTOKEN_ENCODING = tiktoken.get_encoding("cl100k_base")
+    return _TIKTOKEN_ENCODING
+
+
+# ---------------------------------------------------------------------------
+# Reconsolidation helpers (module-level to avoid re-creating per call)
+# ---------------------------------------------------------------------------
+
+
+class _ReconsolidationEval(BaseModel):
+    """LLM structured output for Engram reconsolidation evaluation."""
+
+    outcome: str = Field(
+        description="One of: 'confirmed' (still valid), 'modified' (needs update), 'contradiction' (conflicts with known facts)"
+    )
+    reasoning: str = Field(description="Brief reason for the outcome")
+
+
+# Disposition → prompt description (module-level constant, not re-created per call)
+_DISPOSITION_DESCRIPTIONS: dict[str, str] = {
+    "analytical": "weigh evidence carefully and update memories when contradictions are clear",
+    "optimistic": "favour confirming existing memories and be tolerant of minor contradictions",
+    "conservative": "retain existing memories unless evidence is very strong and direct",
+    "neutral": "evaluate objectively without any particular bias",
+}

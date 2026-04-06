@@ -18,114 +18,31 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from ..config import get_config
-from ..metrics import get_metrics_collector
-
-# Context variable for current schema (async-safe, per-task isolation)
-_current_schema: contextvars.ContextVar[str] = contextvars.ContextVar("current_schema", default="public")
-
-
-def get_current_schema() -> str:
-    """Get the current schema from context (default: 'public')."""
-    return _current_schema.get()
-
-
-def fq_table(table_name: str) -> str:
-    """
-    Get fully-qualified table name with current schema.
-
-    Example:
-        fq_table("memory_units") -> "public.memory_units"
-        fq_table("memory_units") -> "tenant_xyz.memory_units" (if schema is set)
-    """
-    return f"{get_current_schema()}.{table_name}"
-
-
-# Tables that must be schema-qualified (for runtime validation)
-_PROTECTED_TABLES = frozenset(
-    [
-        "memory_units",
-        "memory_links",
-        "unit_entities",
-        "entities",
-        "entity_cooccurrences",
-        "banks",
-        "documents",
-        "chunks",
-        "async_operations",
-    ]
-)
-
-# Enable runtime SQL validation (can be disabled in production for performance)
-_VALIDATE_SQL_SCHEMAS = True
-
-
-class UnqualifiedTableError(Exception):
-    """Raised when SQL contains unqualified table references."""
-
-    pass
-
-
-def validate_sql_schema(sql: str) -> None:
-    """
-    Validate that SQL doesn't contain unqualified table references.
-
-    This is a runtime safety check to prevent cross-tenant data access.
-    Raises UnqualifiedTableError if any protected table is referenced
-    without a schema prefix.
-
-    Args:
-        sql: The SQL query to validate
-
-    Raises:
-        UnqualifiedTableError: If unqualified table reference found
-    """
-    if not _VALIDATE_SQL_SCHEMAS:
-        return
-
-    import re
-
-    sql_upper = sql.upper()
-
-    for table in _PROTECTED_TABLES:
-        table_upper = table.upper()
-
-        # Pattern: SQL keyword followed by unqualified table name
-        # Matches: FROM memory_units, JOIN memory_units, INTO memory_units, UPDATE memory_units
-        patterns = [
-            rf"FROM\s+{table_upper}(?:\s|$|,|\)|;)",
-            rf"JOIN\s+{table_upper}(?:\s|$|,|\)|;)",
-            rf"INTO\s+{table_upper}(?:\s|$|\()",
-            rf"UPDATE\s+{table_upper}(?:\s|$)",
-            rf"DELETE\s+FROM\s+{table_upper}(?:\s|$|;)",
-        ]
-
-        for pattern in patterns:
-            match = re.search(pattern, sql_upper)
-            if match:
-                # Check if it's actually qualified (preceded by schema.)
-                # Look backwards from match to see if there's a dot
-                start = match.start()
-                # Find the table name position in the match
-                table_pos = sql_upper.find(table_upper, start)
-                if table_pos > 0:
-                    # Check character before table name (skip whitespace)
-                    prefix = sql[:table_pos].rstrip()
-                    if not prefix.endswith("."):
-                        raise UnqualifiedTableError(
-                            f"Unqualified table reference '{table}' in SQL. "
-                            f"Use fq_table('{table}') for schema safety. "
-                            f"SQL snippet: ...{sql[max(0, start - 10) : start + 50]}..."
-                        )
-
-
 import asyncpg
 import numpy as np
 from pydantic import BaseModel, Field
 
+from ..config import get_config
+from ..metrics import get_metrics_collector
 from .cross_encoder import CrossEncoderModel
 from .embeddings import Embeddings, create_embeddings_from_env
 from .interface import MemoryEngineInterface
+
+# Engine utilities — imported from utils.py to break circular imports in orchestrators.
+# Re-exported here so existing code (`from .memory_engine import fq_table`) continues to work.
+from .utils import (  # noqa: F401 (re-exports)
+    _DISPOSITION_DESCRIPTIONS,
+    Budget,
+    UnqualifiedTableError,
+    _current_schema,
+    _get_tiktoken_encoding,
+    _ReconsolidationEval,
+    acquire_with_retry,
+    fq_table,
+    get_current_schema,
+    utcnow,
+    validate_sql_schema,
+)
 
 if TYPE_CHECKING:
     from hindsight_api.engine.response_models import Session
@@ -154,61 +71,13 @@ from .retain.deduplication import DuplicateResult
 from .retain.types import RetainContentDict
 from .search import observation_utils, think_utils
 from .search.reranking import CrossEncoderReranker
-
-# ---------------------------------------------------------------------------
-# Reconsolidation helpers (module-level to avoid re-creating per call)
-# ---------------------------------------------------------------------------
-
-
-class _ReconsolidationEval(BaseModel):
-    """LLM structured output for Engram reconsolidation evaluation."""
-
-    outcome: str = Field(
-        description="One of: 'confirmed' (still valid), 'modified' (needs update), 'contradiction' (conflicts with known facts)"
-    )
-    reasoning: str = Field(description="Brief reason for the outcome")
-
-
-# Disposition → prompt description (module-level constant, not re-created per call)
-_DISPOSITION_DESCRIPTIONS: dict[str, str] = {
-    "analytical": "weigh evidence carefully and update memories when contradictions are clear",
-    "optimistic": "favour confirming existing memories and be tolerant of minor contradictions",
-    "conservative": "retain existing memories unless evidence is very strong and direct",
-    "neutral": "evaluate objectively without any particular bias",
-}
 from .task_backend import AsyncIOQueueBackend, NoopTaskBackend, TaskBackend
-
-
-class Budget(str, Enum):
-    """Budget levels for recall/reflect operations."""
-
-    LOW = "low"
-    MID = "mid"
-    HIGH = "high"
-
-
-def utcnow():
-    """Get current UTC time with timezone info."""
-    return datetime.now(UTC)
-
 
 # Logger for memory system
 logger = logging.getLogger(__name__)
 
-import tiktoken
-
-from .db_utils import acquire_with_retry
-
-# Cache tiktoken encoding for token budget filtering (module-level singleton)
-_TIKTOKEN_ENCODING = None
-
-
-def _get_tiktoken_encoding():
-    """Get cached tiktoken encoding (cl100k_base for GPT-4/3.5)."""
-    global _TIKTOKEN_ENCODING
-    if _TIKTOKEN_ENCODING is None:
-        _TIKTOKEN_ENCODING = tiktoken.get_encoding("cl100k_base")
-    return _TIKTOKEN_ENCODING
+# Eagerly warm up tiktoken encoding (avoids latency on first call)
+_get_tiktoken_encoding()
 
 
 class MemoryEngine(MemoryEngineInterface):
