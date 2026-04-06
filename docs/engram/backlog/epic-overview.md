@@ -114,7 +114,7 @@ Phase 6:  * → 15 (Benchmarking)
 - [x] Epic 07 — Search & Retrieval Erweiterung
 - [x] Epic 08 — Working Context
 - [x] Epic 09 — Weak Connections & Synaptic Tagging
-- [ ] Epic 10 — Reflect & Reconsolidation
+- [x] Epic 10 — Reflect & Reconsolidation
 - [ ] Epic 11 — Constructive Memory
 - [ ] Epic 12 — Consolidation Pipeline
 - [ ] Epic 13 — Schema Emergence
