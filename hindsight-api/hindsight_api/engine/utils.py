@@ -68,7 +68,9 @@ async def extract_facts(
 
     if not facts:
         logging.warning(
-            f"LLM extracted 0 facts from text of length {len(text)}. This may indicate the text contains no meaningful information, or the LLM failed to extract facts. Full text: {text}"
+            "LLM extracted 0 facts from text of length %d. This may indicate the text contains no meaningful information, or the LLM failed to extract facts. Text preview: %.100s...",
+            len(text),
+            text,
         )
         return [], chunks
 

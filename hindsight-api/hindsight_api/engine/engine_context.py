@@ -137,8 +137,6 @@ class EngineContext:
         )
 
         # --- pg0 (embedded PostgreSQL) ---
-        from ..pg0 import parse_pg0_url
-
         self._pg0 = None
         self._use_pg0, self._pg0_instance_name, self._pg0_port = parse_pg0_url(db_url)
         self.db_url: str | None = None if self._use_pg0 else db_url
@@ -247,7 +245,7 @@ class EngineContext:
         if self._initialized:
             return
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         async def start_pg0() -> None:
             if self._use_pg0:
