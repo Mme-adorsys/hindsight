@@ -99,6 +99,10 @@ ENV_TASK_BACKEND = "HINDSIGHT_API_TASK_BACKEND"
 ENV_TASK_BACKEND_MEMORY_BATCH_SIZE = "HINDSIGHT_API_TASK_BACKEND_MEMORY_BATCH_SIZE"
 ENV_TASK_BACKEND_MEMORY_BATCH_INTERVAL = "HINDSIGHT_API_TASK_BACKEND_MEMORY_BATCH_INTERVAL"
 
+# Nightly Consolidation Run (NCR)
+ENV_NCR_ENABLED = "HINDSIGHT_API_NCR_ENABLED"
+ENV_NCR_INTERVAL_HOURS = "HINDSIGHT_API_NCR_INTERVAL_HOURS"
+
 # Qdrant (Content Store)
 ENV_QDRANT_URL = "QDRANT_URL"
 ENV_QDRANT_API_KEY = "QDRANT_API_KEY"
@@ -163,6 +167,10 @@ DEFAULT_DB_ACQUIRE_TIMEOUT = 30  # seconds
 DEFAULT_TASK_BACKEND = "memory"  # Options: "memory", "noop"
 DEFAULT_TASK_BACKEND_MEMORY_BATCH_SIZE = 10
 DEFAULT_TASK_BACKEND_MEMORY_BATCH_INTERVAL = 1.0  # seconds
+
+# NCR defaults
+DEFAULT_NCR_ENABLED = False  # Off by default — requires 3-DB setup
+DEFAULT_NCR_INTERVAL_HOURS = 24.0
 
 # Qdrant defaults
 DEFAULT_QDRANT_URL = "http://localhost:6333"
@@ -297,6 +305,10 @@ class HindsightConfig:
     task_backend_memory_batch_size: int
     task_backend_memory_batch_interval: float
 
+    # Nightly Consolidation Run (NCR)
+    ncr_enabled: bool
+    ncr_interval_hours: float
+
     # Qdrant (Content Store)
     qdrant_url: str
     qdrant_api_key: str | None
@@ -388,6 +400,9 @@ class HindsightConfig:
             task_backend_memory_batch_interval=float(
                 os.getenv(ENV_TASK_BACKEND_MEMORY_BATCH_INTERVAL, str(DEFAULT_TASK_BACKEND_MEMORY_BATCH_INTERVAL))
             ),
+            # NCR
+            ncr_enabled=os.getenv(ENV_NCR_ENABLED, str(DEFAULT_NCR_ENABLED)).lower() == "true",
+            ncr_interval_hours=float(os.getenv(ENV_NCR_INTERVAL_HOURS, str(DEFAULT_NCR_INTERVAL_HOURS))),
             # Qdrant
             qdrant_url=os.getenv(ENV_QDRANT_URL, DEFAULT_QDRANT_URL),
             qdrant_api_key=os.getenv(ENV_QDRANT_API_KEY) or None,

@@ -209,6 +209,8 @@ def main():
             task_backend=config.task_backend,
             task_backend_memory_batch_size=config.task_backend_memory_batch_size,
             task_backend_memory_batch_interval=config.task_backend_memory_batch_interval,
+            ncr_enabled=config.ncr_enabled,
+            ncr_interval_hours=config.ncr_interval_hours,
             qdrant_url=config.qdrant_url,
             qdrant_api_key=config.qdrant_api_key,
             qdrant_collection=config.qdrant_collection,
