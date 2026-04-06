@@ -24,7 +24,7 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.xdist_group(name="recon_integration")]
 
 # ---------------------------------------------------------------------------
 # Bank identifier for this test suite
@@ -63,14 +63,14 @@ PE_ENGRAM_IDS = [_uid("recon-18"), _uid("recon-19")]  # strength 0.92, 0.95
 # ---------------------------------------------------------------------------
 
 
-@pytest_asyncio.fixture(scope="module")
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def pg_pool(pg0_db_url):
     pool = await asyncpg.create_pool(pg0_db_url, min_size=1, max_size=3)
     yield pool
     await pool.close()
 
 
-@pytest_asyncio.fixture(scope="module")
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def recon_data(pg_pool):
     """Insert fixture Engrams into PostgreSQL, yield, then clean up."""
     async with pg_pool.acquire() as conn:
@@ -86,8 +86,8 @@ async def recon_data(pg_pool):
         for e in FIXTURE_ENGRAMS:
             await conn.execute(
                 """
-                INSERT INTO memory_units (id, bank_id, text, fact_type)
-                VALUES ($1::uuid, $2, $3, 'general')
+                INSERT INTO memory_units (id, bank_id, text, fact_type, event_date)
+                VALUES ($1::uuid, $2, $3, 'world', NOW())
                 ON CONFLICT (id) DO NOTHING
                 """,
                 e["id"],
@@ -133,8 +133,8 @@ skip_no_qdrant = pytest.mark.skipif(not QDRANT_URL, reason="HINDSIGHT_TEST_QDRAN
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio(loop_scope="module")
 class TestPriorityQueueFromDB:
-    @pytest.mark.asyncio
     async def test_filter_entries_returns_all_active(self, pg_pool, recon_data):
         """filter_entries returns all 20 active Engrams for the bank."""
         from hindsight_api.engine.engram_dictionary import filter_entries
@@ -142,7 +142,6 @@ class TestPriorityQueueFromDB:
         rows = await filter_entries(pg_pool, bank_id=RECON_TEST_BANK, status="active", limit=50)
         assert len(rows) == 20
 
-    @pytest.mark.asyncio
     async def test_pe_engrams_first_in_queue(self, pg_pool, recon_data):
         """PE-flagged Engrams come first regardless of strength."""
         from hindsight_api.engine.engram_dictionary import filter_entries
@@ -180,7 +179,6 @@ class TestPriorityQueueFromDB:
         top2_ids = {str(q.engram_id) for q in queue[:2]}
         assert top2_ids == set(PE_ENGRAM_IDS)
 
-    @pytest.mark.asyncio
     async def test_weak_engrams_before_strong_in_queue(self, pg_pool, recon_data):
         """After PE entries, all weak Engrams (strength < 0.3) come before stronger ones."""
         from hindsight_api.engine.engram_dictionary import filter_entries
@@ -221,7 +219,6 @@ class TestPriorityQueueFromDB:
         # All weak must appear before all strong
         assert last_weak_idx < first_strong_idx
 
-    @pytest.mark.asyncio
     async def test_budget_minimal_returns_5(self, pg_pool, recon_data):
         """Minimal budget caps queue at 5."""
         from hindsight_api.engine.engram_dictionary import filter_entries
@@ -254,8 +251,8 @@ class TestPriorityQueueFromDB:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio(loop_scope="module")
 class TestStrengthUpdatePersistence:
-    @pytest.mark.asyncio
     async def test_update_strength_reflects_in_filter_entries(self, pg_pool, recon_data):
         """After update_strength(), the new value is visible via filter_entries."""
         from hindsight_api.engine.engram_dictionary import filter_entries, update_strength
@@ -303,13 +300,15 @@ class TestDispositionVariation:
 
         raw_delta = -0.2
         current = 0.6
-        low_sim = 0.2  # below Conservative's tolerance=0.7
+        # sim=0.4: above ANALYTICAL tolerance (0.3) so contradiction applied,
+        # but below CONSERVATIVE tolerance (0.7) so contradiction suppressed
+        low_sim = 0.4
 
         analytical_result = apply_modulated_strength_delta(current, raw_delta, False, low_sim, ANALYTICAL)
         conservative_result = apply_modulated_strength_delta(current, raw_delta, False, low_sim, CONSERVATIVE)
 
-        assert conservative_result == pytest.approx(current)  # suppressed
-        assert analytical_result < current  # applied (tolerance=0.3 > 0.2)
+        assert conservative_result == pytest.approx(current)  # suppressed (0.4 < 0.7)
+        assert analytical_result < current  # applied (0.4 >= 0.3)
 
     def test_optimistic_bias_lifts_confirmed_above_analytical(self):
         """Optimistic adds update_bias=0.2 on CONFIRMED; net result may beat Analytical despite lower weight."""
