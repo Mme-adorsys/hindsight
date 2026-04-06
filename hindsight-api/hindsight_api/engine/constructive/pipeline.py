@@ -46,6 +46,10 @@ WEAK_LINK_CONFIDENCE_PENALTY: float = 0.85
 # Threshold above which an inference is considered "confirmed" and added to WorkingContext
 INFERENCE_CONFIRMATION_THRESHOLD: float = 0.7
 
+# Maximum number of inferences stored in WorkingContext.inference_layer (FIFO eviction)
+# Bio mapping: working memory capacity — oldest hypotheses decay when limit is reached
+INFERENCE_LAYER_MAX: int = 20
+
 # Minimum fact confidence to classify as 'direct' (vs 'reconstructed')
 DIRECT_SOURCE_THRESHOLD: float = 0.5
 
@@ -206,7 +210,7 @@ class ConstructionPipeline:
             source: str = "direct" if confidence >= DIRECT_SOURCE_THRESHOLD else "reconstructed"
 
             thalamus: dict[str, float] = {}
-            if hasattr(sr, "thalamus_score"):
+            if hasattr(sr, "thalamus_score") and sr.thalamus_score is not None:
                 thalamus["thalamus_composite"] = float(sr.thalamus_score)
 
             facts.append(
@@ -379,6 +383,10 @@ For each gap specify:
 
         for inf in inferences:
             if inf.confidence >= INFERENCE_CONFIRMATION_THRESHOLD:
+                # Enforce FIFO cap: evict oldest inference when layer is full.
+                # Bio mapping: working memory capacity limit — oldest hypotheses decay.
+                if len(working_context.inference_layer) >= INFERENCE_LAYER_MAX:
+                    working_context.inference_layer.pop(0)
                 wc_inf = WCInference(
                     id=str(uuid4()),
                     content=inf.content,

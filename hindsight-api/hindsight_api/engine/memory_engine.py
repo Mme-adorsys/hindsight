@@ -154,6 +154,28 @@ from .retain.deduplication import DuplicateResult
 from .retain.types import RetainContentDict
 from .search import observation_utils, think_utils
 from .search.reranking import CrossEncoderReranker
+
+# ---------------------------------------------------------------------------
+# Reconsolidation helpers (module-level to avoid re-creating per call)
+# ---------------------------------------------------------------------------
+
+
+class _ReconsolidationEval(BaseModel):
+    """LLM structured output for Engram reconsolidation evaluation."""
+
+    outcome: str = Field(
+        description="One of: 'confirmed' (still valid), 'modified' (needs update), 'contradiction' (conflicts with known facts)"
+    )
+    reasoning: str = Field(description="Brief reason for the outcome")
+
+
+# Disposition → prompt description (module-level constant, not re-created per call)
+_DISPOSITION_DESCRIPTIONS: dict[str, str] = {
+    "analytical": "weigh evidence carefully and update memories when contradictions are clear",
+    "optimistic": "favour confirming existing memories and be tolerant of minor contradictions",
+    "conservative": "retain existing memories unless evidence is very strong and direct",
+    "neutral": "evaluate objectively without any particular bias",
+}
 from .task_backend import AsyncIOQueueBackend, NoopTaskBackend, TaskBackend
 
 
@@ -1715,7 +1737,10 @@ class MemoryEngine(MemoryEngineInterface):
                     from .constructive.pipeline import ConstructionPipeline
 
                     mode_config = self._resolve_session_config(session)
-                    _pipeline = ConstructionPipeline(llm=self._reflect_llm_config, mode_config=mode_config)
+                    _pipeline = ConstructionPipeline(
+                        llm=self._llm_registry.get_llm("reflect", "constructive_memory_inference"),
+                        mode_config=mode_config,
+                    )
                     result.constructed_answer = await _pipeline.construct(
                         scored_results=_top_scored,
                         query=query,
@@ -1738,16 +1763,20 @@ class MemoryEngine(MemoryEngineInterface):
                             apply_prediction_error_feedback,
                         )
 
-                        _pe_detector = PredictionErrorDetector(llm=self._reflect_llm_config)
+                        _pe_detector = PredictionErrorDetector(
+                            llm=self._llm_registry.get_llm("reflect", "prediction_error_detection")
+                        )
                         _pe = await _pe_detector.detect(
                             answer=result.constructed_answer,
                             expectation=session.current_expectation,
                         )
                         if _pe is not None:
-                            from .reflect.prediction_error_registry import PredictionErrorRegistry as _PEReg
-
                             _sm = self._get_session_manager()
-                            _pe_registry = _PEReg()
+                            _pe_registry = _sm.get_prediction_error_registry(session.session_id)
+                            if _pe_registry is None:
+                                from .reflect.prediction_error_registry import PredictionErrorRegistry as _PEReg
+
+                                _pe_registry = _PEReg()
                             await apply_prediction_error_feedback(
                                 error=_pe,
                                 session_id=session.session_id,
@@ -3430,11 +3459,17 @@ Guidelines:
                 except Exception as e:
                     logger.warning("[RECON] Semantic trigger failed, continuing: %s", e)
 
-            # Step 2: Entity-match fallback (RF2) — entity_names populated by Epic 11
+            # Step 2: Entity-match fallback (RF2) — extract potential entity names from query.
+            # Heuristic: capitalized tokens after the first word are likely proper nouns / entity names.
+            # Bio mapping: associative recall via named-entity binding (always available, no embedding needed).
+            _entity_names: list[str] = []
+            if query:
+                _tokens = query.split()
+                _entity_names = [t.rstrip("?.,;!") for t in _tokens[1:] if t and t[0].isupper()]
             entity_candidates = await find_entity_match_candidates(
                 pool=pool,
                 bank_id=bank_id,
-                entity_names=[],
+                entity_names=_entity_names,
                 fq_table_fn=fq_table,
             )
             merged = merge_candidates(qdrant_candidates, entity_candidates)
@@ -3445,8 +3480,12 @@ Guidelines:
                 rows = await filter_entries(pool, bank_id=bank_id, status="active", limit=500)
                 rows = [r for r in rows if str(r.get("engram_id", "")) in candidate_ids]
             else:
-                # No semantic candidates → fallback to all active Engrams (RF2 graceful degradation)
-                rows = await filter_entries(pool, bank_id=bank_id, status="active", limit=200)
+                # No semantic candidates → skip reconsolidation.
+                # Without a semantic trigger there is no lability window to open — processing
+                # arbitrary Engrams would be speculative and wasteful.
+                # Bio mapping: no partial-cue activation → no reconsolidation window.
+                logger.debug("[RECON] No semantic candidates for bank %s — skipping reconsolidation.", bank_id)
+                return
 
             if not rows:
                 return
@@ -3501,6 +3540,9 @@ Guidelines:
             similarity_lookup: dict[str, float] = {c.engram_id: c.similarity_score for c in merged}
 
             # Step 3 + 4: LLM evaluation → modulated strength update (RF4)
+            from .reflect.disposition_profile import apply_modulated_strength_delta
+            from .reflect.reconsolidation_queue import STRENGTH_DELTA, ReconsolidationOutcome
+
             for engram in queue:
                 eid = str(engram.engram_id)
                 current_strength = engram.metadata.strength if engram.metadata else 0.0
@@ -3518,8 +3560,6 @@ Guidelines:
                         continue
 
                     # RF4: modulate delta by disposition (evidence_weight, update_bias, contradiction_tolerance)
-                    from .reflect.disposition_profile import apply_modulated_strength_delta
-                    from .reflect.reconsolidation_queue import STRENGTH_DELTA, ReconsolidationOutcome
 
                     raw_delta = STRENGTH_DELTA[outcome]
                     new_strength = apply_modulated_strength_delta(
@@ -3595,23 +3635,11 @@ Guidelines:
             engram_text = row["text"]
             confidence = float(row["confidence_score"] or 0.5)
 
-            class ReconsolidationEval(BaseModel):
-                outcome: str = Field(
-                    description="One of: 'confirmed' (still valid), 'modified' (needs update), 'contradiction' (conflicts with known facts)"
-                )
-                reasoning: str = Field(description="Brief reason for the outcome")
-
             context_section = ""
             if new_context:
                 context_section = f"\nNEW CONTEXT (similarity={similarity_score:.2f}): {new_context}\n"
 
-            _disposition_descriptions: dict[str, str] = {
-                "analytical": "weigh evidence carefully and update memories when contradictions are clear",
-                "optimistic": "favour confirming existing memories and be tolerant of minor contradictions",
-                "conservative": "retain existing memories unless evidence is very strong and direct",
-                "neutral": "evaluate objectively without any particular bias",
-            }
-            disposition_desc = _disposition_descriptions.get(disposition_name, _disposition_descriptions["neutral"])
+            disposition_desc = _DISPOSITION_DESCRIPTIONS.get(disposition_name, _DISPOSITION_DESCRIPTIONS["neutral"])
             disposition_section = f"\nAGENT PERSPECTIVE: This agent tends to {disposition_desc}. Apply this perspective when evaluating conflicting evidence.\n"
 
             prompt = f"""Evaluate and update this stored memory given the new context provided.
@@ -3625,7 +3653,7 @@ Assess whether this memory is:
 
 Respond with one of: confirmed, modified, contradiction"""
 
-            result = await self._llm_registry.get_llm("reflect", "opinion_extraction").call(
+            result = await self._llm_registry.get_llm("reflect", "reconsolidation").call(
                 messages=[
                     {
                         "role": "system",
@@ -3633,7 +3661,7 @@ Respond with one of: confirmed, modified, contradiction"""
                     },
                     {"role": "user", "content": prompt},
                 ],
-                response_format=ReconsolidationEval,
+                response_format=_ReconsolidationEval,
                 scope="memory_reconsolidate",
                 temperature=0.2,
             )
@@ -4066,13 +4094,18 @@ Respond with one of: confirmed, modified, contradiction"""
         )
 
         # RF1+RF3 (Epic 10): Submit reconsolidation task — semantic trigger uses query embedding
-        # PredictionErrorRegistry is in-memory (Epic 11 populates it); pass empty list until then.
+        # PE IDs from session's PredictionErrorRegistry (populated by recall_async, Epic 11).
+        _pe_ids: list[str] = []
+        if session is not None:
+            _pe_reg = self._get_session_manager().get_prediction_error_registry(session.session_id)
+            if _pe_reg is not None:
+                _pe_ids = list(_pe_reg.get_flagged_ids())
         await self._task_backend.submit_task(
             {
                 "type": "reconsolidate_engrams",
                 "bank_id": bank_id,
                 "reconsolidation_level": mode_config.reconsolidation_level,
-                "prediction_error_ids": [],  # Populated by Constructive Memory (Epic 11)
+                "prediction_error_ids": _pe_ids,
                 "query": query,  # RF3: used to generate embedding for Qdrant semantic trigger
                 "tenant_id": getattr(request_context, "tenant_id", None) if request_context else None,
             }

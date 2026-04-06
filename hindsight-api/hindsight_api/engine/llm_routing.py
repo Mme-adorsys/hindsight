@@ -112,9 +112,15 @@ TASK_TIER_MAPPING: Final[dict[str, ModelTier]] = {
     # Opinion extraction: identify opinions + confidence from text.
     # Structured but simpler than full fact extraction → MEDIUM.
     "reflect.opinion_extraction": ModelTier.MEDIUM,
-    # Constructive memory inference (future): derive inferences from fact combinations.
+    # Constructive memory inference: derive inferences from fact combinations.
     # Requires cross-fact reasoning → LARGE.
     "reflect.constructive_memory_inference": ModelTier.LARGE,
+    # Reconsolidation evaluation: confirm/modify/contradict a single stored Engram.
+    # Structured classification, similar depth to opinion_extraction → MEDIUM.
+    "reflect.reconsolidation": ModelTier.MEDIUM,
+    # Prediction error detection: compare expectation vs. constructed answer for severity.
+    # Simple classification → SMALL.
+    "reflect.prediction_error_detection": ModelTier.SMALL,
 }
 
 

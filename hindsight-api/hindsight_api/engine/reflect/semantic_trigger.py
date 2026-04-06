@@ -63,7 +63,7 @@ class CandidateEngram:
 
 
 async def find_reconsolidation_candidates(
-    qdrant_client: QdrantMemoryClient,
+    qdrant_client: QdrantEngineClient,
     query_embedding: list[float],
     bank_id: str,
     threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
@@ -76,7 +76,7 @@ async def find_reconsolidation_candidates(
     This replaces the 12-query SQL approach (RF2: retrieval cost optimisation).
 
     Args:
-        qdrant_client:   Initialised QdrantMemoryClient (from Epic 01).
+        qdrant_client:   Initialised QdrantEngineClient (from Epic 01).
         query_embedding: Query vector (384-dim).
         bank_id:         Bank scope — only Engrams from this bank are returned.
         threshold:       Minimum cosine similarity (default: 0.6).

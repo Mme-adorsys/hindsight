@@ -146,6 +146,10 @@ class EngramRetriever(GraphRetriever):
         self._qdrant = qdrant
         self._neo4j = neo4j
 
+    def get_qdrant_client(self) -> QdrantEngineClient:
+        """Return the Qdrant client (public accessor for reconsolidation and scoring pipelines)."""
+        return self._qdrant
+
     # ------------------------------------------------------------------
     # T2 — Qdrant Seed Phase
     # ------------------------------------------------------------------

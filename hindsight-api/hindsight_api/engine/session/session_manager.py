@@ -23,6 +23,7 @@ from datetime import UTC, datetime, timedelta
 from enum import Enum
 from uuid import UUID
 
+from ..reflect.prediction_error_registry import PredictionErrorRegistry
 from ..response_models import Episode, RetrievalMode, Session
 from .working_context import WorkingContext
 
@@ -114,6 +115,9 @@ class SessionState:
 
     mode_history: list[ModeTransition] = field(default_factory=list)
     """Ordered log of mode transitions for this session."""
+
+    prediction_error_registry: PredictionErrorRegistry = field(default_factory=PredictionErrorRegistry)
+    """Per-session PE registry. Populated by recall_async (Epic 11), consumed by reflect_async (Epic 10)."""
 
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     """Per-session lock for thread-safe concurrent operations."""
@@ -210,6 +214,16 @@ class SessionManager:
         """
         state = self._sessions.get(session_id)
         return state.working_context if state else None
+
+    def get_prediction_error_registry(self, session_id: UUID) -> PredictionErrorRegistry | None:
+        """
+        Return the per-session PredictionErrorRegistry, or None if session not found.
+
+        The registry is populated by recall_async (PE Detection, Epic 11) and
+        consumed by reflect_async (Reconsolidation priority queue, Epic 10).
+        """
+        state = self._sessions.get(session_id)
+        return state.prediction_error_registry if state else None
 
     async def end_session(self, session_id: UUID) -> list:
         """

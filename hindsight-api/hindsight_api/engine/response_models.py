@@ -6,12 +6,17 @@ API response models should be kept separate and convert from these core models t
 API stability even if internal models change.
 """
 
+from __future__ import annotations
+
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
+
+if TYPE_CHECKING:
+    from .constructive.models import ConstructedAnswer
 
 from .engram_types import ThalamusScores
 
@@ -153,14 +158,13 @@ class RecallResult(BaseModel):
         None, description="Chunks for facts, keyed by '{document_id}_{chunk_index}'"
     )
     # Epic 11: populated by ConstructionPipeline when Session is active.
-    # Typed as Any to avoid circular import (constructive.models imports MemoryFact from here).
-    # Actual runtime type: constructive.models.ConstructedAnswer | None
-    constructed_answer: Any = Field(
+    # TYPE_CHECKING guard avoids circular import at runtime
+    # (constructive.models imports MemoryFact from here at runtime).
+    constructed_answer: ConstructedAnswer | None = Field(
         None,
         description=(
             "Rich reconstructed answer (Epic 11). Present when a Session is active and "
-            "the Construction Pipeline ran. None when no Session or construction disabled. "
-            "Type: constructive.models.ConstructedAnswer"
+            "the Construction Pipeline ran. None when no Session or construction disabled."
         ),
     )
 
