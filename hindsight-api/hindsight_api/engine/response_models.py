@@ -152,6 +152,17 @@ class RecallResult(BaseModel):
     chunks: dict[str, ChunkInfo] | None = Field(
         None, description="Chunks for facts, keyed by '{document_id}_{chunk_index}'"
     )
+    # Epic 11: populated by ConstructionPipeline when Session is active.
+    # Typed as Any to avoid circular import (constructive.models imports MemoryFact from here).
+    # Actual runtime type: constructive.models.ConstructedAnswer | None
+    constructed_answer: Any = Field(
+        None,
+        description=(
+            "Rich reconstructed answer (Epic 11). Present when a Session is active and "
+            "the Construction Pipeline ran. None when no Session or construction disabled. "
+            "Type: constructive.models.ConstructedAnswer"
+        ),
+    )
 
 
 class ReflectResult(BaseModel):
