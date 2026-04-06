@@ -91,6 +91,8 @@ async def update_entry(pool: asyncpg.Pool, engram_id: str, updates: dict[str, An
         "status",
         "confidence_score",
         "session_ref",
+        "ncr_cycles_survived",
+        "promoted_at",
     }
     filtered = {k: v for k, v in updates.items() if k in allowed}
     if not filtered:
@@ -295,6 +297,67 @@ async def list_unconsolidated(
             offset,
         )
     return [dict(row) for row in rows]
+
+
+async def list_buffer_for_strengthen(
+    pool: asyncpg.Pool,
+    bank_id: str,
+    batch_size: int = 100,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """
+    Return active buffer-layer Engrams for NCR Phase 2 (Strengthen) processing.
+
+    Used by StrengthenProcessor to find candidates for neocortex promotion.
+    Only buffer Engrams are eligible for promotion; neocortex Engrams are already
+    consolidated.
+
+    Args:
+        pool: asyncpg connection pool.
+        bank_id: Required — all queries are bank-scoped.
+        batch_size: Maximum number of entries per call.
+        offset: Pagination offset for batch processing.
+
+    Returns:
+        List of dicts ordered by strength DESC (strongest first — promote best candidates).
+    """
+    async with acquire_with_retry(pool) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT * FROM engram_dictionary
+            WHERE bank_id = $1
+              AND layer = 'buffer'
+              AND status = 'active'
+            ORDER BY strength DESC
+            LIMIT $2 OFFSET $3
+            """,
+            bank_id,
+            batch_size,
+            offset,
+        )
+    return [dict(row) for row in rows]
+
+
+async def increment_ncr_cycles(pool: asyncpg.Pool, engram_id: str) -> None:
+    """
+    Increment ncr_cycles_survived by 1 for an Engram that survived a NCR cycle.
+
+    Called by NCR Phase 2 for all non-archived buffer/neocortex Engrams.
+    Separate from update_entry for atomicity and performance (no SELECT needed).
+
+    Args:
+        pool: asyncpg connection pool.
+        engram_id: UUID string of the Engram.
+    """
+    async with acquire_with_retry(pool) as conn:
+        await conn.execute(
+            """
+            UPDATE engram_dictionary
+            SET ncr_cycles_survived = ncr_cycles_survived + 1
+            WHERE engram_id = $1
+            """,
+            UUID(engram_id),
+        )
 
 
 async def update_strength(pool: asyncpg.Pool, engram_id: str, new_strength: float) -> None:
