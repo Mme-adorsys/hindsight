@@ -116,7 +116,7 @@ Phase 6:  * → 15 (Benchmarking)
 - [x] Epic 09 — Weak Connections & Synaptic Tagging
 - [x] Epic 10 — Reflect & Reconsolidation
 - [x] Epic 11 — Constructive Memory
-- [ ] Epic 12 — Consolidation Pipeline
+- [x] Epic 12 — Consolidation Pipeline
 - [ ] Epic 13 — Schema Emergence
 - [ ] Epic 14 — Multi-Bank Architecture
 - [ ] Epic 15 — Benchmarking & Validation
