@@ -502,8 +502,9 @@ Respond with one of: confirmed, modified, contradiction"""
                 return
 
             pool = await self._ctx.get_pool()
+
+            # Phase 1: Read opinions (connection held briefly for the fetch only)
             async with acquire_with_retry(pool) as conn:
-                # Find all opinions related to these entities
                 opinions = await conn.fetch(
                     f"""
                     SELECT DISTINCT mu.id, mu.text, mu.confidence_score, e.canonical_name
@@ -518,44 +519,45 @@ Respond with one of: confirmed, modified, contradiction"""
                     list(entity_names),
                 )
 
-                if not opinions:
-                    return
+            if not opinions:
+                return
 
-                # Use cached LLM config
-                if self._ctx.reflect_llm_config is None:
-                    logger.error("[REINFORCE] LLM config not available, skipping opinion reinforcement")
-                    return
+            # Use cached LLM config
+            if self._ctx.reflect_llm_config is None:
+                logger.error("[REINFORCE] LLM config not available, skipping opinion reinforcement")
+                return
 
-                # Evaluate each opinion against the new events
-                updates_to_apply = []
-                for opinion in opinions:
-                    opinion_id = str(opinion["id"])
-                    opinion_text = opinion["text"]
-                    opinion_confidence = opinion["confidence_score"]
-                    entity_name = opinion["canonical_name"]
+            # Phase 2: LLM evaluation (no connection held — each call may take 1-10s)
+            updates_to_apply = []
+            for opinion in opinions:
+                opinion_id = str(opinion["id"])
+                opinion_text = opinion["text"]
+                opinion_confidence = opinion["confidence_score"]
+                entity_name = opinion["canonical_name"]
 
-                    # Find all new events mentioning this entity
-                    relevant_events = []
-                    for unit_text, entities_list in zip(unit_texts, unit_entities):
-                        if any(e["text"] == entity_name for e in entities_list):
-                            relevant_events.append(unit_text)
+                # Find all new events mentioning this entity
+                relevant_events = []
+                for unit_text, entities_list in zip(unit_texts, unit_entities):
+                    if any(e["text"] == entity_name for e in entities_list):
+                        relevant_events.append(unit_text)
 
-                    if not relevant_events:
-                        continue
+                if not relevant_events:
+                    continue
 
-                    # Combine all relevant events
-                    combined_events = "\n".join(relevant_events)
+                # Combine all relevant events
+                combined_events = "\n".join(relevant_events)
 
-                    # Evaluate if opinion should be updated
-                    evaluation = await self._evaluate_opinion_update_async(
-                        opinion_text, opinion_confidence, combined_events, entity_name
-                    )
+                # Evaluate if opinion should be updated
+                evaluation = await self._evaluate_opinion_update_async(
+                    opinion_text, opinion_confidence, combined_events, entity_name
+                )
 
-                    if evaluation:
-                        updates_to_apply.append({"opinion_id": opinion_id, "evaluation": evaluation})
+                if evaluation:
+                    updates_to_apply.append({"opinion_id": opinion_id, "evaluation": evaluation})
 
-                # Apply all updates in a single transaction
-                if updates_to_apply:
+            # Phase 3: Write updates (connection held briefly for the transaction only)
+            if updates_to_apply:
+                async with acquire_with_retry(pool) as conn:
                     async with conn.transaction():
                         for update in updates_to_apply:
                             opinion_id = update["opinion_id"]
@@ -584,9 +586,6 @@ Respond with one of: confirmed, modified, contradiction"""
                                     evaluation["new_confidence"],
                                     uuid.UUID(opinion_id),
                                 )
-
-                else:
-                    pass  # No opinions to update
 
         except Exception as e:
             logger.error(f"[REINFORCE] Error during opinion reinforcement: {str(e)}")

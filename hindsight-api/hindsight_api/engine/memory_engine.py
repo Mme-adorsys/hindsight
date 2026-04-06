@@ -89,6 +89,9 @@ class MemoryEngine(MemoryEngineInterface):
     reflect_orchestrator.py, admin_operations.py, and entity_operations.py.
     """
 
+    # Maximum retry attempts for background task execution before marking failed
+    MAX_TASK_RETRIES = 3
+
     def __init__(
         self,
         db_url=None,
@@ -301,7 +304,7 @@ class MemoryEngine(MemoryEngineInterface):
         task_type = task_dict.get("type")
         operation_id = task_dict.get("operation_id")
         retry_count = task_dict.get("retry_count", 0)
-        max_retries = 3
+        max_retries = self.MAX_TASK_RETRIES
 
         if operation_id:
             try:

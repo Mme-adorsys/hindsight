@@ -45,6 +45,9 @@ logger = logging.getLogger(__name__)
 class RetainOrchestrator:
     """Ingestion pipeline methods for the memory engine."""
 
+    # Maximum character count per sub-batch (~150k tokens at ~4 chars/token)
+    CHARS_PER_BATCH = 600_000
+
     def __init__(self, ctx: "EngineContext") -> None:
         self._ctx = ctx
         # Set externally by lifespan after pool + Qdrant clients are ready (Epic 04)
@@ -214,7 +217,7 @@ class RetainOrchestrator:
         # Auto-chunk large batches
         total_chars = sum(len(item.get("content", "")) for item in contents)
         total_usage = TokenUsage()
-        CHARS_PER_BATCH = 600_000
+        CHARS_PER_BATCH = self.CHARS_PER_BATCH
 
         if total_chars > CHARS_PER_BATCH:
             logger.info(

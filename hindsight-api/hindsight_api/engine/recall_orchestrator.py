@@ -48,6 +48,9 @@ logger = logging.getLogger(__name__)
 
 
 class RecallOrchestrator:
+    # Maximum retry attempts for transient connection errors during search
+    MAX_SEARCH_RETRIES = 3
+
     def __init__(self, ctx: "EngineContext") -> None:
         self._ctx = ctx
 
@@ -201,7 +204,7 @@ class RecallOrchestrator:
         error_msg = None
         async with self._ctx.search_semaphore:
             # Retry loop for connection errors
-            max_retries = 3
+            max_retries = self.MAX_SEARCH_RETRIES
             for attempt in range(max_retries + 1):
                 try:
                     result, _top_scored = await self._search_with_retries(
