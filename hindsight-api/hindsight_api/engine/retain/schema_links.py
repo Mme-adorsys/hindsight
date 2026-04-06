@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import numpy as np
 
@@ -124,17 +125,23 @@ async def write_schema_links(neo4j_client, schema_links: list[SchemaLink]) -> No
     if neo4j_client is None or not schema_links:
         return
 
+    now_str = datetime.now(timezone.utc).isoformat()
     for sl in schema_links:
         try:
             await neo4j_client.run_cypher(
                 "MATCH (e:Engram {engram_id: $engram_id}), (s:Schema {schema_id: $schema_id}) "
                 "MERGE (e)-[r:SCHEMA]->(s) "
-                "SET r.weight = $weight, r.source = 'retain' "
-                "WITH s SET s.strength = coalesce(s.strength, 0.0) + $weight",
+                "ON CREATE SET r.weight = $sim, r.source = 'retain', r.created_at = $now "
+                "ON MATCH SET r.weight = $sim "
+                "WITH s "
+                "SET s.strength = coalesce(s.strength, 0.0) + $increment, "
+                "    s.last_reinforced_at = $now",
                 {
                     "engram_id": sl.engram_id,
                     "schema_id": sl.schema_id,
-                    "weight": sl.weight,
+                    "sim": sl.similarity,
+                    "increment": 0.05,
+                    "now": now_str,
                 },
             )
         except Exception as exc:

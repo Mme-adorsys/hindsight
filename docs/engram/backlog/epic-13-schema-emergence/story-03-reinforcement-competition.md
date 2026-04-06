@@ -16,16 +16,16 @@ R4 — Neues Engram das zu einem bestehenden Schema-Pattern passt stärkt das Sc
 
 ## Akzeptanzkriterien
 
-- [ ] R4 bei Retain: Neues Engram → Schema-Fit Check → bei Match: Schema-Strength +0.05, neuer Schema-Link
-- [ ] R4 Threshold: Cosine Similarity ≥ 0.7 zwischen Engram-Embedding und Schema-Embedding
-- [ ] R5 im NCR: Schemas mit Strength < 0.1 UND nicht verstärkt seit 5 NCR-Zyklen → gelöscht
-- [ ] Schema-Deletion: Node + alle Schema-Links entfernt. Member-Engrams bleiben.
-- [ ] Schema-Strength Tracking: `last_reinforced_at` Timestamp
+- [x] R4 bei Retain: Neues Engram → Schema-Fit Check → bei Match: Schema-Strength +0.05, neuer Schema-Link
+- [x] R4 Threshold: Cosine Similarity ≥ 0.7 zwischen Engram-Embedding und Schema-Embedding
+- [x] R5 im NCR: Schemas mit Strength < 0.1 UND nicht verstärkt seit 5 NCR-Zyklen → gelöscht
+- [x] Schema-Deletion: Node + alle Schema-Links entfernt. Member-Engrams bleiben.
+- [x] Schema-Strength Tracking: `last_reinforced_at` Timestamp
 
 ## Tasks
 
-- [ ] **T1 — R4 Retain Integration:** In `retain/schema_links.py`: `check_schema_fit_batch()` aktivieren. Qdrant Similarity Search gegen Schema-Embeddings. Bei Match (≥ 0.7): Neo4j Schema-Link erstellen + Schema-Node Strength += 0.05 + `last_reinforced_at = now`.
-- [ ] **T2 — R5 Schema Death:** In NCR Phase 3: Alle Schema-Nodes laden. Prüfe: `strength < 0.1 AND (now - last_reinforced_at).days > 5 * ncr_interval_days`. Wenn beide: Schema-Node + alle SCHEMA-Relationships löschen. Neo4j + Qdrant + Dictionary aufräumen.
-- [ ] **T3 — Schema Strength Decay:** Im NCR (parallel zu Engram-Decay): Schema-Strength decayed mit 0.95 pro Zyklus (langsamer als Engrams, da Schemas stabiler sind). R4-Reinforcement wirkt dem entgegen.
-- [ ] **T4 — Metrics:** Tracking: Anzahl aktiver Schemas, durchschnittliche Schema-Strength, Schema-Creation-Rate, Schema-Death-Rate. Geloggt im NCRReport.
-- [ ] **T5 — Unit Tests:** R4: Neues Engram stärkt existierendes Schema. R4: Kein Match → kein Schema-Link. R5: Schwaches Schema wird gelöscht. R5: Starkes Schema überlebt. Schema Decay über Zyklen.
+- [x] **T1 — R4 Retain Integration:** In `retain/schema_links.py`: `check_schema_fit_batch()` aktivieren. Qdrant Similarity Search gegen Schema-Embeddings. Bei Match (≥ 0.7): Neo4j Schema-Link erstellen + Schema-Node Strength += 0.05 + `last_reinforced_at = now`.
+- [x] **T2 — R5 Schema Death:** In NCR Phase 3: Alle Schema-Nodes laden. Prüfe: `strength < 0.1 AND (now - last_reinforced_at).days > 5 * ncr_interval_days`. Wenn beide: Schema-Node + alle SCHEMA-Relationships löschen. Neo4j + Qdrant + Dictionary aufräumen.
+- [x] **T3 — Schema Strength Decay:** Im NCR (parallel zu Engram-Decay): Schema-Strength decayed mit 0.95 pro Zyklus (langsamer als Engrams, da Schemas stabiler sind). R4-Reinforcement wirkt dem entgegen.
+- [x] **T4 — Metrics:** Tracking: Anzahl aktiver Schemas, durchschnittliche Schema-Strength, Schema-Creation-Rate, Schema-Death-Rate. Geloggt im NCRReport.
+- [x] **T5 — Unit Tests:** R4: Neues Engram stärkt existierendes Schema. R4: Kein Match → kein Schema-Link. R5: Schwaches Schema wird gelöscht. R5: Starkes Schema überlebt. Schema Decay über Zyklen.
