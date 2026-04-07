@@ -118,7 +118,7 @@ Phase 6:  * → 15 (Benchmarking)
 - [x] Epic 11 — Constructive Memory
 - [x] Epic 12 — Consolidation Pipeline
 - [x] Epic 13 — Schema Emergence
-- [ ] Epic 14 — Multi-Bank Architecture
+- [x] Epic 14 — Multi-Bank Architecture
 - [ ] Epic 15 — Benchmarking & Validation
 
 ---
