@@ -18,16 +18,16 @@ Die Session bleibt relevant für die Mode-abhängige Gewichtung und Thresholds �
 
 ## Akzeptanzkriterien
 
-- [ ] Thalamus score() akzeptiert item-level Felder (content, context, expectation, outcome) statt nur Session
-- [ ] Session wird nur noch für Mode (Gewichtung/Threshold) genutzt, nicht für Score-Inputs
-- [ ] Orchestrator übergibt RetainContentDict Felder an Thalamus
-- [ ] Fallback-Hierarchie: Item-Feld > Session-Feld > Neutral-Default
-- [ ] Retain-Flow: Thalamus erhält Felder aus MemoryItem ODER aus R0-Output (StructuredUnit)
-- [ ] Integration-Tests: Retain mit Expectation+Outcome → Thalamus-Scores korrekt berechnet
+- [x] Thalamus score() akzeptiert item-level Felder (content, context, expectation, outcome) statt nur Session
+- [x] Session wird nur noch für Mode (Gewichtung/Threshold) genutzt, nicht für Score-Inputs
+- [x] Orchestrator übergibt RetainContentDict Felder an Thalamus
+- [x] Fallback-Hierarchie: Item-Feld > Session-Feld > Neutral-Default
+- [x] Retain-Flow: Thalamus erhält Felder aus MemoryItem ODER aus R0-Output (StructuredUnit)
+- [x] Integration-Tests: Retain mit Expectation+Outcome → Thalamus-Scores korrekt berechnet
 
 ## Tasks
 
-- [ ] **T1 — Orchestrator Anpassung:** Thalamus-Aufruf in orchestrator.py: statt `thalamus.score(text, session)` → `thalamus.score(content=item.content, context=item.context, expectation=item.expectation, outcome=item.outcome, session=session, bank_id=bank_id)`.
-- [ ] **T2 — Fallback-Hierarchie:** In ThalamusFilter.score(): Context = item.context OR session.task_context OR None. Expectation = item.expectation OR session.current_expectation OR None. Outcome = item.outcome OR None (kein Session-Fallback). Dokumentation der Hierarchie.
-- [ ] **T3 — R0-Integration:** Wenn R0 StructuredUnits produziert (EXPERIENCE-Typ): expectation und outcome aus der StructuredUnit an Thalamus weitergeben. Wenn R0 FACT produziert: kein expectation/outcome → Thalamus nutzt Fallbacks.
-- [ ] **T4 — Tests:** Integration-Test: Retain mit explizitem Expectation+Outcome → Surprise korrekt berechnet. Integration-Test: Retain ohne Expectation → Surprise = 0.5 (Fallback). Fallback-Hierarchie Test: Item-Feld überschreibt Session-Feld.
+- [x] **T1 — Orchestrator Anpassung:** Thalamus-Aufruf in orchestrator.py: statt `thalamus.score(text, session)` → `thalamus.score(content=item.content, context=item.context, expectation=item.expectation, outcome=item.outcome, session=session, bank_id=bank_id)`.
+- [x] **T2 — Fallback-Hierarchie:** In ThalamusFilter.score(): Context = item.context OR session.task_context OR None. Expectation = item.expectation OR session.current_expectation OR None. Outcome = item.outcome OR None (kein Session-Fallback). Dokumentation der Hierarchie.
+- [x] **T3 — R0-Integration:** Wenn R0 StructuredUnits produziert (EXPERIENCE-Typ): expectation und outcome aus der StructuredUnit an Thalamus weitergeben. Wenn R0 FACT produziert: kein expectation/outcome → Thalamus nutzt Fallbacks.
+- [x] **T4 — Tests:** Integration-Test: Retain mit explizitem Expectation+Outcome → Surprise korrekt berechnet. Integration-Test: Retain ohne Expectation → Surprise = 0.5 (Fallback). Fallback-Hierarchie Test: Item-Feld überschreibt Session-Feld.

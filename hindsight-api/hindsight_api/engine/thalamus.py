@@ -6,10 +6,10 @@ Episodes below the mode-dependent threshold are discarded; those above are enric
 with ThalamusScores and passed on.
 
 Bio mapping:
-- Novelty       → CA1 Mismatch Detection (low similarity = high novelty)
-- Surprise      → Noradrenaline release (unexpected vs. current_expectation)
-- Task-Relevance → PFC Top-Down Attention (similarity to task_context)
-- Emotional Valence → Amygdala Modulation (LLM-assessed significance)
+- Novelty        → CA1 Mismatch Detection (low similarity = high novelty)
+- Surprise       → Noradrenaline/Prediction Error (outcome deviates from expectation)
+- Task-Relevance → PFC Top-Down Attention (similarity to task context)
+- Emotional Valence → Amygdala/Dopamine: Prediction-Error-Magnitude × Amplification
 
 Concept reference: docs/engram/concept.md — Chapter 5 (Thalamus Filter)
 """
@@ -22,7 +22,6 @@ from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
     from .embeddings import Embeddings
-    from .llm_wrapper import LLMConfig
     from .qdrant_client import QdrantEngineClient
     from .response_models import RetrievalMode, Session
 
@@ -37,6 +36,14 @@ ENV_THALAMUS_THRESHOLD_PRECISION = "HINDSIGHT_API_THALAMUS_THRESHOLD_PRECISION"
 ENV_THALAMUS_THRESHOLD_EXPLORATION = "HINDSIGHT_API_THALAMUS_THRESHOLD_EXPLORATION"
 ENV_THALAMUS_THRESHOLD_VALIDATION = "HINDSIGHT_API_THALAMUS_THRESHOLD_VALIDATION"
 ENV_THALAMUS_THRESHOLD_ANALOGY = "HINDSIGHT_API_THALAMUS_THRESHOLD_ANALOGY"
+
+# Valence amplification factor: scales prediction-error-magnitude to emotional significance.
+# Models the amygdala's tendency to magnify salient deviations from expectation.
+ENV_VALENCE_AMPLIFICATION = "HINDSIGHT_API_VALENCE_AMPLIFICATION"
+DEFAULT_VALENCE_AMPLIFICATION: Final[float] = 1.5
+
+# Read at module load time; override via env var for tuning without code changes.
+VALENCE_AMPLIFICATION: Final[float] = float(os.getenv(ENV_VALENCE_AMPLIFICATION, str(DEFAULT_VALENCE_AMPLIFICATION)))
 
 # ---------------------------------------------------------------------------
 # Default thresholds per mode (T7)
@@ -94,9 +101,9 @@ MODE_THRESHOLDS: Final[dict[str, float]] = {
     _RetrievalMode.ANALOGY: float(os.getenv(ENV_THALAMUS_THRESHOLD_ANALOGY, str(DEFAULT_THRESHOLD_ANALOGY))),
 }
 
-# Fallback emotional valence when LLM call fails
+# Fallback emotional valence when expectation or outcome embedding is absent
 _VALENCE_FALLBACK: Final[float] = 0.3
-# Neutral score used when optional session context is absent
+# Neutral score used when optional context is absent
 _NEUTRAL_SCORE: Final[float] = 0.5
 
 
@@ -107,10 +114,13 @@ class ThalamusFilter:
     Computes ThalamusScores for an incoming text given the current Session context.
     Callers use `threshold_for_mode()` to decide whether to pass or drop the episode.
 
+    All scores are embedding-based and deterministic: given the same inputs the same
+    scores are always produced — no LLM variance, no per-call costs beyond embeddings.
+
     Usage::
 
-        filter = ThalamusFilter(qdrant=qdrant_client, embeddings=embed, llm=small_llm)
-        scores = await filter.score(text, session)
+        filter = ThalamusFilter(qdrant=qdrant_client, embeddings=embed)
+        scores = await filter.score(content, session)
         if scores.overall >= filter.threshold_for_mode(session.mode):
             # pass to Retain Pipeline
         else:
@@ -121,40 +131,73 @@ class ThalamusFilter:
         self,
         qdrant: QdrantEngineClient,
         embeddings: Embeddings,
-        llm: LLMConfig,
     ) -> None:
         """
         Args:
             qdrant: Qdrant client used for Novelty similarity search.
-            embeddings: Embedding provider for Novelty/Surprise/Task-Relevance scoring.
-            llm: Small-tier LLM for Emotional Valence scoring.
+            embeddings: Embedding provider for all 4 scoring dimensions.
         """
         self._qdrant = qdrant
         self._embeddings = embeddings
-        self._llm = llm
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    async def score(self, text: str, session: Session, bank_id: str | None = None) -> ThalamusScores:
-        """Compute ThalamusScores for an incoming episode text.
+    async def score(
+        self,
+        content: str,
+        session: Session,
+        bank_id: str | None = None,
+        context: str | None = None,
+        expectation: str | None = None,
+        outcome: str | None = None,
+    ) -> ThalamusScores:
+        """Compute ThalamusScores for an incoming episode.
 
         Args:
-            text: The raw episode content to evaluate.
-            session: Current Session providing mode, task_context, and current_expectation.
+            content: The raw episode content to evaluate.
+            session: Current Session providing mode and fallback context/expectation.
             bank_id: Optional bank identifier. When set, novelty is computed only against
                 Engrams within this bank (Multi-Bank isolation, Epic 14).
+            context: Item-level task context (overrides session.task_context if set).
+            expectation: Item-level expectation (overrides session.current_expectation if set).
+            outcome: Item-level outcome. No session fallback — outcomes are always item-specific.
 
         Returns:
             ThalamusScores with all 4 dimension scores and weighted overall.
         """
-        input_embedding = self._embeddings.encode([text])[0]
+        # Fallback hierarchy: item-level > session-level > None
+        effective_context = context or session.task_context
+        effective_expectation = expectation or session.current_expectation
+        effective_outcome = outcome  # no session fallback
 
-        novelty = await self._score_novelty(input_embedding, bank_id=bank_id)
-        surprise = await self._score_surprise(input_embedding, session)
-        task_relevance = await self._score_task_relevance(input_embedding, session)
-        emotional_valence = await self._score_emotional_valence(text)
+        # Batch-embed all non-None strings in a single encode call for efficiency
+        texts_to_embed: list[str] = [content]
+        ctx_idx: int | None = None
+        exp_idx: int | None = None
+        out_idx: int | None = None
+
+        if effective_context:
+            ctx_idx = len(texts_to_embed)
+            texts_to_embed.append(effective_context)
+        if effective_expectation:
+            exp_idx = len(texts_to_embed)
+            texts_to_embed.append(effective_expectation)
+        if effective_outcome:
+            out_idx = len(texts_to_embed)
+            texts_to_embed.append(effective_outcome)
+
+        all_embeddings = self._embeddings.encode(texts_to_embed)
+        content_embedding: list[float] = all_embeddings[0]
+        context_embedding: list[float] | None = all_embeddings[ctx_idx] if ctx_idx is not None else None
+        expectation_embedding: list[float] | None = all_embeddings[exp_idx] if exp_idx is not None else None
+        outcome_embedding: list[float] | None = all_embeddings[out_idx] if out_idx is not None else None
+
+        novelty = await self._score_novelty(content_embedding, bank_id=bank_id)
+        surprise = self._score_surprise(expectation_embedding, outcome_embedding)
+        task_relevance = self._score_task_relevance(content_embedding, context_embedding)
+        emotional_valence = self._score_emotional_valence(expectation_embedding, outcome_embedding)
 
         overall = self._compute_overall(novelty, surprise, task_relevance, emotional_valence, session.mode)
 
@@ -180,17 +223,17 @@ class ThalamusFilter:
         return MODE_THRESHOLDS.get(mode, DEFAULT_THRESHOLD_PRECISION)
 
     # ------------------------------------------------------------------
-    # Score dimensions (T2–T5)
+    # Score dimensions
     # ------------------------------------------------------------------
 
     async def _score_novelty(self, embedding: list[float], bank_id: str | None = None) -> float:
-        """T2 — Novelty: 1.0 - max_similarity vs existing Engrams in Qdrant.
+        """Novelty: 1.0 - max_similarity vs existing Engrams in Qdrant.
 
         High similarity to existing memories → low novelty.
         No existing memories → novelty = 1.0 (everything is new).
 
         Args:
-            embedding: The input embedding to compare against.
+            embedding: The content embedding to compare against.
             bank_id: When set, restricts the similarity search to this bank only.
                 Ensures novelty is computed within bank boundaries (Multi-Bank isolation).
         """
@@ -211,72 +254,64 @@ class ThalamusFilter:
         # Clamp to [0, 1] to guard against floating-point edge cases.
         return float(max(0.0, min(1.0, 1.0 - max_similarity)))
 
-    async def _score_surprise(self, embedding: list[float], session: Session) -> float:
-        """T3 — Surprise: deviation from session.current_expectation.
+    def _score_surprise(
+        self,
+        expectation_embedding: list[float] | None,
+        outcome_embedding: list[float] | None,
+    ) -> float:
+        """Surprise: deviation of outcome from expectation (Prediction Error).
 
-        Low similarity to expectation → high surprise.
-        No expectation set → neutral 0.5.
+        prediction_error = 1.0 - cosine(expectation_embedding, outcome_embedding)
+        Fallback to 0.5 (neutral) when either embedding is absent.
+
+        Bio mapping: Noradrenaline release on unexpected outcomes — the larger
+        the delta between what was expected and what occurred, the higher the
+        plasticity-boosting surprise signal.
         """
-        if not session.current_expectation:
+        if expectation_embedding is None or outcome_embedding is None:
             return _NEUTRAL_SCORE
+        similarity = _cosine_similarity(expectation_embedding, outcome_embedding)
+        return float(max(0.0, min(1.0, 1.0 - similarity)))
 
-        try:
-            expectation_embedding = self._embeddings.encode([session.current_expectation])[0]
-            similarity = _cosine_similarity(embedding, expectation_embedding)
-            # High similarity = expected = low surprise; invert.
-            return float(max(0.0, min(1.0, 1.0 - similarity)))
-        except Exception:
-            logger.warning("Thalamus surprise: embedding failed, defaulting to 0.5", exc_info=True)
-            return _NEUTRAL_SCORE
+    def _score_task_relevance(
+        self,
+        content_embedding: list[float],
+        context_embedding: list[float] | None,
+    ) -> float:
+        """Task-Relevance: similarity of content to task context (PFC top-down attention).
 
-    async def _score_task_relevance(self, embedding: list[float], session: Session) -> float:
-        """T4 — Task-Relevance: similarity to session.task_context (PFC attention).
-
-        High similarity to task context → high relevance.
-        No task context set → neutral 0.5.
+        Fallback to 0.5 (neutral) when context is absent.
         """
-        if not session.task_context:
+        if context_embedding is None:
             return _NEUTRAL_SCORE
+        similarity = _cosine_similarity(content_embedding, context_embedding)
+        return float(max(0.0, min(1.0, similarity)))
 
-        try:
-            task_embedding = self._embeddings.encode([session.task_context])[0]
-            similarity = _cosine_similarity(embedding, task_embedding)
-            return float(max(0.0, min(1.0, similarity)))
-        except Exception:
-            logger.warning("Thalamus task_relevance: embedding failed, defaulting to 0.5", exc_info=True)
-            return _NEUTRAL_SCORE
+    def _score_emotional_valence(
+        self,
+        expectation_embedding: list[float] | None,
+        outcome_embedding: list[float] | None,
+    ) -> float:
+        """Emotional Valence: Prediction-Error-Magnitude × Amplification.
 
-    async def _score_emotional_valence(self, text: str) -> float:
-        """T5 — Emotional Valence: LLM Small-Tier assessment of emotional significance.
+        emotional_valence = min(1.0, prediction_error_magnitude * VALENCE_AMPLIFICATION)
+        where prediction_error_magnitude = 1.0 - cosine(expectation, outcome).
 
-        Asks the LLM to rate emotional significance 0.0–1.0.
-        Falls back to 0.3 on any error (neutral-low, erring on the side of inclusion).
+        Fallback to 0.3 (low, erring on the side of inclusion) when either embedding is absent.
 
-        TODO(epic-14): For bulk imports, consider batching multiple texts into a single
-        LLM call to reduce per-item overhead. Current cost: ~$0.0002/call (Haiku).
+        Bio mapping: Amplification models the amygdala's role in magnifying prediction errors
+        into emotional significance. A large delta between expectation and outcome signals
+        high significance regardless of direction (positive or negative surprise).
         """
-        prompt = (
-            "Rate the emotional significance of the following text on a scale from 0.0 to 1.0. "
-            "0.0 means no emotional significance (routine fact), "
-            "1.0 means extremely emotionally significant (crisis, major event, strong feeling). "
-            "Respond with ONLY a single float number, nothing else.\n\n"
-            f"Text: {text}"
-        )
-        try:
-            response: str = await self._llm.call(
-                messages=[{"role": "user", "content": prompt}],
-                max_completion_tokens=10,
-                temperature=0.0,
-                scope="thalamus",
-            )
-            value = float(str(response).strip())
-            return max(0.0, min(1.0, value))
-        except Exception:
-            logger.warning("Thalamus emotional_valence: LLM call failed, defaulting to %.1f", _VALENCE_FALLBACK)
+        if expectation_embedding is None or outcome_embedding is None:
             return _VALENCE_FALLBACK
+        prediction_error_magnitude = max(
+            0.0, min(1.0, 1.0 - _cosine_similarity(expectation_embedding, outcome_embedding))
+        )
+        return float(min(1.0, prediction_error_magnitude * VALENCE_AMPLIFICATION))
 
     # ------------------------------------------------------------------
-    # Overall score (T6)
+    # Overall score
     # ------------------------------------------------------------------
 
     @staticmethod

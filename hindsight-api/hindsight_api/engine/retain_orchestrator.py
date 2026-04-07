@@ -160,7 +160,6 @@ class RetainOrchestrator:
                 self._thalamus = ThalamusFilter(
                     qdrant=self.engram_storage._qdrant,
                     embeddings=self._ctx.embeddings,
-                    llm=self._ctx.llm_registry.get_llm("retain", "thalamus_scoring"),
                 )
 
             from .response_models import Session as _Session
@@ -183,7 +182,14 @@ class RetainOrchestrator:
             total_score = 0.0
 
             for i, item in enumerate(contents):
-                scores = await self._thalamus.score(item.get("content", ""), effective_session, bank_id=bank_id)
+                scores = await self._thalamus.score(
+                    content=item.get("content", ""),
+                    session=effective_session,
+                    bank_id=bank_id,
+                    context=item.get("context"),
+                    expectation=item.get("expectation"),
+                    outcome=item.get("outcome"),
+                )
                 total_score += scores.overall
                 if scores.overall < threshold:
                     dropped += 1

@@ -1,17 +1,20 @@
 """
-Unit tests for ThalamusFilter (Epic 04, Story 01).
+Unit tests for ThalamusFilter (Epic 16 — Objective Thalamus).
 
 Tests cover:
-- Score computation with known inputs
+- Score computation with known inputs (embedding-based, deterministic)
 - Mode-dependent weighting
 - Threshold values per mode
 - Fallback behaviour when session context is absent
+- Session fallback hierarchy (item-level > session-level > neutral default)
+- Determinism: same inputs → same outputs (no LLM variance)
 - _cosine_similarity helper
 """
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+import math
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -23,6 +26,7 @@ from hindsight_api.engine.thalamus import (
     DEFAULT_THRESHOLD_PRECISION,
     DEFAULT_THRESHOLD_VALIDATION,
     MODE_WEIGHTS,
+    VALENCE_AMPLIFICATION,
     ThalamusFilter,
     _cosine_similarity,
 )
@@ -35,22 +39,18 @@ from hindsight_api.engine.thalamus import (
 
 def _make_filter(
     qdrant_results: list[dict] | None = None,
-    embed_return: list[float] | None = None,
-    llm_return: str = "0.5",
-) -> tuple[ThalamusFilter, MagicMock, MagicMock, MagicMock]:
+    embed_return: list[list[float]] | None = None,
+) -> tuple[ThalamusFilter, MagicMock, MagicMock]:
     """Build a ThalamusFilter with fully mocked dependencies."""
     qdrant = AsyncMock()
     qdrant.search_similar = AsyncMock(return_value=qdrant_results or [])
 
     embeddings = MagicMock()
-    vec = embed_return or [1.0, 0.0, 0.0]
-    embeddings.encode = MagicMock(return_value=[vec])
+    vecs = embed_return if embed_return is not None else [[1.0, 0.0, 0.0]]
+    embeddings.encode = MagicMock(return_value=vecs)
 
-    llm = AsyncMock()
-    llm.call = AsyncMock(return_value=llm_return)
-
-    f = ThalamusFilter(qdrant=qdrant, embeddings=embeddings, llm=llm)
-    return f, qdrant, embeddings, llm
+    f = ThalamusFilter(qdrant=qdrant, embeddings=embeddings)
+    return f, qdrant, embeddings
 
 
 def _session(
@@ -83,14 +83,14 @@ class TestCosineSimilarity:
 
 
 # ---------------------------------------------------------------------------
-# Novelty score (T2)
+# Novelty score
 # ---------------------------------------------------------------------------
 
 
 class TestNoveltyScore:
     @pytest.mark.asyncio
     async def test_no_existing_memories_returns_one(self):
-        f, qdrant, _, _ = _make_filter(qdrant_results=[])
+        f, qdrant, _ = _make_filter(qdrant_results=[])
         session = _session()
         scores = await f.score("hello world", session)
         assert scores.novelty == pytest.approx(1.0)
@@ -98,14 +98,14 @@ class TestNoveltyScore:
     @pytest.mark.asyncio
     async def test_high_similarity_returns_low_novelty(self):
         # similarity = 0.95 → novelty = 0.05
-        f, qdrant, _, _ = _make_filter(qdrant_results=[{"score": 0.95, "engram_id": "x", "payload": {}}])
+        f, qdrant, _ = _make_filter(qdrant_results=[{"score": 0.95, "engram_id": "x", "payload": {}}])
         session = _session()
         scores = await f.score("hello world", session)
         assert scores.novelty == pytest.approx(0.05, abs=1e-6)
 
     @pytest.mark.asyncio
     async def test_qdrant_failure_defaults_to_one(self):
-        f, qdrant, _, _ = _make_filter()
+        f, qdrant, _ = _make_filter()
         qdrant.search_similar = AsyncMock(side_effect=RuntimeError("connection refused"))
         session = _session()
         scores = await f.score("hello world", session)
@@ -119,14 +119,14 @@ class TestNoveltyScore:
             {"score": 0.9, "engram_id": "b", "payload": {}},
             {"score": 0.6, "engram_id": "c", "payload": {}},
         ]
-        f, _, _, _ = _make_filter(qdrant_results=results)
+        f, _, _ = _make_filter(qdrant_results=results)
         session = _session()
         scores = await f.score("text", session)
         assert scores.novelty == pytest.approx(0.1, abs=1e-6)
 
     @pytest.mark.asyncio
     async def test_novelty_passes_bank_id_filter_to_qdrant(self):
-        f, qdrant, _, _ = _make_filter(qdrant_results=[])
+        f, qdrant, _ = _make_filter(qdrant_results=[])
         session = _session()
         await f.score("hello", session, bank_id="test-bank")
         call_args = qdrant.search_similar.call_args
@@ -137,7 +137,7 @@ class TestNoveltyScore:
 
     @pytest.mark.asyncio
     async def test_novelty_no_bank_id_searches_without_filter(self):
-        f, qdrant, _, _ = _make_filter(qdrant_results=[])
+        f, qdrant, _ = _make_filter(qdrant_results=[])
         session = _session()
         await f.score("hello", session, bank_id=None)
         call_args = qdrant.search_similar.call_args
@@ -146,56 +146,56 @@ class TestNoveltyScore:
 
 
 # ---------------------------------------------------------------------------
-# Surprise score (T3)
+# Surprise score — expectation↔outcome Prediction Error
 # ---------------------------------------------------------------------------
 
 
 class TestSurpriseScore:
     @pytest.mark.asyncio
-    async def test_no_expectation_returns_neutral(self):
-        f, _, _, _ = _make_filter()
+    async def test_no_expectation_no_outcome_returns_neutral(self):
+        f, _, _ = _make_filter()
         session = _session(expectation=None)
         scores = await f.score("anything", session)
         assert scores.surprise == pytest.approx(0.5)
 
     @pytest.mark.asyncio
-    async def test_identical_content_returns_low_surprise(self):
-        # When text == expectation, similarity ≈ 1.0 → surprise ≈ 0.0
+    async def test_identical_expectation_and_outcome_returns_low_surprise(self):
+        # expectation and outcome have the same embedding → cosine=1 → surprise=0
         vec = [1.0, 0.0, 0.0]
-        f, _, embeddings, _ = _make_filter(embed_return=vec)
-        # Both text and expectation produce the same vector
-        embeddings.encode = MagicMock(return_value=[vec])
-        session = _session(expectation="same text")
-        scores = await f.score("same text", session)
+        f, _, embeddings = _make_filter()
+        embeddings.encode = MagicMock(return_value=[vec, vec, vec])
+        session = _session()
+        scores = await f.score("content", session, expectation="same", outcome="same")
         assert scores.surprise == pytest.approx(0.0, abs=1e-6)
 
     @pytest.mark.asyncio
-    async def test_orthogonal_expectation_returns_high_surprise(self):
-        # input vector: [1, 0], expectation vector: [0, 1] → sim=0 → surprise=1
-        call_count = [0]
-
-        def encode_side_effect(texts):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                return [[1.0, 0.0]]  # input
-            return [[0.0, 1.0]]  # expectation
-
-        f, _, embeddings, _ = _make_filter()
-        embeddings.encode = MagicMock(side_effect=encode_side_effect)
-        session = _session(expectation="orthogonal")
-        scores = await f.score("input", session)
+    async def test_orthogonal_expectation_and_outcome_returns_high_surprise(self):
+        # expectation=[1,0], outcome=[0,1] → cosine=0 → surprise=1
+        f, _, embeddings = _make_filter()
+        embeddings.encode = MagicMock(return_value=[[1.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
+        session = _session()
+        scores = await f.score("content", session, expectation="expected", outcome="different")
         assert scores.surprise == pytest.approx(1.0, abs=1e-6)
+
+    @pytest.mark.asyncio
+    async def test_expectation_without_outcome_returns_neutral(self):
+        # expectation set but no outcome → fallback to 0.5
+        f, _, embeddings = _make_filter()
+        embeddings.encode = MagicMock(return_value=[[1.0, 0.0], [0.5, 0.5]])
+        session = _session(expectation="session_expectation")
+        scores = await f.score("content", session)  # no outcome
+        assert scores.surprise == pytest.approx(0.5)
 
 
 # ---------------------------------------------------------------------------
-# Task-Relevance score (T4)
+# Task-Relevance score
 # ---------------------------------------------------------------------------
 
 
 class TestTaskRelevanceScore:
     @pytest.mark.asyncio
     async def test_no_task_context_returns_neutral(self):
-        f, _, _, _ = _make_filter()
+        f, _, _ = _make_filter()
         session = _session(task_context=None)
         scores = await f.score("text", session)
         assert scores.task_relevance == pytest.approx(0.5)
@@ -203,61 +203,79 @@ class TestTaskRelevanceScore:
     @pytest.mark.asyncio
     async def test_identical_task_context_returns_high_relevance(self):
         vec = [1.0, 0.0, 0.0]
-        f, _, embeddings, _ = _make_filter(embed_return=vec)
-        embeddings.encode = MagicMock(return_value=[vec])
-        session = _session(task_context="same task")
-        scores = await f.score("same task", session)
+        f, _, embeddings = _make_filter()
+        embeddings.encode = MagicMock(return_value=[vec, vec])
+        session = _session()
+        scores = await f.score("same task", session, context="same task")
         assert scores.task_relevance == pytest.approx(1.0, abs=1e-6)
 
     @pytest.mark.asyncio
     async def test_orthogonal_task_context_returns_low_relevance(self):
-        call_count = [0]
-
-        def encode_side_effect(texts):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                return [[1.0, 0.0]]
-            return [[0.0, 1.0]]
-
-        f, _, embeddings, _ = _make_filter()
-        embeddings.encode = MagicMock(side_effect=encode_side_effect)
-        session = _session(task_context="unrelated task")
-        scores = await f.score("input", session)
+        # content=[1,0], context=[0,1] → cosine=0 → relevance=0
+        f, _, embeddings = _make_filter()
+        embeddings.encode = MagicMock(return_value=[[1.0, 0.0], [0.0, 1.0]])
+        session = _session()
+        scores = await f.score("input", session, context="unrelated task")
         assert scores.task_relevance == pytest.approx(0.0, abs=1e-6)
 
 
 # ---------------------------------------------------------------------------
-# Emotional Valence score (T5)
+# Emotional Valence score — embedding-based, deterministic
 # ---------------------------------------------------------------------------
 
 
 class TestEmotionalValenceScore:
     @pytest.mark.asyncio
-    async def test_llm_returns_float_string(self):
-        f, _, _, llm = _make_filter(llm_return="0.8")
+    async def test_high_prediction_error_gives_high_valence(self):
+        # expectation=[1,0], outcome=[0,1] → cosine=0 → PE=1.0
+        # valence = min(1.0, 1.0 * VALENCE_AMPLIFICATION) = 1.0
+        f, _, embeddings = _make_filter()
+        embeddings.encode = MagicMock(return_value=[[1.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
         session = _session()
-        scores = await f.score("text", session)
-        assert scores.emotional_valence == pytest.approx(0.8)
+        scores = await f.score("content", session, expectation="expected", outcome="different")
+        assert scores.emotional_valence == pytest.approx(1.0)
 
     @pytest.mark.asyncio
-    async def test_llm_failure_returns_fallback(self):
-        f, _, _, llm = _make_filter()
-        llm.call = AsyncMock(side_effect=RuntimeError("LLM unreachable"))
+    async def test_zero_prediction_error_gives_zero_valence(self):
+        # expectation = outcome → cosine=1 → PE=0 → valence=0
+        vec = [1.0, 0.0, 0.0]
+        f, _, embeddings = _make_filter()
+        embeddings.encode = MagicMock(return_value=[vec, vec, vec])
+        session = _session()
+        scores = await f.score("content", session, expectation="same", outcome="same")
+        assert scores.emotional_valence == pytest.approx(0.0, abs=1e-6)
+
+    @pytest.mark.asyncio
+    async def test_amplification_factor_applied(self):
+        # cosine(a, b) = 0.5 → PE = 0.5 → valence = min(1.0, 0.5 * VALENCE_AMPLIFICATION)
+        a = [1.0, 0.0]
+        b = [0.5, math.sqrt(0.75)]  # cos([1,0], b) = 0.5
+        f, _, embeddings = _make_filter()
+        # encode([content, expectation, outcome]) → [a, a, b]
+        embeddings.encode = MagicMock(return_value=[a, a, b])
+        session = _session()
+        scores = await f.score("content", session, expectation="exp", outcome="out")
+        expected = min(1.0, 0.5 * VALENCE_AMPLIFICATION)
+        assert scores.emotional_valence == pytest.approx(expected, abs=1e-3)
+
+    @pytest.mark.asyncio
+    async def test_no_expectation_no_outcome_returns_fallback(self):
+        f, _, _ = _make_filter()
         session = _session()
         scores = await f.score("text", session)
         assert scores.emotional_valence == pytest.approx(0.3)
 
     @pytest.mark.asyncio
-    async def test_llm_out_of_range_clamped(self):
-        # LLM returns 1.5 → should be clamped to 1.0
-        f, _, _, llm = _make_filter(llm_return="1.5")
-        session = _session()
-        scores = await f.score("text", session)
-        assert scores.emotional_valence == pytest.approx(1.0)
+    async def test_expectation_without_outcome_returns_fallback(self):
+        f, _, embeddings = _make_filter()
+        embeddings.encode = MagicMock(return_value=[[1.0, 0.0], [1.0, 0.0]])
+        session = _session(expectation="expected")
+        scores = await f.score("text", session)  # no outcome
+        assert scores.emotional_valence == pytest.approx(0.3)
 
 
 # ---------------------------------------------------------------------------
-# Mode-dependent weighting (T6)
+# Mode-dependent weighting
 # ---------------------------------------------------------------------------
 
 
@@ -294,13 +312,13 @@ class TestModeWeights:
     @pytest.mark.asyncio
     async def test_overall_score_computed_from_weights(self):
         # Fix all component scores to known values, verify overall formula
-        f, _, _, _ = _make_filter()
+        f, _, _ = _make_filter()
 
-        # Patch each private method to return predictable values
+        # Patch private methods — note: _score_surprise etc. are now sync
         f._score_novelty = AsyncMock(return_value=1.0)
-        f._score_surprise = AsyncMock(return_value=0.0)
-        f._score_task_relevance = AsyncMock(return_value=0.0)
-        f._score_emotional_valence = AsyncMock(return_value=0.0)
+        f._score_surprise = MagicMock(return_value=0.0)
+        f._score_task_relevance = MagicMock(return_value=0.0)
+        f._score_emotional_valence = MagicMock(return_value=0.0)
 
         session = _session(mode=RetrievalMode.EXPLORATION)
         scores = await f.score("text", session)
@@ -310,36 +328,93 @@ class TestModeWeights:
 
 
 # ---------------------------------------------------------------------------
-# Threshold configuration (T7)
+# Threshold configuration
 # ---------------------------------------------------------------------------
 
 
 class TestThresholds:
     def test_default_thresholds(self):
-        assert ThalamusFilter.threshold_for_mode(RetrievalMode.PRECISION) == pytest.approx(
-            DEFAULT_THRESHOLD_PRECISION
-        )
+        assert ThalamusFilter.threshold_for_mode(RetrievalMode.PRECISION) == pytest.approx(DEFAULT_THRESHOLD_PRECISION)
         assert ThalamusFilter.threshold_for_mode(RetrievalMode.EXPLORATION) == pytest.approx(
             DEFAULT_THRESHOLD_EXPLORATION
         )
         assert ThalamusFilter.threshold_for_mode(RetrievalMode.VALIDATION) == pytest.approx(
             DEFAULT_THRESHOLD_VALIDATION
         )
-        assert ThalamusFilter.threshold_for_mode(RetrievalMode.ANALOGY) == pytest.approx(
-            DEFAULT_THRESHOLD_ANALOGY
-        )
+        assert ThalamusFilter.threshold_for_mode(RetrievalMode.ANALOGY) == pytest.approx(DEFAULT_THRESHOLD_ANALOGY)
 
     def test_exploration_threshold_lower_than_precision(self):
         assert DEFAULT_THRESHOLD_EXPLORATION < DEFAULT_THRESHOLD_PRECISION
 
     def test_env_var_override(self, monkeypatch):
         # Patch the module-level dict directly to simulate an env-var override.
-        # Using importlib.reload() would mutate the shared module object and
-        # leak state into other tests running in the same worker process.
         import hindsight_api.engine.thalamus as thalamus_mod
 
         monkeypatch.setitem(thalamus_mod.MODE_THRESHOLDS, RetrievalMode.PRECISION, 0.99)
         assert ThalamusFilter.threshold_for_mode(RetrievalMode.PRECISION) == pytest.approx(0.99)
+
+
+# ---------------------------------------------------------------------------
+# Session fallback hierarchy
+# ---------------------------------------------------------------------------
+
+
+class TestSessionFallback:
+    @pytest.mark.asyncio
+    async def test_item_expectation_overrides_session_expectation(self):
+        """Item-level expectation takes precedence over session.current_expectation."""
+        f, _, embeddings = _make_filter()
+        embeddings.encode = MagicMock(return_value=[[1.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
+        session = _session(expectation="session_expectation")
+        await f.score("content", session, expectation="item_exp", outcome="out")
+        call_texts = embeddings.encode.call_args[0][0]
+        assert "item_exp" in call_texts
+        assert "session_expectation" not in call_texts
+
+    @pytest.mark.asyncio
+    async def test_session_expectation_used_as_fallback(self):
+        """session.current_expectation used when no item-level expectation."""
+        f, _, embeddings = _make_filter()
+        embeddings.encode = MagicMock(return_value=[[1.0, 0.0], [1.0, 0.0]])
+        session = _session(expectation="session_exp")
+        await f.score("content", session)  # no item expectation, no outcome
+        call_texts = embeddings.encode.call_args[0][0]
+        assert "session_exp" in call_texts
+
+    @pytest.mark.asyncio
+    async def test_item_context_overrides_session_context(self):
+        """Item-level context takes precedence over session.task_context."""
+        f, _, embeddings = _make_filter()
+        embeddings.encode = MagicMock(return_value=[[1.0, 0.0], [0.0, 1.0]])
+        session = _session(task_context="session_context")
+        await f.score("content", session, context="item_context")
+        call_texts = embeddings.encode.call_args[0][0]
+        assert "item_context" in call_texts
+        assert "session_context" not in call_texts
+
+    @pytest.mark.asyncio
+    async def test_session_context_used_as_fallback(self):
+        """session.task_context used when no item-level context."""
+        f, _, embeddings = _make_filter()
+        embeddings.encode = MagicMock(return_value=[[1.0, 0.0], [0.0, 1.0]])
+        session = _session(task_context="session_ctx")
+        await f.score("content", session)  # no item context
+        call_texts = embeddings.encode.call_args[0][0]
+        assert "session_ctx" in call_texts
+
+    @pytest.mark.asyncio
+    async def test_outcome_has_no_session_fallback(self):
+        """outcome is never sourced from session — always item-specific or None."""
+        f, _, embeddings = _make_filter()
+        # Only content in encode (no context, no expectation, no outcome)
+        embeddings.encode = MagicMock(return_value=[[1.0, 0.0]])
+        session = _session()  # no expectation, no task_context
+        scores = await f.score("content", session)
+        # No outcome → valence and surprise fall back to neutral/fallback values
+        assert scores.surprise == pytest.approx(0.5)
+        assert scores.emotional_valence == pytest.approx(0.3)
+        call_texts = embeddings.encode.call_args[0][0]
+        assert len(call_texts) == 1  # only content embedded
 
 
 # ---------------------------------------------------------------------------
@@ -350,7 +425,7 @@ class TestThresholds:
 class TestFallbackBehaviour:
     @pytest.mark.asyncio
     async def test_session_without_context_produces_valid_scores(self):
-        f, _, _, _ = _make_filter()
+        f, _, _ = _make_filter()
         session = _session()  # no expectation, no task_context
         scores = await f.score("some episode", session)
 
@@ -363,7 +438,7 @@ class TestFallbackBehaviour:
 
     @pytest.mark.asyncio
     async def test_missing_context_gives_neutral_surprise_and_relevance(self):
-        f, _, _, _ = _make_filter()
+        f, _, _ = _make_filter()
         session = _session(expectation=None, task_context=None)
         scores = await f.score("episode", session)
         assert scores.surprise == pytest.approx(0.5)
@@ -371,7 +446,7 @@ class TestFallbackBehaviour:
 
 
 # ---------------------------------------------------------------------------
-# Gate behaviour (T5) — threshold-based pass/drop logic
+# Gate behaviour — threshold-based pass/drop logic
 # ---------------------------------------------------------------------------
 
 
@@ -379,38 +454,32 @@ class TestGateBehaviour:
     @pytest.mark.asyncio
     async def test_high_overall_score_passes_threshold(self):
         """Episode with overall score above threshold should not be dropped."""
-        f, _, _, _ = _make_filter(llm_return="0.9")
-        # Make novelty = 1.0 (no existing memories) and valence = 0.9
+        f, _, _ = _make_filter()
         f._score_novelty = AsyncMock(return_value=1.0)
-        f._score_surprise = AsyncMock(return_value=1.0)
-        f._score_task_relevance = AsyncMock(return_value=1.0)
-        f._score_emotional_valence = AsyncMock(return_value=0.9)
+        f._score_surprise = MagicMock(return_value=1.0)
+        f._score_task_relevance = MagicMock(return_value=1.0)
+        f._score_emotional_valence = MagicMock(return_value=0.9)
 
         session = _session(mode=RetrievalMode.PRECISION)
         scores = await f.score("highly novel content", session)
         threshold = ThalamusFilter.threshold_for_mode(RetrievalMode.PRECISION)
 
-        assert scores.overall >= threshold, (
-            f"Expected score {scores.overall:.3f} >= threshold {threshold:.3f}"
-        )
+        assert scores.overall >= threshold, f"Expected score {scores.overall:.3f} >= threshold {threshold:.3f}"
 
     @pytest.mark.asyncio
     async def test_low_overall_score_fails_threshold(self):
         """Episode with very low scores should fall below threshold."""
-        f, _, _, _ = _make_filter(llm_return="0.0")
-        # Force all scores to 0 — no novelty, no surprise, no relevance, no valence
+        f, _, _ = _make_filter()
         f._score_novelty = AsyncMock(return_value=0.0)
-        f._score_surprise = AsyncMock(return_value=0.0)
-        f._score_task_relevance = AsyncMock(return_value=0.0)
-        f._score_emotional_valence = AsyncMock(return_value=0.0)
+        f._score_surprise = MagicMock(return_value=0.0)
+        f._score_task_relevance = MagicMock(return_value=0.0)
+        f._score_emotional_valence = MagicMock(return_value=0.0)
 
         session = _session(mode=RetrievalMode.PRECISION)
         scores = await f.score("completely irrelevant duplicate", session)
         threshold = ThalamusFilter.threshold_for_mode(RetrievalMode.PRECISION)
 
-        assert scores.overall < threshold, (
-            f"Expected score {scores.overall:.3f} < threshold {threshold:.3f}"
-        )
+        assert scores.overall < threshold, f"Expected score {scores.overall:.3f} < threshold {threshold:.3f}"
 
     def test_exploration_threshold_lower_than_precision_threshold(self):
         """Exploration mode has lower threshold → lets more through."""
@@ -421,11 +490,11 @@ class TestGateBehaviour:
     @pytest.mark.asyncio
     async def test_scores_returned_for_passed_content(self):
         """Scores from ThalamusFilter should be fully populated for passed content."""
-        f, _, _, _ = _make_filter(llm_return="0.7")
+        f, _, _ = _make_filter()
         f._score_novelty = AsyncMock(return_value=0.8)
-        f._score_surprise = AsyncMock(return_value=0.5)
-        f._score_task_relevance = AsyncMock(return_value=0.6)
-        f._score_emotional_valence = AsyncMock(return_value=0.7)
+        f._score_surprise = MagicMock(return_value=0.5)
+        f._score_task_relevance = MagicMock(return_value=0.6)
+        f._score_emotional_valence = MagicMock(return_value=0.7)
 
         session = _session(mode=RetrievalMode.EXPLORATION)
         scores = await f.score("interesting content", session)
@@ -440,18 +509,51 @@ class TestGateBehaviour:
     @pytest.mark.asyncio
     async def test_mode_switch_changes_overall_score(self):
         """Same raw scores produce different overall score under different modes."""
-        f_exp, _, _, _ = _make_filter(llm_return="0.5")
-        f_prec, _, _, _ = _make_filter(llm_return="0.5")
+        f_exp, _, _ = _make_filter()
+        f_prec, _, _ = _make_filter()
 
         # novelty=1.0, all others=0.0 → exploration weights novelty heavily
         for f in (f_exp, f_prec):
             f._score_novelty = AsyncMock(return_value=1.0)
-            f._score_surprise = AsyncMock(return_value=0.0)
-            f._score_task_relevance = AsyncMock(return_value=0.0)
-            f._score_emotional_valence = AsyncMock(return_value=0.0)
+            f._score_surprise = MagicMock(return_value=0.0)
+            f._score_task_relevance = MagicMock(return_value=0.0)
+            f._score_emotional_valence = MagicMock(return_value=0.0)
 
         scores_exploration = await f_exp.score("text", _session(mode=RetrievalMode.EXPLORATION))
         scores_precision = await f_prec.score("text", _session(mode=RetrievalMode.PRECISION))
 
         # Exploration weights novelty at 0.4, Precision at 0.1
         assert scores_exploration.overall > scores_precision.overall
+
+
+# ---------------------------------------------------------------------------
+# Determinism — no LLM variance
+# ---------------------------------------------------------------------------
+
+
+class TestDeterminism:
+    @pytest.mark.asyncio
+    async def test_same_inputs_produce_same_outputs(self):
+        """Embedding-based scoring is fully deterministic — no LLM variance."""
+        vec_content = [1.0, 0.0, 0.0]
+        vec_exp = [0.7, 0.7, 0.0]
+        vec_out = [0.0, 0.0, 1.0]
+
+        results = []
+        for _ in range(3):
+            f, _, embeddings = _make_filter()
+            embeddings.encode = MagicMock(return_value=[vec_content, vec_exp, vec_out])
+            session = _session()
+            scores = await f.score("content", session, expectation="exp", outcome="out")
+            results.append(scores)
+
+        for r in results[1:]:
+            assert r.surprise == pytest.approx(results[0].surprise)
+            assert r.task_relevance == pytest.approx(results[0].task_relevance)
+            assert r.emotional_valence == pytest.approx(results[0].emotional_valence)
+            assert r.overall == pytest.approx(results[0].overall)
+
+    @pytest.mark.asyncio
+    async def test_valence_amplification_constant_is_positive(self):
+        """VALENCE_AMPLIFICATION must be > 0 for the formula to be meaningful."""
+        assert VALENCE_AMPLIFICATION > 0.0
