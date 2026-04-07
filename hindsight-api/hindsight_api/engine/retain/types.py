@@ -32,6 +32,9 @@ class RetainContentDict(TypedDict, total=False):
     document_id: str
     entities: list[dict[str, str]]  # [{"text": "...", "type": "..."}]
     thalamus_scores: ThalamusScores  # Set by ThalamusFilter gate (Epic 04)
+    expectation: str  # Optional — what the caller expected (Epic 15)
+    outcome: str  # Optional — what actually happened (Epic 15)
+    tags: list[str]  # Optional — user-supplied tags, merged with auto-extracted (Epic 15)
 
 
 def _now_utc() -> datetime:
@@ -121,6 +124,11 @@ class ExtractedFact:
     tags: list[str] = field(default_factory=list)
     thalamus_scores: ThalamusScores | None = None
 
+    # API Enrichment fields (Epic 15 — optional, caller-supplied or R0-extracted)
+    expectation: str | None = None
+    outcome: str | None = None
+    user_tags: list[str] = field(default_factory=list)  # Caller-supplied tags, merged with LLM-extracted tags
+
 
 @dataclass
 class ProcessedFact:
@@ -169,6 +177,10 @@ class ProcessedFact:
     tags: list[str] = field(default_factory=list)
     thalamus_scores: ThalamusScores | None = None
 
+    # API Enrichment fields (Epic 15 — optional, caller-supplied or R0-extracted)
+    expectation: str | None = None
+    outcome: str | None = None
+
     @property
     def is_duplicate(self) -> bool:
         """Check if this fact was marked as a duplicate."""
@@ -199,6 +211,9 @@ class ProcessedFact:
         # Convert entity strings to EntityRef objects
         entities = [EntityRef(name=name) for name in extracted_fact.entities]
 
+        # Merge user-supplied tags with LLM-extracted tags (deduplicated, user tags first)
+        merged_tags = list(dict.fromkeys(extracted_fact.user_tags + extracted_fact.tags))
+
         return ProcessedFact(
             fact_text=extracted_fact.fact_text,
             fact_type=extracted_fact.fact_type,
@@ -212,8 +227,10 @@ class ProcessedFact:
             causal_relations=extracted_fact.causal_relations,
             chunk_id=chunk_id,
             content_index=extracted_fact.content_index,
-            tags=extracted_fact.tags,
+            tags=merged_tags,
             thalamus_scores=extracted_fact.thalamus_scores,
+            expectation=extracted_fact.expectation,
+            outcome=extracted_fact.outcome,
         )
 
 

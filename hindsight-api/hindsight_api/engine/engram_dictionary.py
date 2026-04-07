@@ -29,7 +29,8 @@ async def insert_entry(pool: asyncpg.Pool, engram_data: dict[str, Any]) -> None:
         engram_data: Dict with at minimum engram_id and bank_id.
                      Optional fields: strength, layer, abstraction_level, tags,
                      novelty, surprise, task_relevance, emotional_valence,
-                     thalamus_overall, status, confidence_score, session_ref.
+                     thalamus_overall, status, confidence_score, session_ref,
+                     expectation, outcome.
     """
     async with acquire_with_retry(pool) as conn:
         await conn.execute(
@@ -37,11 +38,13 @@ async def insert_entry(pool: asyncpg.Pool, engram_data: dict[str, Any]) -> None:
             INSERT INTO engram_dictionary (
                 engram_id, bank_id, strength, layer, abstraction_level, tags,
                 novelty, surprise, task_relevance, emotional_valence, thalamus_overall,
-                created_at, status, confidence_score, session_ref
+                created_at, status, confidence_score, session_ref,
+                expectation, outcome
             ) VALUES (
                 $1, $2, $3, $4, $5, $6,
                 $7, $8, $9, $10, $11,
-                $12, $13, $14, $15
+                $12, $13, $14, $15,
+                $16, $17
             )
             """,
             UUID(str(engram_data["engram_id"])),
@@ -59,6 +62,8 @@ async def insert_entry(pool: asyncpg.Pool, engram_data: dict[str, Any]) -> None:
             engram_data.get("status", "active"),
             engram_data.get("confidence_score"),
             UUID(str(engram_data["session_ref"])) if engram_data.get("session_ref") else None,
+            engram_data.get("expectation"),
+            engram_data.get("outcome"),
         )
 
 

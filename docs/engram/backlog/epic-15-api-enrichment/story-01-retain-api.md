@@ -29,9 +29,9 @@ Der Caller soll ermutigt werden, reichhaltigen Content zu schicken (Konversation
 
 ## Tasks
 
-- [ ] **T1 — MemoryItem erweitern:** `expectation: str | None = None`, `outcome: str | None = None`, `tags: list[str] | None = None` in MemoryItem. Field-Beschreibungen mit Beispielen. Validator: tags dürfen keine Leerzeichen, max 50 Zeichen pro Tag.
-- [ ] **T2 — RetainContentDict erweitern:** expectation, outcome, tags in das interne Dict-Format aufnehmen. Mapping von MemoryItem → RetainContentDict in memory_engine.py anpassen.
-- [ ] **T3 — ExtractedFact/ProcessedFact erweitern:** expectation und outcome als optionale Felder. Tags-Merge-Logik: user-supplied Tags + LLM-extracted Tags = finale Tags (dedupliziert).
-- [ ] **T4 — Engram Dictionary Migration:** Alembic Migration für `expectation TEXT`, `outcome TEXT` Spalten in engram_dictionary. Nullable, kein Default.
-- [ ] **T5 — Engram Storage Durchreichen:** EngramStorageService.create() nimmt expectation + outcome entgegen und speichert sie in PostgreSQL + als Qdrant Payload-Felder.
-- [ ] **T6 — Tests:** Unit-Tests für neue Felder (Serialisierung, Validation). Integration-Test: Retain mit expectation+outcome → Engram korrekt gespeichert. Backward-Compatibility-Test: Retain ohne neue Felder funktioniert.
+- [x] **T1 — MemoryItem erweitern:** `expectation: str | None = None`, `outcome: str | None = None`, `tags: list[str] | None = None` in MemoryItem. Field-Beschreibungen mit Beispielen. Validator: tags dürfen keine Leerzeichen, max 50 Zeichen pro Tag.
+- [x] **T2 — RetainContentDict erweitern:** expectation, outcome, tags in das interne Dict-Format aufnehmen. Mapping von MemoryItem → RetainContentDict in memory_engine.py anpassen.
+- [x] **T3 — ExtractedFact/ProcessedFact erweitern:** expectation und outcome als optionale Felder. Tags-Merge-Logik: user-supplied Tags + LLM-extracted Tags = finale Tags (dedupliziert).
+- [x] **T4 — Engram Dictionary Migration:** Alembic Migration für `expectation TEXT`, `outcome TEXT` Spalten in engram_dictionary. Nullable, kein Default.
+- [x] **T5 — Engram Storage Durchreichen:** EngramStorageService.create() nimmt expectation + outcome entgegen und speichert sie in PostgreSQL + als Qdrant Payload-Felder.
+- [x] **T6 — Tests:** Unit-Tests für neue Felder (Serialisierung, Validation). Integration-Test: Retain mit expectation+outcome → Engram korrekt gespeichert. Backward-Compatibility-Test: Retain ohne neue Felder funktioniert.

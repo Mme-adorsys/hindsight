@@ -313,6 +313,9 @@ class MemoryItem(BaseModel):
                 "metadata": {"source": "slack", "channel": "engineering"},
                 "document_id": "meeting_notes_2024_01_15",
                 "entities": [{"text": "Alice"}, {"text": "ML model", "type": "CONCEPT"}],
+                "expectation": "The model will improve accuracy by 10%",
+                "outcome": "The model improved accuracy by 15%",
+                "tags": ["ml", "project-alpha"],
             }
         },
     )
@@ -326,6 +329,34 @@ class MemoryItem(BaseModel):
         default=None,
         description="Optional entities to combine with auto-extracted entities.",
     )
+    expectation: str | None = Field(
+        default=None,
+        description="What the caller expected before the event. Used for Surprise scoring and Experience-Engram creation.",
+    )
+    outcome: str | None = Field(
+        default=None,
+        description="What actually happened. Paired with expectation to form an Experience-Engram.",
+    )
+    tags: list[str] | None = Field(
+        default=None,
+        description="User-supplied tags. Merged with auto-extracted tags. No spaces, max 50 chars per tag.",
+    )
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def validate_tags(cls, v):
+        if v is None:
+            return None
+        validated = []
+        for tag in v:
+            if not isinstance(tag, str):
+                raise ValueError(f"Each tag must be a string, got {type(tag).__name__}")
+            if " " in tag:
+                raise ValueError(f"Tags must not contain spaces: {tag!r}")
+            if len(tag) > 50:
+                raise ValueError(f"Tag exceeds 50 characters: {tag!r}")
+            validated.append(tag)
+        return validated
 
     @field_validator("timestamp", mode="before")
     @classmethod
@@ -2190,6 +2221,12 @@ def _register_routes(app: FastAPI):
                     content_dict["document_id"] = item.document_id
                 if item.entities:
                     content_dict["entities"] = [{"text": e.text, "type": e.type or "CONCEPT"} for e in item.entities]
+                if item.expectation is not None:
+                    content_dict["expectation"] = item.expectation
+                if item.outcome is not None:
+                    content_dict["outcome"] = item.outcome
+                if item.tags:
+                    content_dict["tags"] = item.tags
                 contents.append(content_dict)
 
             # Build session from mode if provided (Epic 06 — Session Layer)

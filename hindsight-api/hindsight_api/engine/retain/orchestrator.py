@@ -114,10 +114,19 @@ async def retain_batch(
     # Apply gate ThalamusScores to facts where the LLM did not produce scores.
     # Gate scores (heuristic) are the baseline; LLM-provided scores take precedence.
     for fact in extracted_facts:
-        if fact.thalamus_scores is None and fact.content_index < len(contents_dicts):
-            gate_scores = contents_dicts[fact.content_index].get("thalamus_scores")
-            if gate_scores is not None:
-                fact.thalamus_scores = gate_scores
+        if fact.content_index < len(contents_dicts):
+            content_dict = contents_dicts[fact.content_index]
+            if fact.thalamus_scores is None:
+                gate_scores = content_dict.get("thalamus_scores")
+                if gate_scores is not None:
+                    fact.thalamus_scores = gate_scores
+            # Propagate API Enrichment fields (Epic 15)
+            if fact.expectation is None and content_dict.get("expectation"):
+                fact.expectation = content_dict["expectation"]
+            if fact.outcome is None and content_dict.get("outcome"):
+                fact.outcome = content_dict["outcome"]
+            if not fact.user_tags and content_dict.get("tags"):
+                fact.user_tags = content_dict["tags"]
 
     if not extracted_facts:
         # Still need to create document if document_id was provided
