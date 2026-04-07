@@ -4,10 +4,12 @@ import json
 import logging
 import os
 from contextvars import ContextVar
+from datetime import datetime
 
 from fastmcp import FastMCP
 
 from hindsight_api import MemoryEngine
+from hindsight_api.api.utils import parse_json_param, session_from_mode
 from hindsight_api.engine.response_models import VALID_RECALL_FACT_TYPES
 from hindsight_api.models import RequestContext
 
@@ -56,6 +58,11 @@ def create_mcp_server(memory: MemoryEngine) -> FastMCP:
     async def retain(
         content: str,
         context: str = "general",
+        timestamp: str | None = None,
+        document_id: str | None = None,
+        entities: str | None = None,
+        metadata: str | None = None,
+        mode: str | None = None,
         async_processing: bool = True,
         bank_id: str | None = None,
     ) -> str:
@@ -74,6 +81,11 @@ def create_mcp_server(memory: MemoryEngine) -> FastMCP:
         Args:
             content: The fact/memory to store (be specific and include relevant details)
             context: Category for the memory (e.g., 'preferences', 'work', 'hobbies', 'family'). Default: 'general'
+            timestamp: ISO datetime when the event occurred (e.g., '2024-01-15T10:30:00Z'). Helps with temporal ordering.
+            document_id: Group related memories under one ID. Re-retaining with the same document_id replaces old memories (upsert).
+            entities: JSON array of entity hints. Format: '[{"text": "Alice", "type": "PERSON"}]'. Types: PERSON, ORG, CONCEPT, LOCATION.
+            metadata: JSON object with key-value pairs. Format: '{"source": "slack", "channel": "#general"}'.
+            mode: Session mode affecting Thalamus filter scoring. Values: precision (default), exploration, analogy, validation.
             async_processing: If True, queue for background processing and return immediately. If False, wait for completion. Default: True
             bank_id: Optional bank to store in (defaults to session bank). Use for cross-bank operations.
         """
@@ -81,18 +93,40 @@ def create_mcp_server(memory: MemoryEngine) -> FastMCP:
             target_bank = bank_id or get_current_bank_id()
             if target_bank is None:
                 return "Error: No bank_id configured"
-            contents = [{"content": content, "context": context}]
+
+            content_dict: dict = {"content": content, "context": context}
+            if timestamp:
+                content_dict["event_date"] = datetime.fromisoformat(timestamp)
+            if document_id:
+                content_dict["document_id"] = document_id
+            if entities:
+                try:
+                    content_dict["entities"] = parse_json_param(entities, "entities")
+                except ValueError as e:
+                    logger.warning(f"Ignoring entities: {e}")
+            if metadata:
+                try:
+                    content_dict["metadata"] = parse_json_param(metadata, "metadata")
+                except ValueError as e:
+                    logger.warning(f"Ignoring metadata: {e}")
+
+            try:
+                session = session_from_mode(mode)
+            except ValueError as e:
+                return f"Error: {e}"
+
             if async_processing:
-                # Queue for background processing and return immediately
                 result = await memory.submit_async_retain(
-                    bank_id=target_bank, contents=contents, request_context=RequestContext()
+                    bank_id=target_bank,
+                    contents=[content_dict],
+                    request_context=RequestContext(),
                 )
                 return f"Memory queued for background processing (operation_id: {result.get('operation_id', 'N/A')})"
             else:
-                # Wait for completion
                 await memory.retain_batch_async(
                     bank_id=target_bank,
-                    contents=contents,
+                    contents=[content_dict],
+                    session=session,
                     request_context=RequestContext(),
                 )
                 return f"Memory stored successfully in bank '{target_bank}'"
@@ -101,7 +135,19 @@ def create_mcp_server(memory: MemoryEngine) -> FastMCP:
             return f"Error: {str(e)}"
 
     @mcp.tool()
-    async def recall(query: str, max_tokens: int = 4096, bank_id: str | None = None) -> str:
+    async def recall(
+        query: str,
+        max_tokens: int = 4096,
+        budget: str = "mid",
+        types: str | None = None,
+        mode: str | None = None,
+        trace: bool = False,
+        query_timestamp: str | None = None,
+        include_entities: bool = True,
+        include_chunks: bool = False,
+        tags: str | None = None,
+        bank_id: str | None = None,
+    ) -> str:
         """
         Search memories to provide personalized, context-aware responses.
 
@@ -114,31 +160,66 @@ def create_mcp_server(memory: MemoryEngine) -> FastMCP:
         Args:
             query: Natural language search query (e.g., "user's food preferences", "what projects is user working on")
             max_tokens: Maximum tokens in the response (default: 4096)
+            budget: Search depth. 'low' = fast/fewer results, 'mid' = balanced (default), 'high' = deep search with spreading activation.
+            types: Comma-separated fact types to search. Values: world, experience, opinion. Default: all types.
+            mode: Session mode affecting result ranking. Values: precision (default), exploration, analogy, validation.
+            trace: Set to true to get debug information about the search process (scoring, timing, retrieval steps).
+            query_timestamp: ISO datetime for temporal context. Retrieval ranks memories closer to this timestamp higher.
+            include_entities: Include entity observations with results (default: true).
+            include_chunks: Include raw text chunks that memories were extracted from (default: false).
+            tags: Comma-separated tags to filter by.
             bank_id: Optional bank to search in (defaults to session bank). Use for cross-bank operations.
         """
         try:
             target_bank = bank_id or get_current_bank_id()
             if target_bank is None:
                 return "Error: No bank_id configured"
+
             from hindsight_api.engine.memory_engine import Budget
+
+            budget_map = {"low": Budget.LOW, "mid": Budget.MID, "high": Budget.HIGH}
+            budget_enum = budget_map.get(budget.lower(), Budget.MID)
+
+            fact_types = [t.strip() for t in types.split(",") if t.strip()] if types else list(VALID_RECALL_FACT_TYPES)
+            tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
+            question_date = datetime.fromisoformat(query_timestamp) if query_timestamp else None
+
+            try:
+                session = session_from_mode(mode)
+            except ValueError as e:
+                return f"Error: {e}"
 
             recall_result = await memory.recall_async(
                 bank_id=target_bank,
                 query=query,
-                fact_type=list(VALID_RECALL_FACT_TYPES),
-                budget=Budget.HIGH,
+                fact_type=fact_types,
+                budget=budget_enum,
                 max_tokens=max_tokens,
+                enable_trace=trace,
+                question_date=question_date,
+                include_entities=include_entities,
+                include_chunks=include_chunks,
+                tags=tag_list,
+                session=session,
                 request_context=RequestContext(),
             )
 
-            # Use model's JSON serialization
             return recall_result.model_dump_json(indent=2)
         except Exception as e:
             logger.error(f"Error searching: {e}", exc_info=True)
             return f'{{"error": "{e}", "results": []}}'
 
     @mcp.tool()
-    async def reflect(query: str, context: str | None = None, budget: str = "low", bank_id: str | None = None) -> str:
+    async def reflect(
+        query: str,
+        context: str | None = None,
+        budget: str = "low",
+        max_tokens: int = 4096,
+        mode: str | None = None,
+        response_schema: str | None = None,
+        include_facts: bool = False,
+        bank_id: str | None = None,
+    ) -> str:
         """
         Generate thoughtful analysis by synthesizing stored memories with the bank's personality.
 
@@ -161,28 +242,50 @@ def create_mcp_server(memory: MemoryEngine) -> FastMCP:
         Args:
             query: The question or topic to reflect on
             context: Optional context about why this reflection is needed
-            budget: Search budget - 'low', 'mid', or 'high' (default: 'low')
+            budget: Search depth. 'low' = quick opinion (default), 'mid' = moderate analysis, 'high' = deep synthesis.
+            max_tokens: Maximum tokens in the response (default: 4096)
+            mode: Session mode. 'analogy' finds unexpected cross-domain connections. 'exploration' broadens associations.
+            response_schema: JSON Schema string for structured output. The response will include a 'structured_output' field.
+            include_facts: Include the facts the answer is based on (default: false). Useful for transparency and verification.
             bank_id: Optional bank to reflect in (defaults to session bank). Use for cross-bank operations.
         """
         try:
             target_bank = bank_id or get_current_bank_id()
             if target_bank is None:
                 return "Error: No bank_id configured"
+
             from hindsight_api.engine.memory_engine import Budget
 
-            # Map string budget to enum
             budget_map = {"low": Budget.LOW, "mid": Budget.MID, "high": Budget.HIGH}
             budget_enum = budget_map.get(budget.lower(), Budget.LOW)
+
+            try:
+                session = session_from_mode(mode)
+            except ValueError as e:
+                return f"Error: {e}"
+
+            parsed_schema: dict | None = None
+            if response_schema:
+                try:
+                    parsed_schema = parse_json_param(response_schema, "response_schema")
+                except ValueError as e:
+                    return f"Error: {e}"
 
             reflect_result = await memory.reflect_async(
                 bank_id=target_bank,
                 query=query,
                 budget=budget_enum,
                 context=context,
+                max_tokens=max_tokens,
+                response_schema=parsed_schema,
+                session=session,
                 request_context=RequestContext(),
             )
 
-            return reflect_result.model_dump_json(indent=2)
+            result_dict = reflect_result.model_dump()
+            if not include_facts:
+                result_dict.pop("based_on", None)
+            return json.dumps(result_dict, indent=2, default=str)
         except Exception as e:
             logger.error(f"Error reflecting: {e}", exc_info=True)
             return f'{{"error": "{e}", "text": ""}}'

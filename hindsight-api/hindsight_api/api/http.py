@@ -1147,15 +1147,12 @@ def _session_from_mode(mode: str | None):
     Returns None when mode is not provided (engine uses Precision default).
     Raises HTTPException 400 for unrecognised mode values.
     """
-    if mode is None:
-        return None
-    from hindsight_api.engine.response_models import RetrievalMode, Session
+    from hindsight_api.api.utils import session_from_mode
 
     try:
-        return Session(mode=RetrievalMode(mode.lower()))
-    except ValueError:
-        valid = ", ".join(m.value for m in RetrievalMode)
-        raise HTTPException(status_code=400, detail=f"Invalid mode '{mode}'. Must be one of: {valid}")
+        return session_from_mode(mode)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 def _register_routes(app: FastAPI):

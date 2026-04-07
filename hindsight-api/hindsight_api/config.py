@@ -191,7 +191,16 @@ Use this tool PROACTIVELY whenever the user shares:
 - Decisions, opinions, or stated preferences
 - Goals, plans, or future intentions
 - Relationships or people mentioned
-- Work context, projects, or responsibilities"""
+- Work context, projects, or responsibilities
+
+Parameters:
+- content: The fact/memory to store (be specific and include relevant details)
+- context: Category for the memory (e.g., 'preferences', 'work', 'hobbies'). Default: 'general'
+- timestamp: ISO datetime when the event occurred (e.g., '2024-01-15T10:30:00Z'). Helps with temporal ordering.
+- document_id: Group related memories under one ID. Re-retaining with the same document_id replaces old memories (upsert).
+- entities: JSON array of entity hints. Format: '[{"text": "Alice", "type": "PERSON"}]'. Types: PERSON, ORG, CONCEPT, LOCATION.
+- metadata: JSON object with key-value pairs. Format: '{"source": "slack", "channel": "#general"}'.
+- mode: Session mode affecting Thalamus filter scoring. Values: precision (default), exploration, analogy, validation."""
 
 DEFAULT_MCP_RECALL_DESCRIPTION = """Search memories to provide personalized, context-aware responses.
 
@@ -199,7 +208,46 @@ Use this tool PROACTIVELY to:
 - Check user's preferences before making suggestions
 - Recall user's history to provide continuity
 - Remember user's goals and context
-- Personalize responses based on past interactions"""
+- Personalize responses based on past interactions
+
+Parameters:
+- query: Natural language search query
+- max_tokens: Maximum tokens in the response (default: 4096)
+- budget: Search depth. 'low' = fast/fewer results, 'mid' = balanced (default), 'high' = deep search with spreading activation.
+- types: Comma-separated fact types to search. Values: world, experience, opinion. Default: all types.
+- mode: Session mode affecting result ranking. Values: precision (default), exploration, analogy, validation.
+- trace: Set to true to get debug information about the search process (scoring, timing, retrieval steps).
+- query_timestamp: ISO datetime for temporal context. Retrieval ranks memories closer to this timestamp higher.
+- include_entities: Include entity observations with results (default: true).
+- include_chunks: Include raw text chunks that memories were extracted from (default: false).
+- tags: Comma-separated tags to filter by."""
+
+DEFAULT_MCP_REFLECT_DESCRIPTION = """Generate thoughtful analysis by synthesizing stored memories with the bank's personality.
+
+WHEN TO USE THIS TOOL:
+Use reflect when you need reasoned analysis, not just fact retrieval. This tool
+thinks through the question using everything the bank knows and its personality traits.
+
+EXAMPLES OF GOOD QUERIES:
+- "What patterns have emerged in how I approach debugging?"
+- "Based on my past decisions, what architectural style do I prefer?"
+- "What might be the best approach for this problem given what you know about me?"
+- "How should I prioritize these tasks based on my goals?"
+
+HOW IT DIFFERS FROM RECALL:
+- recall: Returns raw facts matching your search (fast lookup)
+- reflect: Reasons across memories to form a synthesized answer (deeper analysis)
+
+Use recall for "what did I say about X?" and reflect for "what should I do about X?"
+
+Parameters:
+- query: The question or topic to reflect on
+- context: Optional context about why this reflection is needed
+- budget: Search depth. 'low' = quick opinion (default), 'mid' = moderate analysis, 'high' = deep synthesis.
+- max_tokens: Maximum tokens in the response (default: 4096)
+- mode: Session mode. 'analogy' finds unexpected cross-domain connections. 'exploration' broadens associations.
+- response_schema: JSON Schema string for structured output. The response will include a 'structured_output' field. Useful for agents that need predictable response formats.
+- include_facts: Include the facts the answer is based on (default: false). Useful for transparency and verification."""
 
 # Default embedding dimension (used by initial migration, adjusted at runtime)
 EMBEDDING_DIMENSION = DEFAULT_EMBEDDING_DIMENSION
