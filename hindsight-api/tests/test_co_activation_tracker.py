@@ -294,22 +294,25 @@ class TestReset:
 
 
 class TestWorkingContextIntegration:
-    def test_working_context_has_tracker(self) -> None:
-        from hindsight_api.engine.session.working_context import WorkingContext
+    # Epic 18 S1: co_activation_tracker moved from WorkingContext → SessionCache.
+    # Tests now verify SessionCache carries the tracker (not WorkingContext).
 
-        wc = WorkingContext(session_id="test-session")
-        assert isinstance(wc.co_activation_tracker, CoActivationTracker)
+    def test_working_context_has_tracker(self) -> None:
+        from hindsight_api.engine.session.session_cache import SessionCache
+
+        sc = SessionCache(session_id="test-session")
+        assert isinstance(sc.co_activation_tracker, CoActivationTracker)
 
     def test_tracker_uses_default_threshold(self) -> None:
-        from hindsight_api.engine.session.working_context import WorkingContext
+        from hindsight_api.engine.session.session_cache import SessionCache
 
-        wc = WorkingContext(session_id="test-session")
-        assert wc.co_activation_tracker.threshold == DEFAULT_CO_ACTIVATION_THRESHOLD
+        sc = SessionCache(session_id="test-session")
+        assert sc.co_activation_tracker.threshold == DEFAULT_CO_ACTIVATION_THRESHOLD
 
     def test_tracker_isolated_per_instance(self) -> None:
-        from hindsight_api.engine.session.working_context import WorkingContext
+        from hindsight_api.engine.session.session_cache import SessionCache
 
-        wc1 = WorkingContext(session_id="s1")
-        wc2 = WorkingContext(session_id="s2")
-        wc1.co_activation_tracker.track_recall(["a", "b"])
-        assert wc2.co_activation_tracker._counter == {}
+        sc1 = SessionCache(session_id="s1")
+        sc2 = SessionCache(session_id="s2")
+        sc1.co_activation_tracker.track_recall(["a", "b"])
+        assert sc2.co_activation_tracker._counter == {}

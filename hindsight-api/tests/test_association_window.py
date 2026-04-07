@@ -340,25 +340,28 @@ class TestReset:
 
 
 class TestWorkingContextIntegration:
-    def test_working_context_has_association_window(self) -> None:
-        from hindsight_api.engine.session.working_context import WorkingContext
+    # Epic 18 S1: association_window moved from WorkingContext → SessionCache.
+    # Tests now verify SessionCache carries the window (not WorkingContext).
 
-        wc = WorkingContext(session_id="test")
-        assert isinstance(wc.association_window, AssociationWindow)
+    def test_working_context_has_association_window(self) -> None:
+        from hindsight_api.engine.session.session_cache import SessionCache
+
+        sc = SessionCache(session_id="test")
+        assert isinstance(sc.association_window, AssociationWindow)
 
     def test_window_isolated_per_instance(self) -> None:
-        from hindsight_api.engine.session.working_context import WorkingContext
+        from hindsight_api.engine.session.session_cache import SessionCache
 
-        wc1 = WorkingContext(session_id="s1")
-        wc2 = WorkingContext(session_id="s2")
-        wc1.association_window._pair_counts[("a", "b")] = 1
-        assert wc2.association_window._pair_counts == {}
+        sc1 = SessionCache(session_id="s1")
+        sc2 = SessionCache(session_id="s2")
+        sc1.association_window._pair_counts[("a", "b")] = 1
+        assert sc2.association_window._pair_counts == {}
 
     def test_uses_default_window_minutes(self) -> None:
-        from hindsight_api.engine.session.working_context import WorkingContext
+        from hindsight_api.engine.session.session_cache import SessionCache
 
-        wc = WorkingContext(session_id="test")
-        assert wc.association_window.window_minutes == DEFAULT_WINDOW_MINUTES
+        sc = SessionCache(session_id="test")
+        assert sc.association_window.window_minutes == DEFAULT_WINDOW_MINUTES
 
 
 # ---------------------------------------------------------------------------
