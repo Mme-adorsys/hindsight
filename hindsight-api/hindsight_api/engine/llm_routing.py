@@ -105,6 +105,11 @@ TASK_TIER_MAPPING: Final[dict[str, ModelTier]] = {
     # Conflict resolution (future): detect and resolve contradictions between Engrams.
     # Requires reasoning over multiple facts → LARGE.
     "retain.conflict_resolution": ModelTier.LARGE,
+    # R0 Sequence Analysis (Epic 15): budget-dependent tier per input item.
+    # Low=atomic facts, Mid=+action/effect/exp/outcome, High=+implicit causalities.
+    "retain.sequence_analysis_low": ModelTier.SMALL,
+    "retain.sequence_analysis": ModelTier.MEDIUM,
+    "retain.sequence_analysis_high": ModelTier.LARGE,
     # --- Reflect pipeline ---
     # Think / answer construction: multi-hop reasoning over retrieved facts.
     # Deepest reasoning step in the system → LARGE.

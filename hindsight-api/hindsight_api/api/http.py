@@ -435,6 +435,10 @@ class RetainRequest(BaseModel):
         default=None,
         description="Session mode: precision, exploration, analogy, or validation (default: precision)",
     )
+    budget: Budget = Field(
+        default=Budget.MID,
+        description="R0 extraction depth: low=facts only, mid=+action/effect/exp/outcome, high=+implicit (default: mid)",
+    )
 
 
 class RetainResponse(BaseModel):
@@ -2288,6 +2292,7 @@ def _register_routes(app: FastAPI):
                         session=retain_session,
                         request_context=request_context,
                         return_usage=True,
+                        budget=request.budget,
                     )
 
                 return RetainResponse.model_validate(

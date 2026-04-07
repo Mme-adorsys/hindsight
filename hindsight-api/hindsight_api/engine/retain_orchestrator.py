@@ -111,6 +111,7 @@ class RetainOrchestrator:
         fact_type_override: str | None = None,
         confidence_score: float | None = None,
         return_usage: bool = False,
+        budget=None,
     ):
         """
         Store multiple content items as memory units in ONE batch operation.
@@ -257,6 +258,7 @@ class RetainOrchestrator:
                     fact_type_override=fact_type_override,
                     confidence_score=confidence_score,
                     session=session,
+                    budget=budget,
                 )
                 all_results.extend(sub_results)
                 total_usage = total_usage + sub_usage
@@ -275,6 +277,7 @@ class RetainOrchestrator:
                 fact_type_override=fact_type_override,
                 confidence_score=confidence_score,
                 session=session,
+                budget=budget,
             )
 
         # Restore full result shape after Thalamus filtering
@@ -321,6 +324,7 @@ class RetainOrchestrator:
         fact_type_override: str | None = None,
         confidence_score: float | None = None,
         session: "Session | None" = None,
+        budget=None,
     ) -> tuple[list[list[str]], "TokenUsage"]:
         """Sub-batch worker: backpressure-protected, no chunking logic."""
         async with self._ctx.put_semaphore:
@@ -342,6 +346,7 @@ class RetainOrchestrator:
                 fact_type_override=fact_type_override,
                 confidence_score=confidence_score,
                 session=session,
+                budget=budget,
             )
 
     async def _find_duplicate_facts_batch(

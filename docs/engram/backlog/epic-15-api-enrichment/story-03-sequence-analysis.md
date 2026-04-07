@@ -34,10 +34,10 @@ Die Extraktionstiefe skaliert mit dem Budget. R0 wird übersprungen wenn der Cal
 
 ## Tasks
 
-- [ ] **T1 — StructuredUnit Dataclass:** Enum `UnitType` (FACT, ACTION_EFFECT, EXPERIENCE). Dataclass `StructuredUnit` mit: content, unit_type, context, expectation?, outcome?, related_unit_ids?, confidence. Wird von R0 produziert.
-- [ ] **T2 — R0 Low Budget:** LLM-Prompt (SMALL Tier): "Extrahiere atomare Fakten aus folgendem Text." Output: Liste von StructuredUnit(FACT). Kein Reasoning über Zusammenhänge.
-- [ ] **T3 — R0 Mid Budget:** LLM-Prompt (MEDIUM Tier): "Extrahiere Fakten, identifiziere Action→Effect Ketten, und erkenne wo Erwartungen und tatsächliche Outcomes genannt werden." Output: Mix aus FACT, ACTION_EFFECT, EXPERIENCE Units.
-- [ ] **T4 — R0 High Budget:** LLM-Prompt (LARGE Tier): Wie Mid, zusätzlich: "Identifiziere implizite Zusammenhänge, unausgesprochene Erwartungen, und verborgene Kausalitäten." Output: Wie Mid, mit höherer Abdeckung und Confidence.
-- [ ] **T5 — Skip-Logik:** In Orchestrator: wenn MemoryItem.expectation oder MemoryItem.outcome gesetzt → R0 überspringen, Item direkt als StructuredUnit(EXPERIENCE) oder StructuredUnit(FACT) weiterleiten.
-- [ ] **T6 — Orchestrator Integration:** R0 vor R1 einbauen. R0 Output (Liste von StructuredUnits) wird in RetainContentDicts konvertiert und an R1 übergeben. Bestehender Flow bleibt für Items ohne R0 unverändert.
-- [ ] **T7 — Tests:** Unit-Tests pro Budget-Stufe (mocked LLM). Skip-Logik Test. Orchestrator-Integration Test (R0 → R1 Flow). Token Usage Tracking.
+- [x] **T1 — StructuredUnit Dataclass:** Enum `UnitType` (FACT, ACTION_EFFECT, EXPERIENCE). Dataclass `StructuredUnit` mit: content, unit_type, context, expectation?, outcome?, related_unit_ids?, confidence. Wird von R0 produziert.
+- [x] **T2 — R0 Low Budget:** LLM-Prompt (SMALL Tier): "Extrahiere atomare Fakten aus folgendem Text." Output: Liste von StructuredUnit(FACT). Kein Reasoning über Zusammenhänge.
+- [x] **T3 — R0 Mid Budget:** LLM-Prompt (MEDIUM Tier): "Extrahiere Fakten, identifiziere Action→Effect Ketten, und erkenne wo Erwartungen und tatsächliche Outcomes genannt werden." Output: Mix aus FACT, ACTION_EFFECT, EXPERIENCE Units.
+- [x] **T4 — R0 High Budget:** LLM-Prompt (LARGE Tier): Wie Mid, zusätzlich: "Identifiziere implizite Zusammenhänge, unausgesprochene Erwartungen, und verborgene Kausalitäten." Output: Wie Mid, mit höherer Abdeckung und Confidence.
+- [x] **T5 — Skip-Logik:** In Orchestrator: wenn MemoryItem.expectation oder MemoryItem.outcome gesetzt → R0 überspringen, Item direkt als StructuredUnit(EXPERIENCE) oder StructuredUnit(FACT) weiterleiten.
+- [x] **T6 — Orchestrator Integration:** R0 vor R1 einbauen. R0 Output (Liste von StructuredUnits) wird in RetainContentDicts konvertiert und an R1 übergeben. Bestehender Flow bleibt für Items ohne R0 unverändert.
+- [x] **T7 — Tests:** Unit-Tests pro Budget-Stufe (mocked LLM). Skip-Logik Test. Orchestrator-Integration Test (R0 → R1 Flow). Token Usage Tracking.

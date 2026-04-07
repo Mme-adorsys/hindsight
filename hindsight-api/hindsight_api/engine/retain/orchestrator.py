@@ -52,6 +52,7 @@ async def retain_batch(
     confidence_score: float | None = None,
     session=None,
     neo4j_client=None,
+    budget=None,
 ) -> tuple[list[list[str]], TokenUsage]:
     """
     Process a batch of content through the retain pipeline.
@@ -88,7 +89,50 @@ async def retain_batch(
     profile = await bank_utils.get_bank_profile(pool, bank_id)
     agent_name = profile["name"]
 
-    # Convert dicts to RetainContent objects
+    # Step R0: Sequence Analysis — decompose rich content into structured units (Epic 15)
+    # Runs BEFORE the RetainContent conversion so contents_dicts and contents stay in sync.
+    # T5 skip-logic: items with explicit expectation or outcome are passed through as-is.
+    if budget is not None:
+        from ..utils import Budget as _Budget
+        from .sequence_analysis import analyze_sequence, units_to_content_dicts
+
+        _budget_to_subtask = {
+            _Budget.LOW: "sequence_analysis_low",
+            _Budget.MID: "sequence_analysis",
+            _Budget.HIGH: "sequence_analysis_high",
+        }
+        _subtask = _budget_to_subtask.get(budget, "sequence_analysis")
+        _r0_llm = llm_registry.get_llm("retain", _subtask)
+
+        r0_start = time.time()
+        original_count = len(contents_dicts)
+        expanded: list[RetainContentDict] = []
+        r0_total_units = 0
+        r0_usage = TokenUsage()
+
+        for content_dict in contents_dicts:
+            if content_dict.get("expectation") or content_dict.get("outcome"):
+                # Already structured — pass through as-is
+                expanded.append(content_dict)
+            else:
+                units, unit_usage = await analyze_sequence(
+                    content=content_dict.get("content", ""),
+                    budget=budget,
+                    llm=_r0_llm,
+                )
+                r0_usage = r0_usage + unit_usage
+                r0_total_units += len(units)
+                new_dicts = units_to_content_dicts(units, content_dict)
+                expanded.extend(new_dicts)
+
+        contents_dicts = expanded
+        log_buffer.append(
+            f"[R0] Sequence Analysis: {r0_total_units} units from {original_count} items "
+            f"(budget={budget.value if hasattr(budget, 'value') else budget}) "
+            f"in {time.time() - r0_start:.3f}s"
+        )
+
+    # Convert dicts to RetainContent objects (after R0 expansion)
     contents = []
     for item in contents_dicts:
         content = RetainContent(

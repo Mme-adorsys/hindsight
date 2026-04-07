@@ -436,6 +436,7 @@ class MemoryEngine(MemoryEngineInterface):
         fact_type_override=None,
         confidence_score=None,
         return_usage=False,
+        budget=None,
     ):
         return await self._retain.retain_batch_async(
             bank_id,
@@ -446,6 +447,7 @@ class MemoryEngine(MemoryEngineInterface):
             fact_type_override=fact_type_override,
             confidence_score=confidence_score,
             return_usage=return_usage,
+            budget=budget,
         )
 
     async def _retain_batch_async_internal(
