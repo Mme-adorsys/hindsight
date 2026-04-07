@@ -29,8 +29,8 @@ Der bisherige Recall-Endpunkt nutzt: query, types, budget, max_tokens, trace, mo
 
 ## Tasks
 
-- [ ] **T1 — RecallRequest erweitern:** `question: str | None = None`, `expectation: str | None = None`, `tags: list[str] | None = None`. Validator: wenn sowohl query als auch question gesetzt → question hat Vorrang. Mindestens eines muss gesetzt sein.
-- [ ] **T2 — Tag-Filter Logik:** In der Retrieval Pipeline (engram_dictionary.filter_entries oder Qdrant-Query) Tags als AND-Filter implementieren. PostgreSQL: `tags @> ARRAY[...]`. Qdrant: payload filter mit `must` conditions.
-- [ ] **T3 — Expectation Durchreichen:** Expectation in den Retrieval-Scoring-Pfad einbauen. Wird an Thalamus-Score-Berechnung bei Retrieval übergeben (Epic 16 nutzt das).
-- [ ] **T4 — RecallResult erweitern:** tags, expectation, outcome aus dem Engram Dictionary in die Response aufnehmen. Nur befüllt wenn im Engram vorhanden.
-- [ ] **T5 — Tests:** Unit-Tests für question/query Alias-Logik. Tag-Filter Tests (AND, leere Tags, nicht-existierende Tags). Backward-Compatibility-Test. Expectation-Durchreichen verifizieren.
+- [x] **T1 — RecallRequest erweitern:** `question: str | None = None`, `expectation: str | None = None`, `tags: list[str] | None = None`. Validator: wenn sowohl query als auch question gesetzt → question hat Vorrang. Mindestens eines muss gesetzt sein.
+- [x] **T2 — Tag-Filter Logik:** In der Retrieval Pipeline (engram_dictionary.filter_entries oder Qdrant-Query) Tags als AND-Filter implementieren. PostgreSQL: `tags @> ARRAY[...]`. Qdrant: payload filter mit `must` conditions.
+- [x] **T3 — Expectation Durchreichen:** Expectation in den Retrieval-Scoring-Pfad einbauen. Wird an Thalamus-Score-Berechnung bei Retrieval übergeben (Epic 16 nutzt das).
+- [x] **T4 — RecallResult erweitern:** tags, expectation, outcome aus dem Engram Dictionary in die Response aufnehmen. Nur befüllt wenn im Engram vorhanden.
+- [x] **T5 — Tests:** Unit-Tests für question/query Alias-Logik. Tag-Filter Tests (AND, leere Tags, nicht-existierende Tags). Backward-Compatibility-Test. Expectation-Durchreichen verifizieren.

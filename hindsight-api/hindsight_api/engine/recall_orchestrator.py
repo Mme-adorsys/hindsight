@@ -113,6 +113,7 @@ class RecallOrchestrator:
         request_context: "RequestContext",
         tags: list[str] | None = None,
         shared_bank_id: str | None = None,
+        expectation: str | None = None,
     ) -> RecallResultModel:
         """
         Recall memories using 4-way parallel retrieval with optional Engram tag filtering.

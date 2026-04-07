@@ -487,6 +487,7 @@ class MemoryEngine(MemoryEngineInterface):
         request_context,
         tags=None,
         shared_bank_id=None,
+        expectation=None,
     ):
         return await self._recall.recall_async(
             bank_id,
@@ -504,6 +505,7 @@ class MemoryEngine(MemoryEngineInterface):
             request_context=request_context,
             tags=tags,
             shared_bank_id=shared_bank_id,
+            expectation=expectation,
         )
 
     def _filter_by_token_budget(self, results, max_tokens):

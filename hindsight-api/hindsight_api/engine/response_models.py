@@ -112,6 +112,9 @@ class MemoryFact(BaseModel):
     chunk_id: str | None = Field(
         None, description="ID of the chunk this fact was extracted from (format: bank_id_document_id_chunk_index)"
     )
+    tags: list[str] | None = Field(None, description="Engram tags (user-supplied + LLM-extracted)")
+    expectation: str | None = Field(None, description="What the caller expected when this Engram was retained")
+    outcome: str | None = Field(None, description="What actually happened (stored at retain time)")
 
 
 class ChunkInfo(BaseModel):

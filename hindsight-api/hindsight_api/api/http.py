@@ -40,7 +40,7 @@ def _parse_metadata(metadata: Any) -> dict[str, Any]:
     return {}
 
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from hindsight_api import MemoryEngine
 from hindsight_api.engine.db_utils import acquire_with_retry
@@ -83,18 +83,35 @@ class RecallRequest(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "query": "What did Alice say about machine learning?",
+                "question": "What did Alice say about machine learning?",
                 "types": ["world", "experience"],
                 "budget": "mid",
                 "max_tokens": 4096,
                 "trace": True,
                 "query_timestamp": "2023-05-30T23:40:00",
                 "include": {"entities": {"max_tokens": 500}},
+                "expectation": "Alice was enthusiastic about transformers",
+                "tags": ["ml", "alice"],
             }
         }
     )
 
-    query: str
+    query: str | None = Field(
+        default=None,
+        description="Recall query (alias for question — kept for backward compatibility)",
+    )
+    question: str | None = Field(
+        default=None,
+        description="Primary recall query. Takes precedence over query when both are provided.",
+    )
+    expectation: str | None = Field(
+        default=None,
+        description="What the caller expects to find. Used for Surprise-Scoring at retrieval time (Epic 16).",
+    )
+    tags: list[str] | None = Field(
+        default=None,
+        description="Tag filter — only return Engrams that have ALL specified tags (AND-logic).",
+    )
     types: list[str] | None = Field(
         default=None, description="List of fact types to recall (defaults to all if not specified)"
     )
@@ -112,6 +129,16 @@ class RecallRequest(BaseModel):
         default=None,
         description="Session mode: precision, exploration, analogy, or validation (default: precision)",
     )
+
+    @model_validator(mode="after")
+    def resolve_query(self) -> "RecallRequest":
+        """Ensure at least one of question/query is set. question takes precedence."""
+        effective = self.question or self.query
+        if not effective:
+            raise ValueError("At least one of 'question' or 'query' must be provided.")
+        # Normalize: query always holds the effective text for downstream use
+        self.query = effective
+        return self
 
 
 class RecallResult(BaseModel):
@@ -147,6 +174,9 @@ class RecallResult(BaseModel):
     document_id: str | None = None  # Document this memory belongs to
     metadata: dict[str, str] | None = None  # User-defined metadata
     chunk_id: str | None = None  # Chunk this fact was extracted from
+    tags: list[str] | None = None  # Engram tags (user-supplied + LLM-extracted)
+    expectation: str | None = None  # What the caller expected when this Engram was retained
+    outcome: str | None = None  # What actually happened (from retain time)
 
 
 class EntityObservationResponse(BaseModel):
@@ -1387,6 +1417,8 @@ def _register_routes(app: FastAPI):
                     max_chunk_tokens=max_chunk_tokens,
                     session=recall_session,
                     request_context=request_context,
+                    tags=request.tags,
+                    expectation=request.expectation,
                 )
 
             # Convert core MemoryFact objects to API RecallResult objects (excluding internal metrics)
@@ -1402,6 +1434,9 @@ def _register_routes(app: FastAPI):
                     mentioned_at=fact.mentioned_at,
                     document_id=fact.document_id,
                     chunk_id=fact.chunk_id,
+                    tags=getattr(fact, "tags", None),
+                    expectation=getattr(fact, "expectation", None),
+                    outcome=getattr(fact, "outcome", None),
                 )
                 for fact in core_result.results
             ]
