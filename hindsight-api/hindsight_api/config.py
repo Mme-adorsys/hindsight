@@ -200,7 +200,8 @@ Parameters:
 - document_id: Group related memories under one ID. Re-retaining with the same document_id replaces old memories (upsert).
 - entities: JSON array of entity hints. Format: '[{"text": "Alice", "type": "PERSON"}]'. Types: PERSON, ORG, CONCEPT, LOCATION.
 - metadata: JSON object with key-value pairs. Format: '{"source": "slack", "channel": "#general"}'.
-- mode: Session mode affecting Thalamus filter scoring. Values: precision (default), exploration, analogy, validation."""
+- mode: Session mode affecting Thalamus filter scoring. Values: precision (default), exploration, analogy, validation.
+  Note: When using async_processing=True, the mode parameter is not applied (async operations use default precision mode)."""
 
 DEFAULT_MCP_RECALL_DESCRIPTION = """Search memories to provide personalized, context-aware responses.
 

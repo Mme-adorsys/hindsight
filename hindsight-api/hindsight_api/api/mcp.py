@@ -65,7 +65,7 @@ def create_mcp_server(memory: MemoryEngine) -> FastMCP:
         mode: str | None = None,
         async_processing: bool = True,
         bank_id: str | None = None,
-    ) -> str:
+    ) -> dict:
         """
         Store important information to long-term memory.
 
@@ -86,13 +86,14 @@ def create_mcp_server(memory: MemoryEngine) -> FastMCP:
             entities: JSON array of entity hints. Format: '[{"text": "Alice", "type": "PERSON"}]'. Types: PERSON, ORG, CONCEPT, LOCATION.
             metadata: JSON object with key-value pairs. Format: '{"source": "slack", "channel": "#general"}'.
             mode: Session mode affecting Thalamus filter scoring. Values: precision (default), exploration, analogy, validation.
+                  Note: async_processing=True does not apply the mode parameter. Use async_processing=False if mode is important.
             async_processing: If True, queue for background processing and return immediately. If False, wait for completion. Default: True
             bank_id: Optional bank to store in (defaults to session bank). Use for cross-bank operations.
         """
         try:
             target_bank = bank_id or get_current_bank_id()
             if target_bank is None:
-                return "Error: No bank_id configured"
+                return {"status": "error", "message": "No bank_id configured"}
 
             content_dict: dict = {"content": content, "context": context}
             if timestamp:
@@ -113,7 +114,7 @@ def create_mcp_server(memory: MemoryEngine) -> FastMCP:
             try:
                 session = session_from_mode(mode)
             except ValueError as e:
-                return f"Error: {e}"
+                return {"status": "error", "message": str(e)}
 
             if async_processing:
                 result = await memory.submit_async_retain(
@@ -121,7 +122,11 @@ def create_mcp_server(memory: MemoryEngine) -> FastMCP:
                     contents=[content_dict],
                     request_context=RequestContext(),
                 )
-                return f"Memory queued for background processing (operation_id: {result.get('operation_id', 'N/A')})"
+                return {
+                    "status": "accepted",
+                    "operation_id": result.get("operation_id", "N/A"),
+                    "message": "Memory queued for background processing",
+                }
             else:
                 await memory.retain_batch_async(
                     bank_id=target_bank,
@@ -129,10 +134,10 @@ def create_mcp_server(memory: MemoryEngine) -> FastMCP:
                     session=session,
                     request_context=RequestContext(),
                 )
-                return f"Memory stored successfully in bank '{target_bank}'"
+                return {"status": "success", "bank_id": target_bank, "message": "Memory stored successfully"}
         except Exception as e:
             logger.error(f"Error storing memory: {e}", exc_info=True)
-            return f"Error: {str(e)}"
+            return {"status": "error", "message": str(e)}
 
     @mcp.tool()
     async def recall(
@@ -147,7 +152,7 @@ def create_mcp_server(memory: MemoryEngine) -> FastMCP:
         include_chunks: bool = False,
         tags: str | None = None,
         bank_id: str | None = None,
-    ) -> str:
+    ) -> dict:
         """
         Search memories to provide personalized, context-aware responses.
 
@@ -173,7 +178,7 @@ def create_mcp_server(memory: MemoryEngine) -> FastMCP:
         try:
             target_bank = bank_id or get_current_bank_id()
             if target_bank is None:
-                return "Error: No bank_id configured"
+                return {"error": "No bank_id configured", "results": []}
 
             from hindsight_api.engine.memory_engine import Budget
 
@@ -187,7 +192,7 @@ def create_mcp_server(memory: MemoryEngine) -> FastMCP:
             try:
                 session = session_from_mode(mode)
             except ValueError as e:
-                return f"Error: {e}"
+                return {"error": str(e), "results": []}
 
             recall_result = await memory.recall_async(
                 bank_id=target_bank,
@@ -204,10 +209,10 @@ def create_mcp_server(memory: MemoryEngine) -> FastMCP:
                 request_context=RequestContext(),
             )
 
-            return recall_result.model_dump_json(indent=2)
+            return recall_result.model_dump()
         except Exception as e:
             logger.error(f"Error searching: {e}", exc_info=True)
-            return f'{{"error": "{e}", "results": []}}'
+            return {"error": str(e), "results": []}
 
     @mcp.tool()
     async def reflect(
@@ -219,7 +224,7 @@ def create_mcp_server(memory: MemoryEngine) -> FastMCP:
         response_schema: str | None = None,
         include_facts: bool = False,
         bank_id: str | None = None,
-    ) -> str:
+    ) -> dict:
         """
         Generate thoughtful analysis by synthesizing stored memories with the bank's personality.
 
@@ -252,7 +257,7 @@ def create_mcp_server(memory: MemoryEngine) -> FastMCP:
         try:
             target_bank = bank_id or get_current_bank_id()
             if target_bank is None:
-                return "Error: No bank_id configured"
+                return {"error": "No bank_id configured", "text": ""}
 
             from hindsight_api.engine.memory_engine import Budget
 
@@ -262,14 +267,14 @@ def create_mcp_server(memory: MemoryEngine) -> FastMCP:
             try:
                 session = session_from_mode(mode)
             except ValueError as e:
-                return f"Error: {e}"
+                return {"error": str(e), "text": ""}
 
             parsed_schema: dict | None = None
             if response_schema:
                 try:
                     parsed_schema = parse_json_param(response_schema, "response_schema")
                 except ValueError as e:
-                    return f"Error: {e}"
+                    return {"error": str(e), "text": ""}
 
             reflect_result = await memory.reflect_async(
                 bank_id=target_bank,
@@ -285,13 +290,13 @@ def create_mcp_server(memory: MemoryEngine) -> FastMCP:
             result_dict = reflect_result.model_dump()
             if not include_facts:
                 result_dict.pop("based_on", None)
-            return json.dumps(result_dict, indent=2, default=str)
+            return result_dict
         except Exception as e:
             logger.error(f"Error reflecting: {e}", exc_info=True)
-            return f'{{"error": "{e}", "text": ""}}'
+            return {"error": str(e), "text": ""}
 
     @mcp.tool()
-    async def list_banks() -> str:
+    async def list_banks() -> dict:
         """
         List all available memory banks.
 
@@ -303,13 +308,13 @@ def create_mcp_server(memory: MemoryEngine) -> FastMCP:
         """
         try:
             banks = await memory.list_banks(request_context=RequestContext())
-            return json.dumps({"banks": banks}, indent=2)
+            return {"banks": banks}
         except Exception as e:
             logger.error(f"Error listing banks: {e}", exc_info=True)
-            return f'{{"error": "{e}", "banks": []}}'
+            return {"error": str(e), "banks": []}
 
     @mcp.tool()
-    async def create_bank(bank_id: str, name: str | None = None, background: str | None = None) -> str:
+    async def create_bank(bank_id: str, name: str | None = None, background: str | None = None) -> dict:
         """
         Create a new memory bank or get an existing one.
 
@@ -339,10 +344,10 @@ def create_mcp_server(memory: MemoryEngine) -> FastMCP:
             # Serialize disposition if it's a Pydantic model
             if "disposition" in profile and hasattr(profile["disposition"], "model_dump"):
                 profile["disposition"] = profile["disposition"].model_dump()
-            return json.dumps(profile, indent=2)
+            return profile
         except Exception as e:
             logger.error(f"Error creating bank: {e}", exc_info=True)
-            return f'{{"error": "{e}"}}'
+            return {"error": str(e)}
 
     return mcp
 
