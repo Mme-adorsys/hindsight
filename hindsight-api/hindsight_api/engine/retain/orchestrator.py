@@ -553,6 +553,34 @@ async def retain_batch(
                     f"[12] Neo4j dual-write: {len(_neo4j_links)} links, {len(_schema_links)} schema links"
                 )
 
+                # Step 12.5: Experience links — CAUSAL (ACTION_EFFECT) + PREDICTION_ERROR (EXPERIENCE)
+                # Only runs when R0 was active (budget is set) and pair-key markers are present.
+                from .experience_links import build_causal_links as _build_causal_links
+                from .experience_links import build_prediction_error_links as _build_prediction_error_links
+
+                # Build content_dict_index → first retained unit_id mapping
+                _content_to_uid: dict[int, str] = {}
+                for _pf, _ef in zip(processed_facts, extracted_facts):
+                    _uid = fact_id_map.get(id(_pf))
+                    if _uid and _ef.content_index not in _content_to_uid:
+                        _content_to_uid[_ef.content_index] = _uid
+
+                _aligned_eids: list[str | None] = [_content_to_uid.get(i) for i in range(len(contents_dicts))]
+
+                _causal_links = _build_causal_links(contents_dicts, _aligned_eids)
+
+                async def _embed_texts(texts: list[str]) -> list[list[float]]:
+                    return await embedding_processing.generate_embeddings_batch(embeddings_model, texts)
+
+                _pe_links = await _build_prediction_error_links(contents_dicts, _aligned_eids, _embed_texts)
+
+                _experience_links = _causal_links + _pe_links
+                if _experience_links:
+                    await _write_links_to_neo4j(neo4j_client, _experience_links)
+                    log_buffer.append(
+                        f"[12.5] Experience links: {len(_causal_links)} CAUSAL, {len(_pe_links)} PREDICTION_ERROR"
+                    )
+
             # Regenerate observations - sync (in transaction) or async (background task)
             config = get_config()
             if config.retain_observations_async:

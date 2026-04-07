@@ -229,6 +229,13 @@ def units_to_content_dicts(
     Convert StructuredUnits to RetainContentDict entries, inheriting metadata
     from the source content_dict (context, event_date, metadata, tags, etc.).
 
+    ACTION_EFFECT and EXPERIENCE units produce TWO dicts each (split into paired
+    engrams for CAUSAL / PREDICTION_ERROR link creation after Retain):
+      - ACTION_EFFECT → (action-dict, effect-dict) linked via _action_pair_key/_effect_pair_key
+      - EXPERIENCE    → (expectation-dict, outcome-dict) linked via _experience_pair_key
+
+    Both dicts in a pair carry _confidence for use as link weight.
+
     Args:
         units: Extracted units from R0.
         source_dict: Original RetainContentDict that was analyzed.
@@ -241,12 +248,64 @@ def units_to_content_dicts(
 
     result = []
     for unit in units:
-        d = {**base, "content": unit.content}
-        if unit.context:
-            d["context"] = unit.context
-        if unit.expectation is not None:
-            d["expectation"] = unit.expectation
-        if unit.outcome is not None:
-            d["outcome"] = unit.outcome
-        result.append(d)
+        ctx = unit.context or base.get("context", "")
+
+        if unit.unit_type == UnitType.ACTION_EFFECT and unit.outcome:
+            pair_id = id(unit)
+            action_dict = {
+                **base,
+                "content": unit.content,
+                "_action_pair_key": pair_id,
+                "_confidence": unit.confidence,
+            }
+            if ctx:
+                action_dict["context"] = ctx
+            effect_dict = {
+                **base,
+                "content": unit.outcome,
+                "_effect_pair_key": pair_id,
+                "_confidence": unit.confidence,
+            }
+            if ctx:
+                effect_dict["context"] = ctx
+            result.append(action_dict)
+            result.append(effect_dict)
+
+        elif unit.unit_type == UnitType.EXPERIENCE and unit.expectation and unit.outcome:
+            pair_id = id(unit)
+            # Inherit tags and add "experience" tag to outcome-engram
+            base_tags: list = list(base.get("tags") or [])
+            expectation_dict = {
+                **base,
+                "content": unit.expectation,
+                "_experience_pair_key": pair_id,
+                "_confidence": unit.confidence,
+            }
+            if ctx:
+                expectation_dict["context"] = ctx
+            outcome_dict = {
+                **base,
+                "content": unit.outcome,
+                "tags": base_tags + ["experience"],
+                "expectation": unit.expectation,
+                "outcome": unit.outcome,
+                "_experience_pair_key": pair_id,
+                "_confidence": unit.confidence,
+            }
+            if ctx:
+                outcome_dict["context"] = ctx
+            result.append(expectation_dict)
+            result.append(outcome_dict)
+
+        else:
+            # FACT or incomplete ACTION_EFFECT/EXPERIENCE — single dict, original behaviour
+            d = {**base, "content": unit.content}
+            if ctx:
+                d["context"] = ctx
+            if unit.expectation is not None:
+                d["expectation"] = unit.expectation
+            if unit.outcome is not None:
+                d["outcome"] = unit.outcome
+            result.append(d)
+
     return result

@@ -35,8 +35,8 @@ Experience-Engrams werden über zwei neue Neo4j Link-Types verknüpft:
 
 ## Tasks
 
-- [ ] **T1 — Neo4j Link Types erweitern:** CAUSAL und PREDICTION_ERROR zu VALID_RELATIONSHIP_TYPES hinzufügen. Schema-Constraints und Indexes.
-- [ ] **T2 — Experience-Engram Speicherung:** In Engram Storage: wenn StructuredUnit.unit_type == EXPERIENCE → Content = "Expected: {expectation}. Outcome: {outcome}. Context: {context}". Tag "experience" hinzufügen. Expectation + Outcome als separate Felder in Dictionary.
-- [ ] **T3 — CAUSAL Link Creation:** Neues Modul oder Erweiterung von link_creation.py. Wenn R0 ACTION_EFFECT Units produziert → CAUSAL Link zwischen Action-Engram und Effect-Engram erzeugen. Weight = Confidence aus R0.
-- [ ] **T4 — PREDICTION_ERROR Link Creation:** Wenn Experience-Engram gespeichert wird UND `cosine(embed(expectation), embed(outcome)) < 0.8` (signifikante Divergenz) → PREDICTION_ERROR Link erzeugen. Weight = `1.0 - cosine_similarity` (= prediction_error_magnitude).
-- [ ] **T5 — Tests:** Experience-Engram Speicherung mit korrekten Feldern. CAUSAL Link Direction. PREDICTION_ERROR Link Weight Berechnung. Kein PREDICTION_ERROR Link wenn Expectation ≈ Outcome. Recall-Kompatibilität (Experience-Engrams erscheinen in normalen Recall-Ergebnissen).
+- [x] **T1 — Neo4j Link Types erweitern:** CAUSAL und PREDICTION_ERROR zu VALID_RELATIONSHIP_TYPES hinzufügen. Schema-Constraints und Indexes.
+- [x] **T2 — Experience-Engram Speicherung:** In Engram Storage: wenn StructuredUnit.unit_type == EXPERIENCE → Content = "Expected: {expectation}. Outcome: {outcome}. Context: {context}". Tag "experience" hinzufügen. Expectation + Outcome als separate Felder in Dictionary.
+- [x] **T3 — CAUSAL Link Creation:** Neues Modul oder Erweiterung von link_creation.py. Wenn R0 ACTION_EFFECT Units produziert → CAUSAL Link zwischen Action-Engram und Effect-Engram erzeugen. Weight = Confidence aus R0.
+- [x] **T4 — PREDICTION_ERROR Link Creation:** Wenn Experience-Engram gespeichert wird UND `cosine(embed(expectation), embed(outcome)) < 0.8` (signifikante Divergenz) → PREDICTION_ERROR Link erzeugen. Weight = `1.0 - cosine_similarity` (= prediction_error_magnitude).
+- [x] **T5 — Tests:** Experience-Engram Speicherung mit korrekten Feldern. CAUSAL Link Direction. PREDICTION_ERROR Link Weight Berechnung. Kein PREDICTION_ERROR Link wenn Expectation ≈ Outcome. Recall-Kompatibilität (Experience-Engrams erscheinen in normalen Recall-Ergebnissen).

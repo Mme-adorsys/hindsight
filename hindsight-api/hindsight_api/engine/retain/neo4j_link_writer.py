@@ -29,6 +29,7 @@ _VALID_REL_TYPES = frozenset(
         "TEMPORAL_PROXIMITY",
         "SCHEMA",
         "CONTRADICTION",
+        "PREDICTION_ERROR",
     }
 )
 

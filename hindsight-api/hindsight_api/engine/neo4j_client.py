@@ -2,7 +2,7 @@
 Neo4j client for Engram graph storage and traversal.
 
 Provides async access to Neo4j with session management and retry logic
-analogous to db_utils.py. Manages Engram nodes and all 8 relationship types.
+analogous to db_utils.py. Manages Engram nodes and all 9 relationship types.
 
 Relationship types:
     SEMANTIC          — semantic similarity between Engrams (weight)
@@ -13,6 +13,7 @@ Relationship types:
     TEMPORAL_PROXIMITY — stored close in time (weight, time_delta)
     SCHEMA            — member of schema/abstraction (weight)
     CONTRADICTION     — conflicting content (weight, resolution)
+    PREDICTION_ERROR  — expectation↔outcome divergence (weight = prediction_error_magnitude)
 """
 
 import asyncio
@@ -38,7 +39,7 @@ RETRYABLE_EXCEPTIONS = (
     OSError,
 )
 
-# All 8 relationship types in the Engram graph (concept.md ch. 3 + ch. 14)
+# All 9 relationship types in the Engram graph (concept.md ch. 3 + ch. 14 + ch. 15)
 RELATIONSHIP_TYPES = (
     "SEMANTIC",
     "TEMPORAL",
@@ -48,6 +49,7 @@ RELATIONSHIP_TYPES = (
     "TEMPORAL_PROXIMITY",
     "SCHEMA",
     "CONTRADICTION",
+    "PREDICTION_ERROR",
 )
 
 
