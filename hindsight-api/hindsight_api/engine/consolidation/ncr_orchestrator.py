@@ -27,6 +27,7 @@ import asyncpg
 
 from hindsight_api.engine import engram_dictionary as dict_repo
 from hindsight_api.engine.consolidation.consolidation1 import Consolidation1Service, ConsolidationResult
+from hindsight_api.engine.consolidation.multi_bank_promoter import PromotionResult, promote_batch
 from hindsight_api.engine.consolidation.ncr_decay import DecayProcessor, DecayResult
 from hindsight_api.engine.consolidation.ncr_strengthen import StrengthenProcessor, StrengthenResult
 from hindsight_api.engine.consolidation.schema_processor import SchemaProcessor, SchemaResult
@@ -77,6 +78,7 @@ class NCRReport:
     phase1: DecayResult | None = None
     phase2: StrengthenResult | None = None
     phase3: SchemaResult | None = None
+    promotion: PromotionResult | None = None  # Phase 4: Shared Bank Promotion (Epic 14 B5)
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -122,12 +124,22 @@ class NCROrchestrator:
         decay: DecayProcessor,
         strengthen: StrengthenProcessor,
         schema: SchemaProcessor,
+        shared_bank_id: str | None = None,
+        agent_bank_ids: list[str] | None = None,
+        qdrant_client=None,
+        neo4j_client=None,
     ) -> None:
         self._pool = pool
         self._consolidation = consolidation
         self._decay = decay
         self._strengthen = strengthen
         self._schema = schema
+        # Phase 4: Promotion to Shared Bank (Epic 14 B5)
+        # If shared_bank_id or qdrant_client is None, promotion phase is skipped.
+        self._shared_bank_id = shared_bank_id
+        self._agent_bank_ids = agent_bank_ids or []
+        self._qdrant_client = qdrant_client
+        self._neo4j_client = neo4j_client
 
     async def run(self, bank_id: str) -> NCRReport:
         """
@@ -218,6 +230,27 @@ class NCROrchestrator:
             msg = f"Phase3/Schema failed: {exc}"
             logger.error("[NCR] %s", msg)
             report.errors.append(msg)
+
+        # Phase 4: Shared Bank Promotion (Epic 14 B5)
+        if self._shared_bank_id and self._qdrant_client:
+            try:
+                report.promotion = await promote_batch(
+                    pool=self._pool,
+                    qdrant_client=self._qdrant_client,
+                    neo4j_client=self._neo4j_client,
+                    bank_id=bank_id,
+                    shared_bank_id=self._shared_bank_id,
+                    agent_bank_ids=self._agent_bank_ids,
+                )
+                logger.info(
+                    "[NCR] Phase4/Promotion done: promoted=%d reinforced=%d",
+                    report.promotion.promoted,
+                    report.promotion.reinforced,
+                )
+            except Exception as exc:
+                msg = f"Phase4/Promotion failed: {exc}"
+                logger.error("[NCR] %s", msg)
+                report.errors.append(msg)
 
 
 # ---------------------------------------------------------------------------
