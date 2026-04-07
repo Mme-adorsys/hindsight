@@ -27,6 +27,7 @@ from ..reflect.prediction_error_registry import PredictionErrorRegistry
 from ..response_models import Episode, RetrievalMode, Session
 from .session_cache import SessionCache
 from .working_context import WorkingContext
+from .working_memory import WorkingMemory
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +114,12 @@ class SessionState:
 
     session_cache: SessionCache | None = None
     """Transient cache layer. Created at session start, flushed and discarded at session end."""
+
+    working_memory: WorkingMemory | None = None
+    """Persistent WM snapshot loaded at session start (via create_session_async). None for transient sessions."""
+
+    save_task: asyncio.Task | None = None  # type: ignore[type-arg]
+    """Background asyncio task for periodic WM save. Cancelled at session end."""
 
     episodes: list[Episode] = field(default_factory=list)
     """In-memory episode buffer. Discarded when session ends."""
@@ -239,6 +246,30 @@ class SessionManager:
         state = self._sessions.get(session_id)
         return state.session_cache if state else None
 
+    def initialize_working_memory(self, session_id: UUID, wm: WorkingMemory) -> None:
+        """
+        Store a pre-loaded WorkingMemory into the session state.
+
+        Called by MemoryEngine after create_session() to inject persisted WM.
+        SessionManager stays DB-free — all DB access is done by the caller.
+
+        Args:
+            session_id: Target session.
+            wm: Loaded WorkingMemory for this bank.
+        """
+        state = self._sessions.get(session_id)
+        if state is not None:
+            state.working_memory = wm
+
+    def get_working_memory(self, session_id: UUID) -> WorkingMemory | None:
+        """
+        Return the WorkingMemory for the given session, or None if not found.
+
+        Does not raise — returns None for transient sessions (no WM loaded).
+        """
+        state = self._sessions.get(session_id)
+        return state.working_memory if state else None
+
     async def end_session(self, session_id: UUID) -> list:
         """
         Terminate a session and return flush contents for optional retention.
@@ -259,6 +290,9 @@ class SessionManager:
             KeyError: If session_id is not found.
         """
         state = self._sessions.pop(session_id)
+        # Cancel periodic WM save task before discarding state
+        if state.save_task is not None and not state.save_task.done():
+            state.save_task.cancel()
         flush_items: list = []
         if state.working_context is not None:
             flush_items = state.working_context.flush()

@@ -79,6 +79,9 @@ logger = logging.getLogger(__name__)
 
 _get_tiktoken_encoding()  # eager warmup
 
+# Interval between periodic WorkingMemory saves for persistent sessions (Epic 18)
+_WM_SAVE_INTERVAL_SECONDS = 300  # 5 minutes
+
 
 class MemoryEngine(MemoryEngineInterface):
     """
@@ -372,6 +375,173 @@ class MemoryEngine(MemoryEngineInterface):
 
     def _get_session_manager(self):
         return self._ctx.get_session_manager()
+
+    # ------------------------------------------------------------------
+    # Persistent Session Lifecycle (Epic 18 — Working Memory Persistence)
+    # ------------------------------------------------------------------
+
+    async def create_session_async(
+        self,
+        bank_id: str,
+        mode=None,
+        task_context: str | None = None,
+        expectation: str | None = None,
+    ):
+        """
+        Create a persistent session with WorkingMemory loaded from DB.
+
+        Priming Effect (bio: PFC doesn't reset after tasks): the session starts
+        with warm context — goals, active engrams, confirmed inferences — carried
+        over from the last session for this bank.
+
+        Args:
+            bank_id: Memory bank to load WorkingMemory for.
+            mode: Initial RetrievalMode (default: PRECISION).
+            task_context: Optional task description for the session.
+            expectation: Optional initial expectation for PE Detection.
+
+        Returns:
+            The newly created Session (public API model).
+        """
+        from .response_models import RetrievalMode as _RM
+        from .session.working_memory import WorkingMemory as _WM
+        from .working_memory_repo import WorkingMemoryRepository
+
+        if mode is None:
+            mode = _RM.PRECISION
+
+        sm = self._ctx.get_session_manager()
+        session = await sm.create_session(mode=mode, task_context=task_context, expectation=expectation)
+
+        # Load persisted WorkingMemory from DB
+        pool = await self._ctx.get_pool()
+        wm_repo = WorkingMemoryRepository()
+        async with acquire_with_retry(pool) as conn:
+            wm = await wm_repo.load(conn, bank_id)
+
+        sm.initialize_working_memory(session.session_id, wm)
+
+        # Priming: populate WorkingContext from persisted WM state
+        wc = sm.get_working_context(session.session_id)
+        if wc is not None:
+            wc.goal_stack = list(wm.goal_stack)
+            wc.active_engrams.focus = list(wm.active_engrams.focus)
+            wc.active_engrams.supporting = list(wm.active_engrams.supporting)
+            wc.active_engrams.peripheral = list(wm.active_engrams.peripheral)
+            wc.confirmed_inferences = list(wm.confirmed_inferences)
+
+        # Schedule periodic save (every _WM_SAVE_INTERVAL_SECONDS)
+        save_task = asyncio.create_task(
+            self._periodic_wm_save(session.session_id, bank_id),
+            name=f"wm_save_{session.session_id}",
+        )
+        state = sm._sessions.get(session.session_id)
+        if state is not None:
+            state.save_task = save_task
+
+        logger.debug(
+            "create_session_async: bank_id=%r session_id=%s goals=%d focus=%d",
+            bank_id,
+            session.session_id,
+            len(wm.goal_stack),
+            len(wm.active_engrams.focus),
+        )
+        return session
+
+    async def end_session_async(self, session_id: uuid.UUID, bank_id: str) -> list:
+        """
+        End a persistent session: merge WC → WM, save to DB, flush session.
+
+        Merges the current WorkingContext state back into WorkingMemory,
+        appends the session to the session history, persists to PostgreSQL,
+        then calls end_session() to flush and discard the in-memory state.
+
+        Args:
+            session_id: ID of the session to end.
+            bank_id: Memory bank this session belongs to (for WM save).
+
+        Returns:
+            Flush items from WorkingContext.flush() — pass to retain_batch_async
+            if the caller wants to persist inferences and completed goals.
+        """
+        from .session.working_memory import SessionRef
+        from .working_memory_repo import WorkingMemoryRepository
+
+        sm = self._ctx.get_session_manager()
+        wm = sm.get_working_memory(session_id)
+        wc = sm.get_working_context(session_id)
+
+        if wm is not None and wc is not None:
+            # Merge current WC state into WM snapshot
+            wm.goal_stack = list(wc.goal_stack)
+            wm.active_engrams.focus = list(wc.active_engrams.focus)
+            wm.active_engrams.supporting = list(wc.active_engrams.supporting)
+            wm.active_engrams.peripheral = list(wc.active_engrams.peripheral)
+            wm.confirmed_inferences = list(wc.confirmed_inferences)
+
+            # Record this session in WM history (FIFO, max SESSION_HISTORY_MAX)
+            try:
+                session = sm.get_session(session_id)
+                sr = SessionRef(session_id=str(session_id), started_at=session.started_at)
+                wm.add_session_ref(sr)
+            except KeyError:
+                pass  # Session already removed — skip history entry
+
+            pool = await self._ctx.get_pool()
+            wm_repo = WorkingMemoryRepository()
+            async with acquire_with_retry(pool) as conn:
+                await wm_repo.save(conn, wm)
+
+            logger.debug(
+                "end_session_async: saved WM bank_id=%r session_id=%s goals=%d focus=%d",
+                bank_id,
+                session_id,
+                len(wm.goal_stack),
+                len(wm.active_engrams.focus),
+            )
+
+        return await sm.end_session(session_id)
+
+    async def _periodic_wm_save(self, session_id: uuid.UUID, bank_id: str) -> None:
+        """
+        Background task: snapshot WorkingContext → WorkingMemory every 5 minutes.
+
+        Runs until cancelled (by end_session_async / end_session) or until the
+        session is no longer found in the SessionManager.
+
+        Bio mapping: Slow-wave sleep micro-consolidations — the PFC periodically
+        replays and reinforces its current context representation.
+        """
+        from .working_memory_repo import WorkingMemoryRepository
+
+        while True:
+            try:
+                await asyncio.sleep(_WM_SAVE_INTERVAL_SECONDS)
+            except asyncio.CancelledError:
+                return
+
+            sm = self._ctx.get_session_manager()
+            wm = sm.get_working_memory(session_id)
+            wc = sm.get_working_context(session_id)
+            if wm is None or wc is None:
+                return  # Session ended — stop loop
+
+            wm.goal_stack = list(wc.goal_stack)
+            wm.active_engrams.focus = list(wc.active_engrams.focus)
+            wm.active_engrams.supporting = list(wc.active_engrams.supporting)
+            wm.active_engrams.peripheral = list(wc.active_engrams.peripheral)
+            wm.confirmed_inferences = list(wc.confirmed_inferences)
+
+            try:
+                pool = await self._ctx.get_pool()
+                wm_repo = WorkingMemoryRepository()
+                async with acquire_with_retry(pool) as conn:
+                    await wm_repo.save(conn, wm)
+                logger.debug("_periodic_wm_save: saved bank_id=%r session_id=%s", bank_id, session_id)
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                logger.warning("_periodic_wm_save: error for bank_id=%r: %s", bank_id, exc)
 
     def _resolve_session_config(self, session):
         return self._ctx.resolve_session_config(session)
