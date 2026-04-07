@@ -30,7 +30,7 @@ Schemas sind keine vordefinierten Kategorien — sie entstehen emergent aus den 
 
 ## Stories
 
-1. [Clustering & Birth (R1)](story-01-clustering-birth.md)
-2. [Maturation & Abstraction (R2 + R3)](story-02-maturation-abstraction.md)
-3. [Reinforcement & Competition (R4 + R5)](story-03-reinforcement-competition.md)
-4. [SchemaProcessor Implementation](story-04-schema-processor-impl.md)
+1. [x] [Clustering & Birth (R1)](story-01-clustering-birth.md)
+2. [x] [Maturation & Abstraction (R2 + R3)](story-02-maturation-abstraction.md)
+3. [x] [Reinforcement & Competition (R4 + R5)](story-03-reinforcement-competition.md)
+4. [x] [SchemaProcessor Implementation](story-04-schema-processor-impl.md)

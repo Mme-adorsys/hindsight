@@ -33,16 +33,26 @@ class SchemaResult:
     """Summary of a single NCR Phase 3 (Schema Compression) run.
 
     Attributes:
-        created:     Number of new Schema nodes created.
-        strengthened: Number of existing Schemas strengthened.
-        deleted:     Number of Schemas that died (Competition/Death rule R5).
-        details:     Optional list of per-schema details (Epic 13 populates this).
+        created:         Number of new Schema nodes created (alias: schemas_created).
+        strengthened:    Number of existing Schemas strengthened.
+        deleted:         Number of Schemas that died (alias: schemas_deleted).
+        details:         Optional list of per-schema details.
+        clusters_found:  Number of ClusterCandidate nodes found/created (R1).
+        schemas_matured: Number of ClusterCandidates that reached maturation threshold (R2).
+        schemas_created: Number of new Schema nodes created (R3) — mirrors created.
+        schemas_deleted: Number of Schema nodes deleted (R5) — mirrors deleted.
+        reinforcements:  Number of Schema–Engram links reinforced at Retain time (R4).
     """
 
     created: int = 0
     strengthened: int = 0
     deleted: int = 0
     details: list[Any] = field(default_factory=list)
+    clusters_found: int = 0
+    schemas_matured: int = 0
+    schemas_created: int = 0
+    schemas_deleted: int = 0
+    reinforcements: int = 0
 
 
 # ---------------------------------------------------------------------------

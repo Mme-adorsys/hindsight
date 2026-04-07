@@ -10,15 +10,15 @@ Die SchemaProcessor Interface (Epic 12 Story 04) hat eine NoOp-Implementation. J
 
 ## Akzeptanzkriterien
 
-- [ ] EngamSchemaProcessor implementiert SchemaProcessor Interface
-- [ ] Führt R1 → R2+R3 → R5 sequenziell aus
-- [ ] SchemaResult enthält Details über alle Aktionen
-- [ ] NCR Orchestrator nutzt EngamSchemaProcessor statt NoOp
-- [ ] Fault-tolerant: Fehler in einem Schritt stoppt nicht die anderen
+- [x] EngamSchemaProcessor implementiert SchemaProcessor Interface
+- [x] Führt R1 → R2+R3 → R5 sequenziell aus
+- [x] SchemaResult enthält Details über alle Aktionen
+- [x] NCR Orchestrator nutzt EngamSchemaProcessor statt NoOp
+- [x] Fault-tolerant: Fehler in einem Schritt stoppt nicht die anderen
 
 ## Tasks
 
-- [ ] **T1 — EngramSchemaProcessor:** `engine/consolidation/engram_schema_processor.py`. Implementiert `SchemaProcessor`. Constructor: `(neo4j_client, qdrant_client, engram_repo, llm)`. `async process()`: R1 (Clustering) → R2+R3 (Maturation+Abstraction) → R5 (Competition). Jeder Schritt in try/except.
-- [ ] **T2 — Wiring:** In NCR Orchestrator: `NoOpSchemaProcessor` durch `EngramSchemaProcessor` ersetzen. Dependency Injection über Constructor.
-- [ ] **T3 — SchemaResult Details:** Erweitere SchemaResult: `clusters_found: int`, `schemas_matured: int`, `schemas_created: int`, `schemas_deleted: int`, `reinforcements: int`. Jedes Detail einzeln geloggt.
-- [ ] **T4 — Integration Test:** 10 Engrams in bekannten Cluster-Patterns → 3 NCR-Zyklen laufen → Erwartet: Cluster erkannt (Zyklus 1), gereift (Zyklus 3), Schema erstellt. Schwaches Schema stirbt nach 5 Zyklen ohne Reinforcement.
+- [x] **T1 — EngramSchemaProcessor:** `engine/consolidation/engram_schema_processor.py`. Implementiert `SchemaProcessor`. Constructor: `(neo4j_client, qdrant_client, engram_repo, llm)`. `async process()`: R1 (Clustering) → R2+R3 (Maturation+Abstraction) → R5 (Competition). Jeder Schritt in try/except.
+- [x] **T2 — Wiring:** In NCR Orchestrator: `NoOpSchemaProcessor` durch `EngramSchemaProcessor` ersetzen. Dependency Injection über Constructor.
+- [x] **T3 — SchemaResult Details:** Erweitere SchemaResult: `clusters_found: int`, `schemas_matured: int`, `schemas_created: int`, `schemas_deleted: int`, `reinforcements: int`. Jedes Detail einzeln geloggt.
+- [x] **T4 — Integration Test:** 10 Engrams in bekannten Cluster-Patterns → 3 NCR-Zyklen laufen → Erwartet: Cluster erkannt (Zyklus 1), gereift (Zyklus 3), Schema erstellt. Schwaches Schema stirbt nach 5 Zyklen ohne Reinforcement.

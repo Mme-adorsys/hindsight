@@ -16,10 +16,10 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query
 
 from hindsight_api.config import get_config
 from hindsight_api.engine.consolidation.consolidation1 import Consolidation1Service
+from hindsight_api.engine.consolidation.engram_schema_processor import EngramSchemaProcessor
 from hindsight_api.engine.consolidation.ncr_decay import DecayProcessor
 from hindsight_api.engine.consolidation.ncr_orchestrator import NCROrchestrator, NCRScheduler
 from hindsight_api.engine.consolidation.ncr_strengthen import StrengthenProcessor
-from hindsight_api.engine.consolidation.schema_processor import NoOpSchemaProcessor
 from hindsight_api.engine.engram_storage import EngramStorageService
 from hindsight_api.engine.neo4j_client import Neo4jEngineClient
 from hindsight_api.engine.qdrant_client import QdrantEngineClient
@@ -1023,7 +1023,18 @@ def create_app(
                 _consolidation = Consolidation1Service(pool=memory._pool, storage_service=memory.engram_storage)
                 _decay = DecayProcessor(pool=memory._pool, storage_service=memory.engram_storage, qdrant=qdrant)
                 _strengthen = StrengthenProcessor(pool=memory._pool, storage_service=memory.engram_storage)
-                _schema = NoOpSchemaProcessor()
+                _schema_llm = memory._ctx.llm_registry.get_llm("retain", "schema_abstraction")
+
+                async def _schema_embed_fn(text: str) -> list[float]:
+                    return memory.embeddings.encode([text])[0]
+
+                _schema = EngramSchemaProcessor(
+                    neo4j_client=neo4j,
+                    qdrant_client=qdrant,
+                    pool=memory._pool,
+                    llm=_schema_llm,
+                    embed_fn=_schema_embed_fn,
+                )
                 _orchestrator = NCROrchestrator(
                     pool=memory._pool,
                     consolidation=_consolidation,
