@@ -238,8 +238,8 @@ class ConstructionPipeline:
         """LLM-based inference generation (medium-tier task)."""
         facts_text = "\n".join(f"[{i}] {f.content}" for i, f in enumerate(facts))
         wc_context = ""
-        if working_context and working_context.inference_layer:
-            existing = "; ".join(inf.content for inf in working_context.inference_layer[:3])
+        if working_context and working_context.confirmed_inferences:
+            existing = "; ".join(inf.content for inf in working_context.confirmed_inferences[:3])
             wc_context = f"\nExisting working-context hypotheses: {existing}"
 
         style_instruction = _INFERENCE_STYLE.get(style, _INFERENCE_STYLE["conservative"])
@@ -371,10 +371,11 @@ For each gap specify:
         working_context: WorkingContext,
     ) -> None:
         """
-        Push confirmed inferences (confidence ≥ threshold) to WorkingContext.inference_layer.
+        Push confirmed inferences (confidence ≥ threshold) to WorkingContext.confirmed_inferences.
 
         WorkingContext.Inference is a dataclass distinct from constructive.models.Inference.
-        We bridge the two types here.
+        We bridge the two types here. High-confidence inferences are confirmed immediately
+        and stored in the persistent confirmed_inferences list (not the transient SessionCache).
         """
         from datetime import datetime, timezone
         from uuid import uuid4
@@ -385,8 +386,8 @@ For each gap specify:
             if inf.confidence >= INFERENCE_CONFIRMATION_THRESHOLD:
                 # Enforce FIFO cap: evict oldest inference when layer is full.
                 # Bio mapping: working memory capacity limit — oldest hypotheses decay.
-                if len(working_context.inference_layer) >= INFERENCE_LAYER_MAX:
-                    working_context.inference_layer.pop(0)
+                if len(working_context.confirmed_inferences) >= INFERENCE_LAYER_MAX:
+                    working_context.confirmed_inferences.pop(0)
                 wc_inf = WCInference(
                     id=str(uuid4()),
                     content=inf.content,
@@ -395,9 +396,9 @@ For each gap specify:
                     created_at=datetime.now(tz=timezone.utc),
                     status="confirmed",
                 )
-                working_context.inference_layer.append(wc_inf)
+                working_context.confirmed_inferences.append(wc_inf)
 
         logger.debug(
-            "[CONSTRUCTION] WC update: %d inferences pushed to inference_layer",
+            "[CONSTRUCTION] WC update: %d inferences pushed to confirmed_inferences",
             sum(1 for i in inferences if i.confidence >= INFERENCE_CONFIRMATION_THRESHOLD),
         )

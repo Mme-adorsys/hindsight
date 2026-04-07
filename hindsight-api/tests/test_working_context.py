@@ -247,19 +247,21 @@ class TestInferenceLifecycle:
         inf.status = "rejected"
         assert inf.status == "rejected"
 
-    def test_working_context_holds_inferences(self) -> None:
+    def test_working_context_holds_confirmed_inferences(self) -> None:
+        # WorkingContext.confirmed_inferences holds inferences that survived the session.
+        # Tentative inferences live in SessionCache.pending_inferences (Epic 18 split).
         wc = make_wc()
         inf = Inference(
             id="i1",
-            content="hypothesis",
-            confidence=0.6,
+            content="hypothesis confirmed by evidence",
+            confidence=0.9,
             supporting_engram_ids=["e1"],
             created_at=datetime.now(UTC),
-            status="tentative",
+            status="confirmed",
         )
-        wc.inference_layer.append(inf)
-        assert len(wc.inference_layer) == 1
-        assert wc.inference_layer[0].id == "i1"
+        wc.confirmed_inferences.append(inf)
+        assert len(wc.confirmed_inferences) == 1
+        assert wc.confirmed_inferences[0].id == "i1"
 
 
 # ---------------------------------------------------------------------------
@@ -274,8 +276,7 @@ class TestWorkingContextBasics:
         assert wc.active_engrams.focus == []
         assert wc.active_engrams.supporting == []
         assert wc.active_engrams.peripheral == []
-        assert wc.episodic_buffer == []
-        assert wc.inference_layer == []
+        assert wc.confirmed_inferences == []
 
     def test_push_engram_ref_updates_last_updated(self) -> None:
         wc = make_wc()
@@ -498,7 +499,7 @@ class TestFlush:
 
     def test_flush_confirmed_inference_included(self) -> None:
         wc = make_wc()
-        wc.inference_layer.append(
+        wc.confirmed_inferences.append(
             Inference(
                 id="i1",
                 content="The system will retry on failure",
@@ -514,17 +515,10 @@ class TestFlush:
         assert any("retry on failure" in c for c in contents)
 
     def test_flush_tentative_inference_excluded(self) -> None:
+        # Tentative inferences live in SessionCache.pending_inferences (Epic 18 split).
+        # WorkingContext with empty confirmed_inferences → no "inferred" items in flush.
         wc = make_wc()
-        wc.inference_layer.append(
-            Inference(
-                id="i1",
-                content="Maybe this will happen",
-                confidence=0.4,
-                supporting_engram_ids=[],
-                created_at=datetime.now(UTC),
-                status="tentative",
-            )
-        )
+        assert wc.confirmed_inferences == []
         items = wc.flush()
         assert not any(item.get("context") == "inferred" for item in items)
 
@@ -560,7 +554,7 @@ class TestFlush:
 
     def test_flush_metadata_confidence(self) -> None:
         wc = make_wc()
-        wc.inference_layer.append(
+        wc.confirmed_inferences.append(
             Inference(
                 id="i1",
                 content="Confirmed fact",

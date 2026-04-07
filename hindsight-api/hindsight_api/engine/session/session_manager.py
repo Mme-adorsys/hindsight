@@ -25,6 +25,7 @@ from uuid import UUID
 
 from ..reflect.prediction_error_registry import PredictionErrorRegistry
 from ..response_models import Episode, RetrievalMode, Session
+from .session_cache import SessionCache
 from .working_context import WorkingContext
 
 logger = logging.getLogger(__name__)
@@ -108,7 +109,10 @@ class SessionState:
     """True when the mode was set explicitly by Agent/User — blocks automatic shifts."""
 
     working_context: WorkingContext | None = None
-    """Transient PFC-workspace for this session. Created in create_session(), discarded at end."""
+    """Persistent PFC-workspace for this session. Created in create_session(), flushed at end."""
+
+    session_cache: SessionCache | None = None
+    """Transient cache layer. Created at session start, flushed and discarded at session end."""
 
     episodes: list[Episode] = field(default_factory=list)
     """In-memory episode buffer. Discarded when session ends."""
@@ -192,6 +196,7 @@ class SessionManager:
         state = SessionState(
             session=session,
             working_context=WorkingContext(session_id=str(session.session_id)),
+            session_cache=SessionCache(session_id=str(session.session_id)),
         )
         self._sessions[session.session_id] = state
         logger.debug("Session %s created with mode=%s", session.session_id, mode.value)
@@ -225,14 +230,23 @@ class SessionManager:
         state = self._sessions.get(session_id)
         return state.prediction_error_registry if state else None
 
+    def get_session_cache(self, session_id: UUID) -> SessionCache | None:
+        """
+        Return the SessionCache for the given session, or None if not found.
+
+        Does not raise — callers can safely check for None when session may not exist.
+        """
+        state = self._sessions.get(session_id)
+        return state.session_cache if state else None
+
     async def end_session(self, session_id: UUID) -> list:
         """
         Terminate a session and return flush contents for optional retention.
 
         Calls working_context.flush() to collect confirmed inferences, completed
-        goals, and focus-tier access notes. The caller is responsible for passing
+        goals, and focus-tier access notes. The SessionCache is discarded after
+        the flush items are collected. The caller is responsible for passing
         the returned list to retain_batch_async() if persistence is desired.
-        Working Context and all other transient state are discarded.
 
         Args:
             session_id: ID of the session to end.
@@ -248,10 +262,12 @@ class SessionManager:
         flush_items: list = []
         if state.working_context is not None:
             flush_items = state.working_context.flush()
+        # Session cache is discarded here (transient by design)
         logger.debug(
-            "Session %s ended. Episodes buffered: %d. Mode transitions: %d. Flush items: %d.",
+            "Session %s ended. Episodes buffered: %d. Cache episodes: %d. Mode transitions: %d. Flush items: %d.",
             session_id,
             len(state.episodes),
+            len(state.session_cache.episodic_buffer) if state.session_cache else 0,
             len(state.mode_history),
             len(flush_items),
         )

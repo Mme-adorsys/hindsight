@@ -301,7 +301,9 @@ class RecallOrchestrator:
 
         # Populate WorkingContext if a session is active (Epic 08 S2)
         if session is not None and result is not None and _top_scored:
-            wc = self._ctx.get_session_manager().get_working_context(session.session_id)
+            sm = self._ctx.get_session_manager()
+            wc = sm.get_working_context(session.session_id)
+            sc = sm.get_session_cache(session.session_id)
             if wc is not None:
                 active_goal = wc.goal_stack[-1] if wc.goal_stack else None
                 wc.populate_from_recall(_top_scored, active_goal=active_goal)
@@ -310,33 +312,34 @@ class RecallOrchestrator:
                 # Extract IDs from Focus + Supporting tiers (high-activation only).
                 # Bio mapping: Hebbian learning — only strongly activated representations
                 # form new synaptic associations; peripheral activation is too weak.
-                focus_ids = [ref.engram_id for ref in wc.active_engrams.focus]
-                supporting_ids = [ref.engram_id for ref in wc.active_engrams.supporting]
-                active_ids = focus_ids + supporting_ids
-                if active_ids:
-                    wc.co_activation_tracker.track_recall(active_ids)
+                if sc is not None:
+                    focus_ids = [ref.engram_id for ref in wc.active_engrams.focus]
+                    supporting_ids = [ref.engram_id for ref in wc.active_engrams.supporting]
+                    active_ids = focus_ids + supporting_ids
+                    if active_ids:
+                        sc.co_activation_tracker.track_recall(active_ids)
 
-                # Resolve Neo4j client once for both flush operations below.
-                # neo4j_client comes from EngramRetriever if active; None → graceful no-op.
-                _neo4j_client = None
-                _needs_neo4j = wc.co_activation_tracker.should_flush() or wc.association_window.should_flush()
-                if _needs_neo4j:
-                    from .search.engram_retrieval import EngramRetriever
-                    from .search.retrieval import get_default_graph_retriever
+                    # Resolve Neo4j client once for both flush operations below.
+                    # neo4j_client comes from EngramRetriever if active; None → graceful no-op.
+                    _neo4j_client = None
+                    _needs_neo4j = sc.co_activation_tracker.should_flush() or sc.association_window.should_flush()
+                    if _needs_neo4j:
+                        from .search.engram_retrieval import EngramRetriever
+                        from .search.retrieval import get_default_graph_retriever
 
-                    _retriever = get_default_graph_retriever()
-                    _neo4j_client = _retriever.neo4j_client if isinstance(_retriever, EngramRetriever) else None
+                        _retriever = get_default_graph_retriever()
+                        _neo4j_client = _retriever.neo4j_client if isinstance(_retriever, EngramRetriever) else None
 
-                # Periodic flush: write eligible CO_ACTIVATED links to Neo4j every N recalls.
-                if wc.co_activation_tracker.should_flush():
-                    await wc.co_activation_tracker.flush_to_neo4j(_neo4j_client)
+                    # Periodic flush: write eligible CO_ACTIVATED links to Neo4j every N recalls.
+                    if sc.co_activation_tracker.should_flush():
+                        await sc.co_activation_tracker.flush_to_neo4j(_neo4j_client)
 
-                # Association Window — T4 (Epic 09 S3)
-                # Check temporal proximity between Focus+Supporting Engrams (STC mechanism).
-                # Periodic: every check_every_n recalls to limit DB writes.
-                wc.association_window.check_associations(wc.active_engrams)
-                if wc.association_window.should_flush():
-                    await wc.association_window.flush_to_neo4j(_neo4j_client)
+                    # Association Window — T4 (Epic 09 S3)
+                    # Check temporal proximity between Focus+Supporting Engrams (STC mechanism).
+                    # Periodic: every check_every_n recalls to limit DB writes.
+                    sc.association_window.check_associations(wc.active_engrams)
+                    if sc.association_window.should_flush():
+                        await sc.association_window.flush_to_neo4j(_neo4j_client)
 
                 # Construction Pipeline (Epic 11 S2) — builds ConstructedAnswer from scored results.
                 # Runs after WorkingContext population so WC already reflects the current recall.

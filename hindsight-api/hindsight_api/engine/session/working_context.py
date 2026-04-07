@@ -1,16 +1,20 @@
 """
-Working Context — Transient PFC-equivalent workspace for active agent tasks.
+Working Context — Persistent PFC-equivalent workspace for active agent tasks.
 
-Holds references to active Engrams (not copies), manages goals, collects running
-inferences. Everything is transient: created at session start, discarded at session
-end. Relevant contents flow into the Engram system via the Retain pipeline.
+Holds references to active Engrams (not copies), manages goals, and stores
+confirmed inferences. This is the PERSISTENT half of the working memory split
+introduced in Epic 18: transient session data (episodic buffer, pending
+inferences, co-activation counts) lives in SessionCache instead.
+
+Split model (Epic 18):
+- WorkingContext  → persistent PFC state (survives session end, stored in PostgreSQL)
+- SessionCache   → transient hippocampal buffer (flushed at session end, not persisted)
 
 Bio mapping:
-- WorkingContext   → Prefrontal Cortex (PFC) — short-term workspace, not storage
-- Goal Stack       → Goal-directed attention (top-down PFC control)
-- Active Engrams   → 3-tier activation gradient (focus/supporting/peripheral)
-- Episodic Buffer  → Hippocampal short-term episodic binding
-- Inference Layer  → Tentative predictions under construction
+- WorkingContext        → Prefrontal Cortex (PFC) — durable goal/context representation
+- Goal Stack            → Goal-directed attention (top-down PFC control)
+- Active Engrams        → 3-tier activation gradient (focus/supporting/peripheral)
+- Confirmed Inferences → Stable PFC beliefs carried forward across sessions
 
 Concept reference: docs/engram/concept.md — Chapter 9 (Working Context)
 """
@@ -21,10 +25,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar, Literal
 
-from ..response_models import Episode
 from ..retain.types import RetainContentDict
-from .association_window import AssociationWindow
-from .co_activation_tracker import CoActivationTracker
 
 if TYPE_CHECKING:
     from ..search.types import ScoredResult
@@ -143,19 +144,17 @@ class WorkingContext:
     session_id: str
     goal_stack: list[Goal] = field(default_factory=list)
     active_engrams: ActiveEngrams = field(default_factory=ActiveEngrams)
-    episodic_buffer: list[Episode] = field(default_factory=list)
-    inference_layer: list[Inference] = field(default_factory=list)
+    confirmed_inferences: list[Inference] = field(default_factory=list)
+    """
+    Inferences that survived the session and were confirmed.
+    Populated at flush time from SessionCache.pending_inferences (confirmed + tentative).
+    Persisted in WorkingMemory (Story 02) to survive across sessions.
+
+    Bio mapping: PFC long-term beliefs — hypotheses that were reinforced by evidence
+    become stable representations carried forward into the next cognitive context.
+    """
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     last_updated: datetime = field(default_factory=lambda: datetime.now(UTC))
-    # Co-activation tracker: counts how often Engram pairs appear together in recall
-    # results (Focus + Supporting tiers). Pairs above threshold → CO_ACTIVATED link in Neo4j.
-    # Bio mapping: Hebbian learning — synaptic connections between co-firing neurons strengthen.
-    co_activation_tracker: CoActivationTracker = field(default_factory=CoActivationTracker, repr=False)
-
-    # Association window: STC-based temporal proximity tracker.
-    # Finds Focus+Supporting Engram pairs co-active within a time window → TEMPORAL_PROXIMITY links.
-    # Bio mapping: Synaptic Tagging & Capture — temporally proximate activations form weak links.
-    association_window: AssociationWindow = field(default_factory=AssociationWindow, repr=False)
 
     # ------------------------------------------------------------------
     # Goal Stack helpers
@@ -461,14 +460,14 @@ class WorkingContext:
         items: list[RetainContentDict] = []
 
         # 1. Confirmed inferences → retain as facts
-        for inf in self.inference_layer:
-            if inf.status == "confirmed":
-                item: RetainContentDict = {
-                    "content": inf.content,
-                    "context": "inferred",
-                    "metadata": {"confidence": str(round(inf.confidence, 3)), "inference_id": inf.id},
-                }
-                items.append(item)
+        # (confirmed_inferences are populated at flush time from SessionCache)
+        for inf in self.confirmed_inferences:
+            item: RetainContentDict = {
+                "content": inf.content,
+                "context": "inferred",
+                "metadata": {"confidence": str(round(inf.confidence, 3)), "inference_id": inf.id},
+            }
+            items.append(item)
 
         # 2. Completed goals → retain as episodic entries
         for goal in self.goal_stack:

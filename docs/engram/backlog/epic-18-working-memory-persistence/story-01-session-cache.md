@@ -25,7 +25,7 @@ Bisher wurde alles im Working Context gehalten und bei Session-Ende gelöscht. D
 
 ## Tasks
 
-- [ ] **T1 — SessionCache Dataclass:** Felder: session_id, episodic_buffer (list[Episode]), pending_inferences (list[Inference]), co_activation_counts (dict[tuple[str,str], int]), created_at. Methoden: add_episode(), add_inference(), update_inference_status(), record_co_activation().
-- [ ] **T2 — Cache Lifecycle:** SessionManager.create_session() → erstellt SessionCache. SessionManager.end_session() → ruft flush() auf, löscht Cache. Cache existiert nur so lange wie die Session.
-- [ ] **T3 — WorkingContext Aufspaltung:** Bestehende transiente Felder aus WorkingContext in SessionCache verschieben. WorkingContext behält nur persistente Felder (Goal Stack, Active Engrams, Confirmed Inferences).
-- [ ] **T4 — Tests:** Cache-Lifecycle Test (create → add → flush → empty). Cache ist nach Session-Ende leer. Episodic Buffer append-only. Inference Status Tracking.
+- [x] **T1 — SessionCache Dataclass:** Felder: session_id, episodic_buffer (list[Episode]), pending_inferences (list[Inference]), co_activation_counts (dict[tuple[str,str], int]), created_at. Methoden: add_episode(), add_inference(), update_inference_status(), record_co_activation().
+- [x] **T2 — Cache Lifecycle:** SessionManager.create_session() → erstellt SessionCache. SessionManager.end_session() → ruft flush() auf, löscht Cache. Cache existiert nur so lange wie die Session.
+- [x] **T3 — WorkingContext Aufspaltung:** Bestehende transiente Felder aus WorkingContext in SessionCache verschieben. WorkingContext behält nur persistente Felder (Goal Stack, Active Engrams, Confirmed Inferences).
+- [x] **T4 — Tests:** Cache-Lifecycle Test (create → add → flush → empty). Cache ist nach Session-Ende leer. Episodic Buffer append-only. Inference Status Tracking.

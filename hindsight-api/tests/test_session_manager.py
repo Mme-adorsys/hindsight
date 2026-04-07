@@ -86,11 +86,11 @@ class TestSessionLifecycle:
             await manager.end_session(uuid4())
 
     async def test_expired_sessions_are_cleaned_up(self):
-        """Sessions past their TTL must be removed on the next create_session() call."""
+        """Sessions past their TTL must be removed when cleanup runs."""
         manager = SessionManager(session_ttl=timedelta(seconds=0))
         session = await manager.create_session()
-        # TTL=0 means the session is already expired; next create_session triggers cleanup
-        _ = await manager.create_session()
+        # Force cleanup directly (rate-limit gate doesn't apply to direct calls).
+        manager._cleanup_expired()
         with pytest.raises(KeyError):
             manager.get_session(session.session_id)
 
