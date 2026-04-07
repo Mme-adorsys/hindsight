@@ -17,19 +17,19 @@ Das Working Memory hält den Zustand der über eine einzelne Session hinaus rele
 
 ## Akzeptanzkriterien
 
-- [ ] WorkingMemory Dataclass: goal_stack, active_engrams (3 Tiers), confirmed_inferences, session_history (letzte N session_ids + Timestamps)
-- [ ] PostgreSQL Tabelle `working_memory`: bank_id (PK), state (JSONB), updated_at
-- [ ] Alembic Migration für working_memory Tabelle
-- [ ] WorkingMemoryRepository: load(bank_id), save(bank_id, state), exists(bank_id)
-- [ ] Serialisierung: WorkingMemory ↔ JSONB (mit Version-Feld für Schema-Migration)
-- [ ] Session-Start: load() → WorkingMemory (oder leeres Default wenn nicht vorhanden)
-- [ ] Session-Ende: save() → PostgreSQL
-- [ ] Periodisches Speichern: alle N Minuten während aktiver Session (Crash-Safety)
+- [x] WorkingMemory Dataclass: goal_stack, active_engrams (3 Tiers), confirmed_inferences, session_history (letzte N session_ids + Timestamps)
+- [x] PostgreSQL Tabelle `working_memory`: bank_id (PK), state (JSONB), updated_at
+- [x] Alembic Migration für working_memory Tabelle
+- [x] WorkingMemoryRepository: load(bank_id), save(bank_id, state), exists(bank_id)
+- [x] Serialisierung: WorkingMemory ↔ JSONB (mit Version-Feld für Schema-Migration)
+- [x] Session-Start: load() → WorkingMemory (oder leeres Default wenn nicht vorhanden)
+- [x] Session-Ende: save() → PostgreSQL
+- [x] Periodisches Speichern: alle N Minuten während aktiver Session (Crash-Safety)
 
 ## Tasks
 
-- [ ] **T1 — WorkingMemory Dataclass:** Felder: bank_id, goal_stack (list[Goal]), active_engrams (ActiveEngrams mit focus/supporting/peripheral), confirmed_inferences (list[Inference]), session_history (list[SessionRef], max 20), schema_version (int, für Migration). Methoden: to_dict(), from_dict().
-- [ ] **T2 — PostgreSQL Tabelle:** Alembic Migration: `working_memory` Tabelle. bank_id VARCHAR PK, state JSONB NOT NULL DEFAULT '{}', schema_version INT DEFAULT 1, updated_at TIMESTAMPTZ. Index auf updated_at.
-- [ ] **T3 — WorkingMemoryRepository:** CRUD: load(bank_id) → WorkingMemory, save(bank_id, wm) → None, exists(bank_id) → bool. JSON Serialisierung mit schema_version Check. Upsert-Semantik (INSERT ON CONFLICT UPDATE).
-- [ ] **T4 — Session Integration:** SessionManager.create_session(): load WorkingMemory für bank_id. SessionManager.end_session(): save WorkingMemory. Periodischer Save: Timer-basiert (konfigurierbar, Default 5 Minuten).
-- [ ] **T5 — Tests:** Persistence Roundtrip (save → load → verify). Leeres Default für neue Banks. Schema-Version Check. Periodischer Save Test. Concurrent-Access Safety (Locking).
+- [x] **T1 — WorkingMemory Dataclass:** Felder: bank_id, goal_stack (list[Goal]), active_engrams (ActiveEngrams mit focus/supporting/peripheral), confirmed_inferences (list[Inference]), session_history (list[SessionRef], max 20), schema_version (int, für Migration). Methoden: to_dict(), from_dict().
+- [x] **T2 — PostgreSQL Tabelle:** Alembic Migration: `working_memory` Tabelle. bank_id VARCHAR PK, state JSONB NOT NULL DEFAULT '{}', schema_version INT DEFAULT 1, updated_at TIMESTAMPTZ. Index auf updated_at.
+- [x] **T3 — WorkingMemoryRepository:** CRUD: load(bank_id) → WorkingMemory, save(bank_id, wm) → None, exists(bank_id) → bool. JSON Serialisierung mit schema_version Check. Upsert-Semantik (INSERT ON CONFLICT UPDATE).
+- [x] **T4 — Session Integration:** SessionManager: initialize_working_memory() + get_working_memory() + save_task field. MemoryEngine: create_session_async() (Priming Effect), end_session_async() (WC→WM merge + save), _periodic_wm_save() (alle 5 min).
+- [x] **T5 — Tests:** 36 Unit-Tests: Persistence Roundtrip, Default für neue Banks, Schema-Version Mismatch, Repository Mock-Tests, SessionManager WM-Methods, FIFO Session History, create_session_async Priming Effect, end_session_async WC→WM Merge.
