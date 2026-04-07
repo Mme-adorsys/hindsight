@@ -1,10 +1,10 @@
-# Epic 15 — Benchmarking & Validation
+# Epic 23 — Benchmarking & Validation
 
 > 4 Dimensionen × 3 Ansätze: Quantitative Gesamtbewertung des Systems.
 
 ## Ziel
 
-Benchmark C (Golden Dataset) als quantitativer Gesamtbenchmark. Ergänzt die bereits stufenweise eingeführten Tests: Benchmark A (Scripted Scenarios, seit Phase 1) und Benchmark B (Simulated Agent Life, seit Phase 5). Epic 15 konsolidiert alle Benchmark-Ergebnisse und erstellt ein Dashboard für die 4 Validierungsdimensionen.
+Benchmark C (Golden Dataset) als quantitativer Gesamtbenchmark. Ergänzt die bereits stufenweise eingeführten Tests: Benchmark A (Scripted Scenarios, seit Phase 1) und Benchmark B (Simulated Agent Life, seit Phase 5). Epic 23 konsolidiert alle Benchmark-Ergebnisse und erstellt ein Dashboard für die 4 Validierungsdimensionen.
 
 ## Bestehende Test-Infrastruktur (aus vorherigen Epics)
 

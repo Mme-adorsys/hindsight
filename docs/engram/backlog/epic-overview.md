@@ -25,7 +25,7 @@ Stories enthalten eingebettete Tasks als Checkliste.
 - **Ab Epic 05 (Retain Pipeline):** Integration-Tests (Daten fließen durch das System, Engrams in allen 3 DBs)
 - **Ab Epic 07 (Search & Retrieval):** Retrieval-Tests (Precision/Recall, Mode-Dependency, Graph-Traversal)
 - **Ab Epic 12 (Consolidation):** Knowledge-Evolution-Tests + Benchmark B (Simulated Agent Life)
-- **Epic 15:** Benchmark C (Golden Dataset) für quantitative Gesamtbewertung
+- **Epic 23:** Benchmark C (Golden Dataset) für quantitative Gesamtbewertung
 
 ---
 
@@ -70,11 +70,33 @@ Stories enthalten eingebettete Tasks als Checkliste.
 | 13 | **Schema Emergence** | 5 Game-of-Life Regeln: R1 Clustering/Birth (3+ Engrams, M+ common neighbors), R2 Repetition/Maturation (K NCR Zyklen), R3 Abstraction/Specialization (gemeinsame Properties extrahieren), R4 Reinforcement/Growth (neues Engram stärkt Schema), R5 Competition/Death (schwache Schemas sterben). R4 auch inkrementell bei Retain. | Epic 12 |
 | 14 | **Multi-Bank Architecture** | B1-B6: 3-Tier Bank Model (Agent Session → Agent Engram Dictionary → Shared Memory), Write Conflict Resolution, Cross-Bank Novelty Scoring, Shared-to-Agent Feedback Loop, Consolidation Triggers, Cross-Bank Query. | Epic 01, Epic 02, Epic 12 |
 
-### Phase 6 — Qualitätssicherung → **Milestone 6: "System Validated"**
+### Phase 6 — Evolution → **Milestone 6: "System Evolved"**
+
+> Refactoring und Erweiterung des Gesamtsystems. Reichhaltigere API, objektiver Thalamus, konfigurierbare Modelle, persistentes Working Memory.
 
 | # | Epic | Beschreibung | Abhängigkeiten |
 |---|------|-------------|----------------|
-| 15 | **Benchmarking & Validation** | 4 Dimensionen: Storage Validation, Retrieval Validation, Knowledge Evolution, Construction Quality. 3 Ansätze: A) Scripted Scenarios, B) Simulated Agent Life, C) Golden Dataset. Konkrete Auswahl noch offen. | Alle vorherigen Epics |
+| 15 | **API & Retain Enrichment** | Retain-API um Expectation, Outcome, Tags erweitern. Recall-API um Expectation, Tags erweitern. Neuer Pipeline-Step R0 (Sequence Analysis): budget-abhängige Extraktion aus reichhaltigem Content (Konversationen, Narrative). Experience-Engram Typ. Neue Neo4j Links: CAUSAL, PREDICTION_ERROR. Caller schickt lieber mehr Content — System extrahiert Struktur. | Epic 05, Epic 02, Epic 01 |
+| 16 | **Objektiver Thalamus-Scoring-Rahmen** | Refactoring aller 4 Thalamus-Dimensionen zu rein embedding-basierten, deterministischen Berechnungen. Surprise aus Expectation↔Outcome. Emotional Valence aus Prediction-Error-Magnitude. LLM-Call entfällt. Alle Scores kostenlos, reproduzierbar, schnell. | Epic 15, Epic 04 |
+| 17 | **Konfigurierbare Modell-Zuweisung** | Per-Pipeline-Schritt Modellkonfiguration. 3 Budget-Profile (Low/Mid/High) als Empfehlungen. Per-Step Overrides auf Bank-Ebene. Prioritätsreihenfolge: Request > Bank > Env > Profile Default. Admin-API für Bank-Konfiguration. | Epic 03, Epic 15 |
+| 18 | **Working Memory Persistence & Cache Layer** | 2-Schicht-Modell: Session Cache (transient, wird geflushed) + Working Memory (persistent, überlebt Sessions). Priming-Effekt: nächste Session startet mit warmem Kontext. PostgreSQL JSONB Persistenz. Flush-Prozess: Episodic Buffer → Retain, Inferences → WM, Co-Activation → Neo4j. | Epic 08, Epic 06 |
+
+### Phase 7 — Control Plane Extension → **Milestone 7: "System Visible"**
+
+> Das Control Plane zeigt die brain-inspirierten Features: Engram-Metadaten, Session Modes, Lifecycle-Übersicht, NCR Dashboard, Schema Explorer.
+
+| # | Epic | Beschreibung | Abhängigkeiten |
+|---|------|-------------|----------------|
+| 19 | **CP: Engram Metadata & Session Modes** | Memory-Tabelle um Strength, Layer, Access Count, Thalamus Scores erweitern. Memory Detail Panel mit Thalamus-Score-Visualisierung. Session Mode Selector (Precision/Exploration/Analogy/Validation) in Recall und Reflect Views. | Epic 02, Epic 04, Epic 06 |
+| 20 | **CP: Bank Profile & System Configuration** | Bank Profile um System Configuration Section erweitern: LLM Provider/Model/Tier-Routing, DB Connection Status, Embedding/Reranker Info, NCR Config. Neuer Dataplane Endpoint `/config`. | Epic 03, Epic 19 |
+| 21 | **CP: Engram Lifecycle & NCR Dashboard** | Neue Views: Engram Lifecycle (Layer-Verteilung, Strength-Distribution, Flow-Visualisierung) + NCR Dashboard (manueller Trigger, Run History, Ergebnis-Übersicht). NCR History Persistence in DB. 2 neue Sidebar-Items. | Epic 12, Epic 02, Epic 19 |
+| 22 | **CP: Schema Explorer** | Neues View: Schema-Liste mit Maturity-Badges, Schema-Detail mit Member-Engrams, Mini-Graph (Cytoscape). Neue Dataplane Endpoints für Schema List/Detail. 1 neues Sidebar-Item. | Epic 13, Epic 21 |
+
+### Phase 8 — Qualitätssicherung → **Milestone 8: "System Validated"**
+
+| # | Epic | Beschreibung | Abhängigkeiten |
+|---|------|-------------|----------------|
+| 23 | **Benchmarking & Validation** | 4 Dimensionen: Storage Validation, Retrieval Validation, Knowledge Evolution, Construction Quality. 3 Ansätze: A) Scripted Scenarios, B) Simulated Agent Life, C) Golden Dataset. Konkrete Auswahl noch offen. | Alle vorherigen Epics |
 
 ---
 
@@ -98,28 +120,61 @@ Phase 5:  01 + 02 + 05 → 12 (Consolidation)
           12 → 13 (Schema)
           01 + 02 + 12 → 14 (Multi-Bank)
 
-Phase 6:  * → 15 (Benchmarking)
+Phase 6:  05 + 02 + 01 → 15 (API Enrichment)
+          15 + 04 → 16 (Objective Thalamus)
+          03 + 15 → 17 (Model Configuration)
+          08 + 06 → 18 (WM Persistence)
+
+Phase 7:  02 + 04 + 06 → 19 (CP Metadata & Modes)
+          03 + 19 → 20 (CP Bank Config)
+          12 + 02 + 19 → 21 (CP Lifecycle & NCR)
+          13 + 21 → 22 (CP Schema Explorer)
+
+Phase 8:  * → 23 (Benchmarking)
 ```
 
 ---
 
 ## Aktueller Status
 
+### Phase 1 — Fundament
 - [x] Epic 01 — Hybrid Storage Architecture
 - [x] Epic 02 — Engram Data Model
 - [x] Epic 03 — LLM Routing
+
+### Phase 2 — Ingestion + Steuerung
 - [x] Epic 04 — Thalamus Filter
 - [x] Epic 05 — Retain Pipeline Extension
 - [x] Epic 06 — Session Layer
+
+### Phase 3 — Retrieval
 - [x] Epic 07 — Search & Retrieval Erweiterung
 - [x] Epic 08 — Working Context
 - [x] Epic 09 — Weak Connections & Synaptic Tagging
+
+### Phase 4 — Verarbeitung
 - [x] Epic 10 — Reflect & Reconsolidation
 - [x] Epic 11 — Constructive Memory
+
+### Phase 5 — Langzeit-Prozesse
 - [x] Epic 12 — Consolidation Pipeline
 - [x] Epic 13 — Schema Emergence
 - [x] Epic 14 — Multi-Bank Architecture
-- [ ] Epic 15 — Benchmarking & Validation
+
+### Phase 6 — Evolution
+- [ ] Epic 15 — API & Retain Enrichment
+- [ ] Epic 16 — Objektiver Thalamus-Scoring-Rahmen
+- [ ] Epic 17 — Konfigurierbare Modell-Zuweisung
+- [ ] Epic 18 — Working Memory Persistence & Cache Layer
+
+### Phase 7 — Control Plane Extension
+- [ ] Epic 19 — CP: Engram Metadata & Session Modes
+- [ ] Epic 20 — CP: Bank Profile & System Configuration
+- [ ] Epic 21 — CP: Engram Lifecycle & NCR Dashboard
+- [ ] Epic 22 — CP: Schema Explorer
+
+### Phase 8 — Qualitätssicherung
+- [ ] Epic 23 — Benchmarking & Validation
 
 ---
 
@@ -134,11 +189,24 @@ Detailliert in [milestones.md](milestones.md) — hier die Kurzübersicht:
 | M3 | Memory Thinks | 3 (E07-09) | Mode-aware Retrieval, Working Context, Weak Connections |
 | M4 | Memory Learns | 4 (E10-11) | Reconsolidation auf alle Typen, Constructive Memory mit Inferenz |
 | M5 | Memory Matures | 5 (E12-14) | NCR Consolidation, Schema Emergence, Multi-Bank mit Shared Memory |
-| M6 | System Validated | 6 (E15) | Golden Dataset Benchmark, alle Dimensionen ≥ Mindest-Score |
+| M6 | System Evolved | 6 (E15-18) | Reichhaltige API, objektiver Thalamus, konfigurierbares LLM Routing, persistentes Working Memory |
+| M7 | System Visible | 7 (E19-22) | Control Plane zeigt Engram-Metadaten, Lifecycle, NCR, Schemas |
+| M8 | System Validated | 8 (E23) | Golden Dataset Benchmark, alle Dimensionen ≥ Mindest-Score |
 
 ```
-M1 → M2 → M3 → M4 → M5 → M6
+M1 → M2 → M3 → M4 → M5 → M6 → M7 → M8
 ```
+
+---
+
+## Zusammenfassung der Änderungen (April 2026)
+
+**Roadmap-Umstrukturierung:**
+1. **Benchmarking** wurde ans Ende verschoben (jetzt Epic 23, Phase 8) — Benchmarking macht erst Sinn wenn alle Features stehen
+2. **Epics 15-18 (Evolution/Refactoring)** sind Phase 6: Reichhaltige API, objektiver Thalamus, konfig. Models, WM Persistence
+3. **Epics 19-22 (Control Plane Extension)** sind NEU (Phase 7) — entstanden aus dem Control Plane Extension Plan mit 6 Stories in 4 Phasen
+4. **Durchgehende Nummerierung** E01-E23 entspricht der Ausführungsreihenfolge
+5. **Milestone-Nummern** wurden angepasst: M6 = System Evolved, M7 = System Visible (NEU), M8 = System Validated
 
 ---
 

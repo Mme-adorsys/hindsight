@@ -151,7 +151,72 @@
 
 ---
 
-## Milestone 6 — "System Validated" (nach Phase 6: Epic 15)
+## Milestone 6 — "System Evolved" (nach Phase 6: Epic 15-18)
+
+**Aussage:** Das System hat reichhaltigere Inputs, objektive Scores, konfigurierbare Models und persistentes Working Memory.
+
+### Akzeptanzkriterien
+
+- [ ] Retain-API akzeptiert Expectation, Outcome, Tags
+- [ ] R0 Sequence Analysis extrahiert Struktur aus reichhaltigem Content
+- [ ] Experience-Engrams werden aus Expectation→Outcome-Paaren erzeugt
+- [ ] Neue Neo4j Links: CAUSAL, PREDICTION_ERROR
+- [ ] Alle 4 Thalamus-Dimensionen embedding-basiert, deterministisch, kein LLM-Call
+- [ ] Budget-Profile (Low/Mid/High) konfigurieren Models pro Pipeline-Schritt
+- [ ] Per-Step Override auf Bank-Ebene möglich
+- [ ] Working Memory überlebt Session-Ende (Priming-Effekt)
+- [ ] Session Cache wird bei Session-Ende geflushed
+
+### Validierungstests
+
+| Test | Typ | Beschreibung | Epic |
+|------|-----|-------------|------|
+| Retain Enrichment | Integration | Content mit Expectation+Outcome → Experience-Engram | E15 S01 |
+| R0 Sequence Analysis | Integration | Konversation → extrahierte Fakten + Action-Effect Chains | E15 S03 |
+| Objective Thalamus | Unit | Gleicher Input → gleicher Score (deterministisch) | E16 S01 |
+| Surprise from PE | Unit | Expectation↔Outcome → korrekter Surprise-Score | E16 S01 |
+| Budget Profile | Integration | Low → Haiku überall, High → Opus für Reasoning | E17 S01 |
+| Per-Step Override | Integration | Bank-Config überschreibt Budget-Profil für Schritt X | E17 S02 |
+| WM Persistence | Integration | Session-Ende → WM gespeichert → nächste Session findet WM | E18 S02 |
+| Session Cache Flush | Integration | Episodic Buffer → Retain, Inferences → WM | E18 S03 |
+
+---
+
+## Milestone 7 — "System Visible" (nach Phase 7: Epic 19-22)
+
+**Aussage:** Das Control Plane zeigt alle brain-inspirierten Features: Engram-Metadaten, Lifecycle-Übersicht, NCR Dashboard, Schema Explorer. Der Operator hat volle Sichtbarkeit.
+
+### Akzeptanzkriterien
+
+- [ ] Memory-Tabelle zeigt Strength, Layer, Access Count pro Engram
+- [ ] Memory Detail zeigt Thalamus Scores (4 Dimensionen + Overall)
+- [ ] Session Mode Selector in Recall und Reflect Views funktioniert
+- [ ] Bank Profile zeigt System Configuration (LLM, DBs, NCR)
+- [ ] Engram Lifecycle View zeigt Layer-Verteilung und Strength-Distribution
+- [ ] NCR Dashboard: Manueller Trigger, Last Run Summary, Run History
+- [ ] NCR Runs werden persistent gespeichert (History)
+- [ ] Schema Explorer zeigt Schema-Liste mit Maturity-Badges
+- [ ] Schema Detail zeigt Member-Engrams + Mini-Graph (Cytoscape)
+- [ ] Sidebar hat 9 Items: Memories, Recall, Reflect, Documents, Entities, Engrams, Consolidation, Schemas, Memory Bank
+
+### Validierungstests
+
+| Test | Typ | Beschreibung | Epic |
+|------|-----|-------------|------|
+| Memory Metadata | UI | Strength-Bar, Layer-Badge, Access Count sichtbar | E19 S01 |
+| Thalamus Scores | UI | 4+1 Bars im Detail Panel, korrekte Werte | E19 S01 |
+| Mode Selector Recall | UI | Mode wählen → Ergebnisse ändern sich | E19 S02 |
+| Mode Selector Reflect | UI | Mode wählen → Antwort-Stil ändert sich | E19 S02 |
+| System Config | UI | LLM Provider, Tier-Routing, DB Status sichtbar | E20 S02 |
+| Engram Stats API | Integration | Layer-Counts und Strength-Distribution korrekt | E21 S01 |
+| NCR Trigger | UI | Button → NCR läuft → Report angezeigt | E21 S04 |
+| NCR History | Integration | Runs persistiert, History korrekt sortiert | E21 S03 |
+| Schema List | UI | Schemas mit Maturity-Badge, Member Count sichtbar | E22 S02 |
+| Schema Graph | UI | Cytoscape-Graph zeigt Schema + Members | E22 S02 |
+
+---
+
+## Milestone 8 — "System Validated" (nach Phase 8: Epic 23)
 
 **Aussage:** Das Gesamtsystem ist quantitativ bewertet und erfüllt Mindest-Qualitätsstandards.
 
@@ -167,18 +232,18 @@
 
 | Test | Typ | Beschreibung | Epic |
 |------|-----|-------------|------|
-| Golden Dataset Quality | Validation | Dataset validiert (Schema, Referenzielle Integrität) | E15 S01 |
-| Benchmark C Scores | Validation | Alle 4 Dimensionen ≥ Mindest-Score | E15 S04 |
-| Convergence | Validation | Simulated Life → System stabilisiert nach N Tagen | E15 S02 |
-| Regression Guard | Validation | Kein Score-Drop > 5% vs. vorheriger Run | E15 S04 |
-| Full Pipeline | Smoke | Clean DB → Feed → Consolidate → Query → Construct → Validate | E15 S04 |
+| Golden Dataset Quality | Validation | Dataset validiert (Schema, Referenzielle Integrität) | E23 S01 |
+| Benchmark C Scores | Validation | Alle 4 Dimensionen ≥ Mindest-Score | E23 S04 |
+| Convergence | Validation | Simulated Life → System stabilisiert nach N Tagen | E23 S02 |
+| Regression Guard | Validation | Kein Score-Drop > 5% vs. vorheriger Run | E23 S04 |
+| Full Pipeline | Smoke | Clean DB → Feed → Consolidate → Query → Construct → Validate | E23 S04 |
 
 ---
 
 ## Milestone-Abhängigkeiten
 
 ```
-M1 (Foundation) → M2 (Alive) → M3 (Thinks) → M4 (Learns) → M5 (Matures) → M6 (Validated)
+M1 (Foundation) → M2 (Alive) → M3 (Thinks) → M4 (Learns) → M5 (Matures) → M6 (Evolved) → M7 (Visible) → M8 (Validated)
 ```
 
 Jeder Milestone baut auf dem vorherigen auf. Kein Milestone kann übersprungen werden.
