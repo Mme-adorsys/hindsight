@@ -301,7 +301,7 @@ class MemoryLink(Base):
 
 
 class Bank(Base):
-    """Memory bank profiles with disposition traits and background."""
+    """Memory bank profiles with disposition traits, background, and tier classification."""
 
     __tablename__ = "banks"
 
@@ -310,10 +310,16 @@ class Bank(Base):
         JSONB, nullable=False, server_default=sql_text('\'{"skepticism": 3, "literalism": 3, "empathy": 3}\'::jsonb')
     )
     background: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    # B1: 3-Tier Bank Model — 'session' | 'dictionary' | 'shared'. Default 'session' (backward-compat).
+    tier: Mapped[str] = mapped_column(Text, nullable=False, server_default="session")
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 
-    __table_args__ = (Index("idx_banks_bank_id", "bank_id"),)
+    __table_args__ = (
+        Index("idx_banks_bank_id", "bank_id"),
+        Index("idx_banks_tier", "tier"),
+        CheckConstraint("tier IN ('session', 'dictionary', 'shared')", name="ck_banks_tier"),
+    )
 
     # Relationships
     engram_entries = relationship("EngramDictionary", back_populates="bank", cascade="all, delete-orphan")

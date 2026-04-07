@@ -6,6 +6,27 @@ retain/types.py can import from here without triggering retain/__init__.py.
 """
 
 from dataclasses import dataclass
+from enum import Enum
+
+
+class BankTier(str, Enum):
+    """
+    3-Tier Bank Model (Epic 14 B1).
+
+    SESSION    — Tier 1: Agent Session Bank (PostgreSQL). Transient, per-agent,
+                 fast writes. Raw memories before consolidation.
+    DICTIONARY — Tier 2: Agent Engram Dictionary (Neo4j + Qdrant). Filtered,
+                 scored, consolidated per-agent knowledge.
+    SHARED     — Tier 3: Shared Memory Bank (Neo4j + Qdrant). Cross-agent
+                 knowledge promoted from strong neocortex Engrams.
+
+    Bio mapping: SESSION ≈ Hippocampal buffer, DICTIONARY ≈ Engram store,
+    SHARED ≈ Neocortex / semantic long-term memory.
+    """
+
+    SESSION = "session"
+    DICTIONARY = "dictionary"
+    SHARED = "shared"
 
 
 @dataclass

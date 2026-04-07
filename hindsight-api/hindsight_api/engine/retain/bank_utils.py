@@ -10,6 +10,7 @@ from typing import TypedDict
 from pydantic import BaseModel, Field
 
 from ..db_utils import acquire_with_retry
+from ..engram_types import BankTier
 from ..memory_engine import fq_table
 from ..response_models import DispositionTraits
 
@@ -28,6 +29,7 @@ class BankProfile(TypedDict):
     name: str
     disposition: DispositionTraits
     background: str
+    tier: BankTier
 
 
 class BackgroundMergeResponse(BaseModel):
@@ -53,7 +55,7 @@ async def get_bank_profile(pool, bank_id: str) -> BankProfile:
         # Try to get existing bank
         row = await conn.fetchrow(
             f"""
-            SELECT name, disposition, background
+            SELECT name, disposition, background, tier
             FROM {fq_table("banks")} WHERE bank_id = $1
             """,
             bank_id,
@@ -66,7 +68,10 @@ async def get_bank_profile(pool, bank_id: str) -> BankProfile:
                 disposition_data = json.loads(disposition_data)
 
             return BankProfile(
-                name=row["name"], disposition=DispositionTraits(**disposition_data), background=row["background"]
+                name=row["name"],
+                disposition=DispositionTraits(**disposition_data),
+                background=row["background"],
+                tier=BankTier(row["tier"]),
             )
 
         # Bank doesn't exist, create with defaults
@@ -82,7 +87,12 @@ async def get_bank_profile(pool, bank_id: str) -> BankProfile:
             "",
         )
 
-        return BankProfile(name=bank_id, disposition=DispositionTraits(**DEFAULT_DISPOSITION), background="")
+        return BankProfile(
+            name=bank_id,
+            disposition=DispositionTraits(**DEFAULT_DISPOSITION),
+            background="",
+            tier=BankTier.SESSION,
+        )
 
 
 async def update_bank_disposition(pool, bank_id: str, disposition: dict[str, int]) -> None:
@@ -348,6 +358,129 @@ Merged background:"""
         if infer_disposition:
             result["disposition"] = DEFAULT_DISPOSITION.copy()
         return result
+
+
+_SHARED_BANK_ID = "shared"
+
+
+async def create_agent_banks(agent_id: str, pool) -> tuple[str, str]:
+    """
+    Provision Tier 1 (session) + Tier 2 (dictionary) banks for an agent.
+
+    Creates both banks if they don't exist yet. Returns the bank IDs.
+
+    Args:
+        agent_id: Unique agent identifier
+        pool: Database connection pool
+
+    Returns:
+        Tuple of (session_bank_id, dictionary_bank_id)
+    """
+    session_bank_id = f"{agent_id}:session"
+    dictionary_bank_id = f"{agent_id}:dictionary"
+
+    async with acquire_with_retry(pool) as conn:
+        await conn.executemany(
+            f"""
+            INSERT INTO {fq_table("banks")} (bank_id, name, disposition, background, tier)
+            VALUES ($1, $2, $3::jsonb, $4, $5)
+            ON CONFLICT (bank_id) DO NOTHING
+            """,
+            [
+                (
+                    session_bank_id,
+                    f"{agent_id} — Session Bank",
+                    json.dumps(DEFAULT_DISPOSITION),
+                    "",
+                    BankTier.SESSION.value,
+                ),
+                (
+                    dictionary_bank_id,
+                    f"{agent_id} — Engram Dictionary",
+                    json.dumps(DEFAULT_DISPOSITION),
+                    "",
+                    BankTier.DICTIONARY.value,
+                ),
+            ],
+        )
+
+    logger.info("Provisioned agent banks: session=%s, dictionary=%s", session_bank_id, dictionary_bank_id)
+    return session_bank_id, dictionary_bank_id
+
+
+async def ensure_shared_bank(pool) -> str:
+    """
+    Ensure the Tier 3 Shared Memory Bank exists.
+
+    Idempotent — safe to call on every startup. Returns the shared bank ID.
+
+    Args:
+        pool: Database connection pool
+
+    Returns:
+        The shared bank ID (always _SHARED_BANK_ID)
+    """
+    async with acquire_with_retry(pool) as conn:
+        await conn.execute(
+            f"""
+            INSERT INTO {fq_table("banks")} (bank_id, name, disposition, background, tier)
+            VALUES ($1, $2, $3::jsonb, $4, $5)
+            ON CONFLICT (bank_id) DO NOTHING
+            """,
+            _SHARED_BANK_ID,
+            "Shared Memory Bank",
+            json.dumps(DEFAULT_DISPOSITION),
+            "",
+            BankTier.SHARED.value,
+        )
+
+    logger.info("Ensured shared bank: %s", _SHARED_BANK_ID)
+    return _SHARED_BANK_ID
+
+
+async def verify_bank_access(agent_id: str, bank_id: str, pool) -> bool:
+    """
+    Check whether an agent may access a given bank.
+
+    Access rules (B1 — 3-Tier Bank Model):
+    - Agents always have access to the Shared Bank (_SHARED_BANK_ID).
+    - Agents have access to their own session/dictionary banks
+      (bank_id starts with "{agent_id}:").
+    - Cross-agent access to another agent's private banks is denied.
+
+    Args:
+        agent_id: The requesting agent's identifier
+        bank_id: The bank being accessed
+        pool: Database connection pool
+
+    Returns:
+        True if access is permitted, False otherwise.
+    """
+    # Shared bank is accessible to all agents
+    if bank_id == _SHARED_BANK_ID:
+        return True
+
+    # Agent's own banks follow the "{agent_id}:session" / "{agent_id}:dictionary" pattern
+    if bank_id.startswith(f"{agent_id}:"):
+        return True
+
+    # For any other bank, verify it exists and belongs to this agent
+    # (handles custom bank_ids that don't follow the convention)
+    async with acquire_with_retry(pool) as conn:
+        row = await conn.fetchrow(
+            f"SELECT tier FROM {fq_table('banks')} WHERE bank_id = $1",
+            bank_id,
+        )
+
+    if row is None:
+        return False  # Bank doesn't exist
+
+    tier = BankTier(row["tier"])
+    if tier == BankTier.SHARED:
+        return True
+
+    # Private bank not owned by this agent
+    return False
 
 
 async def list_banks(pool) -> list:
