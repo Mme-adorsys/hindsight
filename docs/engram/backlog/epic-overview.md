@@ -164,7 +164,7 @@ Phase 8:  * → 23 (Benchmarking)
 ### Phase 6 — Evolution
 - [x] Epic 15 — API & Retain Enrichment
 - [x] Epic 16 — Objektiver Thalamus-Scoring-Rahmen
-- [ ] Epic 17 — Konfigurierbare Modell-Zuweisung
+- [x] Epic 17 — Konfigurierbare Modell-Zuweisung
 - [ ] Epic 18 — Working Memory Persistence & Cache Layer
 
 ### Phase 7 — Control Plane Extension

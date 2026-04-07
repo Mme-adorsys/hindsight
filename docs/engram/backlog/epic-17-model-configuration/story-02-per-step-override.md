@@ -21,18 +21,18 @@ Layer 2 der Konfiguration: Per-Step Overrides auf Bank-Ebene. Die Bank-Konfigura
 
 ## Akzeptanzkriterien
 
-- [ ] Bank-Model-Config Tabelle in PostgreSQL: bank_id, budget_profile, step_overrides (JSONB)
-- [ ] Alembic Migration für neue Tabelle
-- [ ] CRUD für Bank-Model-Config (get, set, update)
-- [ ] Caching: Bank-Config wird pro Request geladen, max 5 Minuten cached
-- [ ] Prioritätsreihenfolge: Request > Bank > Env > Profile Default
-- [ ] Admin-API Endpunkt: GET/PUT /v1/banks/{bank_id}/model-config
-- [ ] Default: Neue Banks starten mit MID_BUDGET, keine Overrides
+- [x] Bank-Model-Config Tabelle in PostgreSQL: bank_id, budget_profile, step_overrides (JSONB)
+- [x] Alembic Migration für neue Tabelle
+- [x] CRUD für Bank-Model-Config (get, set, update)
+- [x] Caching: Bank-Config wird pro Request geladen, max 5 Minuten cached
+- [x] Prioritätsreihenfolge: Request > Bank > Env > Profile Default
+- [x] Admin-API Endpunkt: GET/PUT /v1/banks/{bank_id}/model-config
+- [x] Default: Neue Banks starten mit MID_BUDGET, keine Overrides
 
 ## Tasks
 
-- [ ] **T1 — Bank-Model-Config Tabelle:** Alembic Migration: `bank_model_config` Tabelle mit bank_id (PK, FK), budget_profile (VARCHAR, DEFAULT 'mid'), step_overrides (JSONB, DEFAULT '{}').
-- [ ] **T2 — BankModelConfig Repository:** CRUD-Klasse: get_config(bank_id) → BudgetProfile mit Overrides angewendet. set_config(bank_id, profile, overrides). Cache mit TTL 5 Minuten (dict-basiert, kein Redis).
-- [ ] **T3 — Resolve-Chain:** In resolve_llm_config(): 1) Check Request-Parameter Override, 2) Check Bank-Config Override für diesen Step, 3) Check Env-Var für diesen Step, 4) Fallback auf Budget-Profil Default.
-- [ ] **T4 — Admin API:** GET /v1/banks/{bank_id}/model-config → aktuelle Konfiguration mit effektivem Modell pro Step. PUT /v1/banks/{bank_id}/model-config → budget_profile und/oder step_overrides setzen. Validation: nur gültige PipelineStep Keys und ModelTier Values.
-- [ ] **T5 — Tests:** Prioritätsreihenfolge vollständig testen (4 Ebenen). Cache-Invalidierung nach PUT. Default-Verhalten für neue Banks. Invalid Override Keys/Values abfangen.
+- [x] **T1 — Bank-Model-Config Tabelle:** Alembic Migration: `bank_model_config` Tabelle mit bank_id (PK, FK), budget_profile (VARCHAR, DEFAULT 'mid'), step_overrides (JSONB, DEFAULT '{}').
+- [x] **T2 — BankModelConfig Repository:** CRUD-Klasse: get_config(bank_id) → BudgetProfile mit Overrides angewendet. set_config(bank_id, profile, overrides). Cache mit TTL 5 Minuten (dict-basiert, kein Redis).
+- [x] **T3 — Resolve-Chain:** In resolve_llm_config(): 1) Check Request-Parameter Override, 2) Check Bank-Config Override für diesen Step, 3) Check Env-Var für diesen Step, 4) Fallback auf Budget-Profil Default.
+- [x] **T4 — Admin API:** GET /v1/banks/{bank_id}/model-config → aktuelle Konfiguration mit effektivem Modell pro Step. PUT /v1/banks/{bank_id}/model-config → budget_profile und/oder step_overrides setzen. Validation: nur gültige PipelineStep Keys und ModelTier Values.
+- [x] **T5 — Tests:** Prioritätsreihenfolge vollständig testen (4 Ebenen). Cache-Invalidierung nach PUT. Default-Verhalten für neue Banks. Invalid Override Keys/Values abfangen.

@@ -1,4 +1,4 @@
-"""Unit tests for llm_routing — ModelTier enum, TASK_TIER_MAPPING, resolve_llm_config, LLMRegistry."""
+"""Unit tests for llm_routing — ModelTier, PipelineStep, BudgetProfile, resolve_llm_config, LLMRegistry."""
 
 import os
 from unittest.mock import MagicMock
@@ -6,10 +6,16 @@ from unittest.mock import MagicMock
 import pytest
 
 from hindsight_api.engine.llm_routing import (
+    HIGH_BUDGET,
+    LOW_BUDGET,
+    MID_BUDGET,
+    BudgetProfile,
     LLMRegistry,
     ModelTier,
+    PIPELINE_STEP_TASK_KEY,
     PROVIDER_TIER_MODELS,
     TASK_TIER_MAPPING,
+    PipelineStep,
     get_tier,
     resolve_llm_config,
 )
@@ -239,3 +245,160 @@ class TestResolveLlmConfigWithTierDefaults:
         gl = _make_llm_config("anthropic", "claude-sonnet-4-6")
         result = resolve_llm_config("retain", "not_in_mapping", op, gl)
         assert result is op  # not in TASK_TIER_MAPPING → no tier default
+
+
+class TestPipelineStep:
+    def test_all_steps_are_strings(self):
+        for step in PipelineStep:
+            assert isinstance(step.value, str)
+
+    def test_expected_steps_exist(self):
+        assert PipelineStep.R0_SEQUENCE_ANALYSIS
+        assert PipelineStep.R1_FACT_EXTRACTION
+        assert PipelineStep.R4_ENTITY_DISAMBIGUATION
+        assert PipelineStep.REFLECT
+        assert PipelineStep.CONSTRUCTIVE_MEMORY
+        assert PipelineStep.SCHEMA_COMPRESSION
+        assert PipelineStep.OBSERVATION
+
+    def test_pipeline_step_task_key_covers_all_steps(self):
+        for step in PipelineStep:
+            assert step in PIPELINE_STEP_TASK_KEY, f"{step} missing from PIPELINE_STEP_TASK_KEY"
+
+    def test_task_keys_are_valid_format(self):
+        for step, key in PIPELINE_STEP_TASK_KEY.items():
+            assert "." in key, f"{step} → '{key}' is not in 'operation.subtask' format"
+
+
+class TestBudgetProfile:
+    def test_with_override_returns_new_instance(self):
+        original = MID_BUDGET
+        modified = original.with_override(PipelineStep.REFLECT, ModelTier.LARGE)
+        assert modified is not original
+
+    def test_with_override_does_not_mutate_original(self):
+        original_tier = MID_BUDGET.get_tier(PipelineStep.REFLECT)
+        MID_BUDGET.with_override(PipelineStep.REFLECT, ModelTier.LARGE)
+        assert MID_BUDGET.get_tier(PipelineStep.REFLECT) == original_tier
+
+    def test_with_override_applies_new_tier(self):
+        profile = LOW_BUDGET.with_override(PipelineStep.REFLECT, ModelTier.LARGE)
+        assert profile.get_tier(PipelineStep.REFLECT) == ModelTier.LARGE
+
+    def test_get_tier_returns_medium_for_unknown_step(self):
+        empty = BudgetProfile(steps={})
+        assert empty.get_tier(PipelineStep.REFLECT) == ModelTier.MEDIUM
+
+    def test_frozen_prevents_reassignment(self):
+        from dataclasses import FrozenInstanceError
+
+        with pytest.raises(FrozenInstanceError):
+            LOW_BUDGET.steps = {}  # type: ignore[misc]
+
+    def test_all_predefined_profiles_cover_all_steps(self):
+        for profile, name in [(LOW_BUDGET, "LOW"), (MID_BUDGET, "MID"), (HIGH_BUDGET, "HIGH")]:
+            for step in PipelineStep:
+                assert step in profile.steps, f"{name}_BUDGET missing step {step}"
+
+    def test_all_predefined_profile_values_are_model_tier(self):
+        for profile in (LOW_BUDGET, MID_BUDGET, HIGH_BUDGET):
+            for step, tier in profile.steps.items():
+                assert isinstance(tier, ModelTier), f"step {step} has non-ModelTier value: {tier}"
+
+
+class TestResolveLlmConfigWithBudgetProfile:
+    def test_low_budget_r0_uses_small_tier(self):
+        op = _make_llm_config("anthropic", "claude-sonnet-4-6")
+        gl = _make_llm_config("anthropic", "claude-sonnet-4-6")
+        result = resolve_llm_config("retain", "sequence_analysis", op, gl, budget_profile=LOW_BUDGET)
+        assert result.model == "claude-haiku-4-5-20251001"  # SMALL tier
+
+    def test_high_budget_r0_uses_large_tier(self):
+        op = _make_llm_config("anthropic", "claude-sonnet-4-6")
+        gl = _make_llm_config("anthropic", "claude-sonnet-4-6")
+        result = resolve_llm_config("retain", "sequence_analysis", op, gl, budget_profile=HIGH_BUDGET)
+        assert result.model == "claude-opus-4-6"  # LARGE tier
+
+    def test_mid_budget_r1_fact_extraction_uses_small_tier(self):
+        op = _make_llm_config("anthropic", "claude-sonnet-4-6")
+        gl = _make_llm_config("anthropic", "claude-sonnet-4-6")
+        result = resolve_llm_config("retain", "fact_extraction", op, gl, budget_profile=MID_BUDGET)
+        assert result.model == "claude-haiku-4-5-20251001"  # SMALL per MID_BUDGET R1
+
+    def test_high_budget_reflect_uses_large_tier(self):
+        op = _make_llm_config("anthropic", "claude-sonnet-4-6")
+        gl = _make_llm_config("anthropic", "claude-sonnet-4-6")
+        result = resolve_llm_config("reflect", "think", op, gl, budget_profile=HIGH_BUDGET)
+        assert result.model == "claude-opus-4-6"  # LARGE tier
+
+    def test_env_var_overrides_budget_profile(self, monkeypatch):
+        monkeypatch.setenv("HINDSIGHT_API_RETAIN_SEQUENCE_ANALYSIS_LLM_MODEL", "my-custom-model")
+        op = _make_llm_config("anthropic", "claude-sonnet-4-6", api_key="key")
+        gl = _make_llm_config("anthropic", "claude-sonnet-4-6")
+        result = resolve_llm_config("retain", "sequence_analysis", op, gl, budget_profile=HIGH_BUDGET)
+        assert result.model == "my-custom-model"  # env var wins over budget profile
+
+    def test_no_profile_backward_compat_uses_task_tier_mapping(self):
+        op = _make_llm_config("anthropic", "claude-sonnet-4-6")
+        gl = _make_llm_config("anthropic", "claude-sonnet-4-6")
+        # Without profile, fact_extraction uses TASK_TIER_MAPPING → LARGE → opus
+        result = resolve_llm_config("retain", "fact_extraction", op, gl)
+        assert result.model == "claude-opus-4-6"
+
+    def test_budget_profile_with_unknown_provider_falls_back_to_operation_config(self):
+        op = _make_llm_config("lmstudio", "my-local-model")
+        gl = _make_llm_config("lmstudio", "my-local-model")
+        result = resolve_llm_config("retain", "sequence_analysis", op, gl, budget_profile=HIGH_BUDGET)
+        assert result is op  # lmstudio not in PROVIDER_TIER_MODELS → unchanged
+
+    def test_budget_profile_with_step_not_in_mapping_falls_back_to_task_tier(self):
+        op = _make_llm_config("anthropic", "claude-sonnet-4-6")
+        gl = _make_llm_config("anthropic", "claude-sonnet-4-6")
+        # thalamus_scoring is in TASK_TIER_MAPPING but not in PIPELINE_STEP_TASK_KEY
+        result = resolve_llm_config("retain", "thalamus_scoring", op, gl, budget_profile=MID_BUDGET)
+        assert result.model == "claude-haiku-4-5-20251001"  # SMALL from TASK_TIER_MAPPING
+
+    def test_with_override_profile_uses_overridden_tier(self):
+        profile = LOW_BUDGET.with_override(PipelineStep.REFLECT, ModelTier.LARGE)
+        op = _make_llm_config("anthropic", "claude-sonnet-4-6")
+        gl = _make_llm_config("anthropic", "claude-sonnet-4-6")
+        result = resolve_llm_config("reflect", "think", op, gl, budget_profile=profile)
+        assert result.model == "claude-opus-4-6"  # overridden to LARGE despite LOW_BUDGET base
+
+
+class TestLLMRegistryResolveWithProfile:
+    def test_resolve_with_profile_low_r0_returns_small(self):
+        retain_cfg = _make_llm_config("anthropic", "claude-sonnet-4-6")
+        global_cfg = _make_llm_config("anthropic", "claude-sonnet-4-6")
+        registry = LLMRegistry(global_cfg, {"retain": retain_cfg})
+        result = registry.resolve_with_profile("retain", "sequence_analysis", LOW_BUDGET)
+        assert result.model == "claude-haiku-4-5-20251001"  # SMALL
+
+    def test_resolve_with_profile_high_r0_returns_large(self):
+        retain_cfg = _make_llm_config("anthropic", "claude-sonnet-4-6")
+        global_cfg = _make_llm_config("anthropic", "claude-sonnet-4-6")
+        registry = LLMRegistry(global_cfg, {"retain": retain_cfg})
+        result = registry.resolve_with_profile("retain", "sequence_analysis", HIGH_BUDGET)
+        assert result.model == "claude-opus-4-6"  # LARGE
+
+    def test_resolve_with_profile_not_cached(self):
+        retain_cfg = _make_llm_config("anthropic", "claude-sonnet-4-6")
+        global_cfg = _make_llm_config("anthropic", "claude-sonnet-4-6")
+        registry = LLMRegistry(global_cfg, {"retain": retain_cfg})
+        registry.resolve_with_profile("retain", "sequence_analysis", LOW_BUDGET)
+        # resolve_with_profile must NOT pollute the standard cache
+        assert "retain.sequence_analysis" not in registry._cache
+
+    def test_resolve_with_profile_override_beats_profile(self):
+        retain_cfg = _make_llm_config("anthropic", "claude-sonnet-4-6", api_key="key")
+        global_cfg = _make_llm_config("anthropic", "claude-sonnet-4-6")
+        registry = LLMRegistry(global_cfg, {"retain": retain_cfg})
+        # Env var should still override even when budget_profile is provided
+        import os
+
+        os.environ["HINDSIGHT_API_RETAIN_SEQUENCE_ANALYSIS_LLM_MODEL"] = "custom-override"
+        try:
+            result = registry.resolve_with_profile("retain", "sequence_analysis", HIGH_BUDGET)
+            assert result.model == "custom-override"
+        finally:
+            del os.environ["HINDSIGHT_API_RETAIN_SEQUENCE_ANALYSIS_LLM_MODEL"]

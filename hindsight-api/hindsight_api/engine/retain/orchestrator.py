@@ -53,6 +53,7 @@ async def retain_batch(
     session=None,
     neo4j_client=None,
     budget=None,
+    budget_profile=None,
 ) -> tuple[list[list[str]], TokenUsage]:
     """
     Process a batch of content through the retain pipeline.
@@ -96,13 +97,18 @@ async def retain_batch(
         from ..utils import Budget as _Budget
         from .sequence_analysis import analyze_sequence, units_to_content_dicts
 
-        _budget_to_subtask = {
-            _Budget.LOW: "sequence_analysis_low",
-            _Budget.MID: "sequence_analysis",
-            _Budget.HIGH: "sequence_analysis_high",
-        }
-        _subtask = _budget_to_subtask.get(budget, "sequence_analysis")
-        _r0_llm = llm_registry.get_llm("retain", _subtask)
+        if budget_profile is not None:
+            # Budget profile path: tier comes from profile, not budget-to-subtask mapping
+            _r0_llm = llm_registry.resolve_with_profile("retain", "sequence_analysis", budget_profile)
+        else:
+            # Backward-compat: use manual budget-to-subtask mapping
+            _budget_to_subtask = {
+                _Budget.LOW: "sequence_analysis_low",
+                _Budget.MID: "sequence_analysis",
+                _Budget.HIGH: "sequence_analysis_high",
+            }
+            _subtask = _budget_to_subtask.get(budget, "sequence_analysis")
+            _r0_llm = llm_registry.get_llm("retain", _subtask)
 
         r0_start = time.time()
         original_count = len(contents_dicts)
@@ -148,8 +154,13 @@ async def retain_batch(
     step_start = time.time()
     extract_opinions = fact_type_override == "opinion"
 
+    _r1_llm = (
+        llm_registry.resolve_with_profile("retain", "fact_extraction", budget_profile)
+        if budget_profile is not None
+        else llm_registry.get_llm("retain", "fact_extraction")
+    )
     extracted_facts, chunks, usage = await fact_extraction.extract_facts_from_contents(
-        contents, llm_registry.get_llm("retain", "fact_extraction"), agent_name, extract_opinions
+        contents, _r1_llm, agent_name, extract_opinions
     )
     log_buffer.append(
         f"[1] Extract facts: {len(extracted_facts)} facts, {len(chunks)} chunks from {len(contents)} contents in {time.time() - step_start:.3f}s"
@@ -447,7 +458,11 @@ async def retain_batch(
                 non_duplicate_facts,
                 log_buffer,
                 user_entities_per_content=user_entities_per_content,
-                llm=llm_registry.get_llm("retain", "entity_disambiguation") if llm_registry else None,
+                llm=(
+                    llm_registry.resolve_with_profile("retain", "entity_disambiguation", budget_profile)
+                    if (llm_registry and budget_profile is not None)
+                    else (llm_registry.get_llm("retain", "entity_disambiguation") if llm_registry else None)
+                ),
             )
             log_buffer.append(f"[6] Process entities: {len(entity_links)} links in {time.time() - step_start:.3f}s")
 
@@ -591,10 +606,15 @@ async def retain_batch(
                 )
             else:
                 # Run synchronously inside transaction for atomicity
+                _obs_llm = (
+                    llm_registry.resolve_with_profile("retain", "observation_synthesis", budget_profile)
+                    if budget_profile is not None
+                    else llm_registry.get_llm("retain", "observation_synthesis")
+                )
                 await observation_regeneration.regenerate_observations_batch(
                     conn,
                     embeddings_model,
-                    llm_registry.get_llm("retain", "observation_synthesis"),
+                    _obs_llm,
                     bank_id,
                     entity_links,
                     log_buffer,

@@ -54,6 +54,8 @@ class RetainOrchestrator:
         self.engram_storage = None
         # Lazy-init once engram_storage is available
         self._thalamus = None
+        # Lazy-init for per-bank model configuration (Epic 17)
+        self._bank_model_config_repo = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -112,6 +114,7 @@ class RetainOrchestrator:
         confidence_score: float | None = None,
         return_usage: bool = False,
         budget=None,
+        model_overrides: "dict[str, str] | None" = None,
     ):
         """
         Store multiple content items as memory units in ONE batch operation.
@@ -221,6 +224,43 @@ class RetainOrchestrator:
 
             contents = passed_contents
 
+        # Resolve BudgetProfile: Budget enum → base profile + bank config overrides + request overrides
+        budget_profile = None
+        if budget is not None:
+            from .bank_model_config import BankModelConfigRepo
+            from .llm_routing import HIGH_BUDGET, LOW_BUDGET, MID_BUDGET
+            from .utils import Budget as _Budget
+
+            _budget_to_profile = {_Budget.LOW: LOW_BUDGET, _Budget.MID: MID_BUDGET, _Budget.HIGH: HIGH_BUDGET}
+            base_profile = _budget_to_profile.get(budget, MID_BUDGET)
+
+            # Apply bank-level configuration on top of the base profile
+            if self._bank_model_config_repo is None:
+                self._bank_model_config_repo = BankModelConfigRepo()
+            try:
+                pool = await self._ctx.get_pool()
+                from .utils import acquire_with_retry
+
+                async with acquire_with_retry(pool) as conn:
+                    bank_profile = await self._bank_model_config_repo.get_profile(conn, bank_id)
+                # Merge: bank profile's steps take precedence over base profile
+                from .llm_routing import BudgetProfile
+
+                budget_profile = BudgetProfile(steps={**base_profile.steps, **bank_profile.steps})
+            except Exception:
+                logger.debug("BankModelConfigRepo unavailable — using base budget profile", exc_info=True)
+                budget_profile = base_profile
+
+            # Apply request-level overrides (highest priority)
+            if model_overrides:
+                from .llm_routing import ModelTier, PipelineStep
+
+                for step_val, tier_val in model_overrides.items():
+                    try:
+                        budget_profile = budget_profile.with_override(PipelineStep(step_val), ModelTier(tier_val))
+                    except ValueError:
+                        logger.warning("retain_batch_async: ignoring invalid override %r → %r", step_val, tier_val)
+
         # Auto-chunk large batches
         total_chars = sum(len(item.get("content", "")) for item in contents)
         total_usage = TokenUsage()
@@ -265,6 +305,7 @@ class RetainOrchestrator:
                     confidence_score=confidence_score,
                     session=session,
                     budget=budget,
+                    budget_profile=budget_profile,
                 )
                 all_results.extend(sub_results)
                 total_usage = total_usage + sub_usage
@@ -284,6 +325,7 @@ class RetainOrchestrator:
                 confidence_score=confidence_score,
                 session=session,
                 budget=budget,
+                budget_profile=budget_profile,
             )
 
         # Restore full result shape after Thalamus filtering
@@ -331,6 +373,7 @@ class RetainOrchestrator:
         confidence_score: float | None = None,
         session: "Session | None" = None,
         budget=None,
+        budget_profile=None,
     ) -> tuple[list[list[str]], "TokenUsage"]:
         """Sub-batch worker: backpressure-protected, no chunking logic."""
         async with self._ctx.put_semaphore:
@@ -353,6 +396,7 @@ class RetainOrchestrator:
                 confidence_score=confidence_score,
                 session=session,
                 budget=budget,
+                budget_profile=budget_profile,
             )
 
     async def _find_duplicate_facts_batch(

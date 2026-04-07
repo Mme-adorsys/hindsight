@@ -439,6 +439,23 @@ class RetainRequest(BaseModel):
         default=Budget.MID,
         description="R0 extraction depth: low=facts only, mid=+action/effect/exp/outcome, high=+implicit (default: mid)",
     )
+    model_overrides: dict[str, str] | None = Field(
+        default=None,
+        description="Per-step model tier overrides for this request. Keys must be valid PipelineStep values, values must be valid ModelTier values (small, medium, large). Overrides the bank-level and profile defaults.",
+    )
+
+    @field_validator("model_overrides", mode="before")
+    @classmethod
+    def validate_model_overrides(cls, v: dict | None) -> dict | None:
+        if v is None:
+            return v
+        from hindsight_api.engine.bank_model_config import _validate_overrides
+
+        try:
+            _validate_overrides(v)
+        except ValueError as e:
+            raise ValueError(str(e)) from e
+        return v
 
 
 class RetainResponse(BaseModel):
@@ -990,6 +1007,48 @@ class CancelOperationResponse(BaseModel):
     success: bool
     message: str
     operation_id: str
+
+
+class BankModelConfigResponse(BaseModel):
+    """Response model for GET /v1/default/banks/{bank_id}/model-config."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "budget_profile": "mid",
+                "step_overrides": {"r0_sequence_analysis": "large"},
+                "effective_tiers": {
+                    "r0_sequence_analysis": "large",
+                    "r1_fact_extraction": "small",
+                    "r4_entity_disambiguation": "medium",
+                    "reflect": "medium",
+                    "constructive_memory": "medium",
+                    "schema_compression": "medium",
+                    "observation": "medium",
+                },
+            }
+        }
+    )
+
+    budget_profile: str
+    step_overrides: dict[str, str]
+    effective_tiers: dict[str, str]
+
+
+class UpdateBankModelConfigRequest(BaseModel):
+    """Request model for PUT /v1/default/banks/{bank_id}/model-config."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "budget_profile": "mid",
+                "step_overrides": {"r0_sequence_analysis": "large"},
+            }
+        }
+    )
+
+    budget_profile: str | None = None
+    step_overrides: dict[str, str] | None = None
 
 
 def create_app(
@@ -2293,6 +2352,7 @@ def _register_routes(app: FastAPI):
                         request_context=request_context,
                         return_usage=True,
                         budget=request.budget,
+                        model_overrides=request.model_overrides,
                     )
 
                 return RetainResponse.model_validate(
@@ -2447,3 +2507,82 @@ def _register_routes(app: FastAPI):
             else None,
             "errors": report.errors,
         }
+
+    @app.get(
+        "/v1/default/banks/{bank_id}/model-config",
+        response_model=BankModelConfigResponse,
+        summary="Get bank model configuration",
+        description="Return the active budget profile, per-step overrides, and effective model tiers for a bank.",
+        operation_id="get_bank_model_config",
+        tags=["Banks"],
+    )
+    async def api_get_bank_model_config(bank_id: str, request_context: RequestContext = Depends(get_request_context)):
+        """Get the LLM budget profile and per-step overrides for a bank."""
+        from hindsight_api.engine.bank_model_config import BankModelConfigRepo
+
+        try:
+            await app.state.memory._authenticate_tenant(request_context)
+            pool = await app.state.memory._get_pool()
+            async with acquire_with_retry(pool) as conn:
+                repo = BankModelConfigRepo()
+                config = await repo.get_config_row(conn, bank_id)
+            return BankModelConfigResponse(**config)
+        except (AuthenticationError, HTTPException):
+            raise
+        except Exception as e:
+            import traceback
+
+            logger.error(f"Error in GET model-config for bank={bank_id}: {traceback.format_exc()}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.put(
+        "/v1/default/banks/{bank_id}/model-config",
+        response_model=BankModelConfigResponse,
+        summary="Update bank model configuration",
+        description="Set or update the budget profile and/or per-step model tier overrides for a bank.",
+        operation_id="update_bank_model_config",
+        tags=["Banks"],
+    )
+    async def api_update_bank_model_config(
+        bank_id: str,
+        request: UpdateBankModelConfigRequest,
+        request_context: RequestContext = Depends(get_request_context),
+    ):
+        """Update the LLM budget profile and/or per-step overrides for a bank."""
+        from hindsight_api.engine.bank_model_config import BankModelConfigRepo, _validate_overrides
+
+        try:
+            # Validate before touching the DB
+            if request.budget_profile is not None:
+                from hindsight_api.engine.bank_model_config import PROFILE_MAP
+
+                if request.budget_profile not in PROFILE_MAP:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Invalid budget_profile {request.budget_profile!r}. Must be one of: {list(PROFILE_MAP)}",
+                    )
+            if request.step_overrides is not None:
+                try:
+                    _validate_overrides(request.step_overrides)
+                except ValueError as e:
+                    raise HTTPException(status_code=422, detail=str(e))
+
+            await app.state.memory._authenticate_tenant(request_context)
+            pool = await app.state.memory._get_pool()
+            async with acquire_with_retry(pool) as conn:
+                repo = BankModelConfigRepo()
+                await repo.set_config(
+                    conn,
+                    bank_id,
+                    budget_profile=request.budget_profile,
+                    step_overrides=request.step_overrides,
+                )
+                config = await repo.get_config_row(conn, bank_id)
+            return BankModelConfigResponse(**config)
+        except (AuthenticationError, HTTPException):
+            raise
+        except Exception as e:
+            import traceback
+
+            logger.error(f"Error in PUT model-config for bank={bank_id}: {traceback.format_exc()}")
+            raise HTTPException(status_code=500, detail=str(e))
