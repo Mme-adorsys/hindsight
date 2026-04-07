@@ -162,7 +162,7 @@ Phase 8:  * → 23 (Benchmarking)
 - [x] Epic 14 — Multi-Bank Architecture
 
 ### Phase 6 — Evolution
-- [ ] Epic 15 — API & Retain Enrichment
+- [x] Epic 15 — API & Retain Enrichment
 - [ ] Epic 16 — Objektiver Thalamus-Scoring-Rahmen
 - [ ] Epic 17 — Konfigurierbare Modell-Zuweisung
 - [ ] Epic 18 — Working Memory Persistence & Cache Layer
