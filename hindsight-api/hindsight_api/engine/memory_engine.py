@@ -83,6 +83,90 @@ _get_tiktoken_encoding()  # eager warmup
 _WM_SAVE_INTERVAL_SECONDS = 300  # 5 minutes
 
 
+# ---------------------------------------------------------------------------
+# Epic 18 S3 — Flush helpers (module-level, used by flush_session_async)
+# ---------------------------------------------------------------------------
+
+
+def _process_inferences_into_wm(sc: Any, wm: Any) -> int:
+    """
+    Route pending inferences from SessionCache into WorkingMemory.
+
+    confirmed  → added/merged into WM.confirmed_inferences (confidence kept)
+    tentative  → added/merged with confidence *= 0.5 (uncertain residual)
+    rejected   → discarded entirely
+
+    Deduplication: if the same inference id already exists in WM, the higher
+    confidence value wins (no duplicates created).
+
+    Returns count of inferences processed (confirmed + tentative).
+    """
+    import copy as _copy
+
+    existing_ids: dict[str, Any] = {inf.id: inf for inf in wm.confirmed_inferences}
+    count = 0
+
+    for inf in sc.pending_inferences:
+        if inf.status == "rejected":
+            continue
+
+        confidence = inf.confidence
+        if inf.status == "tentative":
+            confidence = inf.confidence * 0.5
+            logger.debug(
+                "_process_inferences_into_wm: tentative inference %r → confidence %.3f",
+                inf.id,
+                confidence,
+            )
+
+        if inf.id in existing_ids:
+            # Dedup: keep higher confidence
+            existing = existing_ids[inf.id]
+            if confidence > existing.confidence:
+                existing.confidence = confidence
+        else:
+            new_inf = _copy.copy(inf)
+            new_inf.confidence = confidence
+            new_inf.status = "confirmed"  # type: ignore[assignment]
+            wm.confirmed_inferences.append(new_inf)
+            existing_ids[inf.id] = new_inf
+
+        count += 1
+
+    return count
+
+
+def _co_activation_to_links(co_activation_counts: dict) -> list:
+    """
+    Convert co_activation_counts → normalized LinkRecords for Neo4j.
+
+    Weight = count / max_count (normalized 0.0–1.0).
+    Only pairs with at least 1 co-activation are included (all of them).
+    """
+    from .retain.neo4j_link_writer import LinkRecord
+
+    if not co_activation_counts:
+        return []
+
+    max_count = max(co_activation_counts.values())
+    if max_count == 0:
+        return []
+
+    links = []
+    for (id_a, id_b), count in co_activation_counts.items():
+        weight = count / max_count
+        links.append(
+            LinkRecord(
+                from_id=id_a,
+                to_id=id_b,
+                rel_type="CO_ACTIVATED",
+                weight=weight,
+                source="session_flush",
+            )
+        )
+    return links
+
+
 class MemoryEngine(MemoryEngineInterface):
     """
     Advanced memory system using temporal and semantic linking with PostgreSQL.
@@ -501,6 +585,104 @@ class MemoryEngine(MemoryEngineInterface):
             )
 
         return await sm.end_session(session_id)
+
+    async def flush_session_async(
+        self,
+        session_id: uuid.UUID,
+        bank_id: str,
+        *,
+        request_context,
+    ) -> dict:
+        """
+        Full session flush: SessionCache → WorkingMemory + Retain Pipeline + Neo4j.
+
+        Processes the transient SessionCache contents at session end:
+        1. Inferences: confirmed → WM, tentative → WM (confidence * 0.5), rejected → drop
+        2. WC state merge + WM save (via end_session_async)
+        3. Episodic buffer → retain_batch_async (async, failure = warning)
+        4. Co-activation counts → Neo4j CO_ACTIVATED links (best-effort)
+
+        Bio mapping: Session-end = slow-wave sleep onset. Episodic traces (hippocampus)
+        are replayed and either consolidated (confirmed inferences → WM) or discarded
+        (rejected). Co-activation strengthens graph links for future pattern completion.
+
+        Args:
+            session_id: ID of the session to flush.
+            bank_id: Memory bank this session belongs to.
+            request_context: Passed through to the retain pipeline.
+
+        Returns:
+            Metrics dict: flushed_episodes, flushed_inferences, flushed_co_activations.
+        """
+        from .retain.neo4j_link_writer import write_links_to_neo4j
+
+        sm = self._ctx.get_session_manager()
+        sc = sm.get_session_cache(session_id)
+        wm = sm.get_working_memory(session_id)
+
+        # -- T2: Inferences: route pending_inferences from SessionCache into WM --
+        flushed_inferences = 0
+        if sc is not None and wm is not None:
+            flushed_inferences = _process_inferences_into_wm(sc, wm)
+
+        # -- Capture episodic + co-activation data before session teardown --
+        episodic_items: list[dict] = []
+        if sc is not None:
+            episodic_items = [ep.to_retain_content() for ep in sc.episodic_buffer]
+
+        co_activation_counts: dict[tuple[str, str], int] = dict(sc.co_activation_counts) if sc else {}
+
+        # -- T1 core: WC→WM merge, session history, WM save, session cleanup --
+        await self.end_session_async(session_id, bank_id)
+
+        # -- T3: Episodic Buffer → Retain Pipeline (non-blocking, failure = warning) --
+        flushed_episodes = 0
+        if episodic_items:
+            try:
+                await self.retain_batch_async(
+                    bank_id,
+                    episodic_items,
+                    request_context=request_context,
+                )
+                flushed_episodes = len(episodic_items)
+            except Exception as exc:
+                logger.warning("flush_session_async: retain_batch failed for bank_id=%r: %s", bank_id, exc)
+
+        # -- T4: Co-Activation Counts → Neo4j CO_ACTIVATED links (best-effort) --
+        flushed_co_activations = 0
+        if co_activation_counts:
+            neo4j_client = self._get_neo4j_client()
+            if neo4j_client is not None:
+                try:
+                    links = _co_activation_to_links(co_activation_counts)
+                    if links:
+                        await write_links_to_neo4j(neo4j_client, links)
+                        flushed_co_activations = len(links)
+                except Exception as exc:
+                    logger.warning(
+                        "flush_session_async: Neo4j CO_ACTIVATED write failed for bank_id=%r: %s",
+                        bank_id,
+                        exc,
+                    )
+
+        logger.debug(
+            "flush_session_async: bank_id=%r episodes=%d inferences=%d co_activations=%d",
+            bank_id,
+            flushed_episodes,
+            flushed_inferences,
+            flushed_co_activations,
+        )
+        return {
+            "flushed_episodes": flushed_episodes,
+            "flushed_inferences": flushed_inferences,
+            "flushed_co_activations": flushed_co_activations,
+        }
+
+    def _get_neo4j_client(self):
+        """Return Neo4j client if available (from engram_storage). None if not configured."""
+        if self._retain.engram_storage is not None:
+            return getattr(self._retain.engram_storage, "_neo4j", None)
+        return None
 
     async def _periodic_wm_save(self, session_id: uuid.UUID, bank_id: str) -> None:
         """
