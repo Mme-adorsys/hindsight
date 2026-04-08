@@ -12,11 +12,20 @@ import {
   ChevronRight,
   Box,
   Layers,
+  RefreshCw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import Link from "next/link";
 
-type NavItem = "recall" | "reflect" | "data" | "documents" | "entities" | "engrams" | "profile";
+type NavItem =
+  | "recall"
+  | "reflect"
+  | "data"
+  | "documents"
+  | "entities"
+  | "engrams"
+  | "consolidation"
+  | "profile";
 
 interface SidebarProps {
   currentTab: NavItem;
@@ -38,6 +47,7 @@ export function Sidebar({ currentTab, onTabChange }: SidebarProps) {
     { id: "documents" as NavItem, label: "Documents", icon: FileText },
     { id: "entities" as NavItem, label: "Entities", icon: Users },
     { id: "engrams" as NavItem, label: "Engrams", icon: Layers },
+    { id: "consolidation" as NavItem, label: "Consolidation", icon: RefreshCw },
     { id: "profile" as NavItem, label: "Memory Bank", icon: Box },
   ];
 

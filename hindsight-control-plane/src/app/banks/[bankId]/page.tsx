@@ -10,8 +10,17 @@ import { ThinkView } from "@/components/think-view";
 import { SearchDebugView } from "@/components/search-debug-view";
 import { BankProfileView } from "@/components/bank-profile-view";
 import { EngramLifecycleView } from "@/components/engram-lifecycle-view";
+import { NCRDashboardView } from "@/components/ncr-dashboard-view";
 
-type NavItem = "recall" | "reflect" | "data" | "documents" | "entities" | "engrams" | "profile";
+type NavItem =
+  | "recall"
+  | "reflect"
+  | "data"
+  | "documents"
+  | "entities"
+  | "engrams"
+  | "consolidation"
+  | "profile";
 type DataSubTab = "world" | "experience" | "opinion";
 
 export default function BankPage() {
@@ -164,6 +173,17 @@ export default function BankPage() {
                   Layer distribution and strength health across Working Memory, Buffer, and Neocortex.
                 </p>
                 <EngramLifecycleView />
+              </div>
+            )}
+
+            {/* Consolidation Tab */}
+            {view === "consolidation" && (
+              <div>
+                <h1 className="text-3xl font-bold mb-2 text-foreground">Consolidation Dashboard</h1>
+                <p className="text-muted-foreground mb-6">
+                  Trigger the Nightly Consolidation Run, review results, and inspect the run history.
+                </p>
+                <NCRDashboardView />
               </div>
             )}
           </div>

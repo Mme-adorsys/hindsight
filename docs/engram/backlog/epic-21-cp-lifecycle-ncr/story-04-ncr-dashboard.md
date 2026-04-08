@@ -16,26 +16,23 @@ Der NCR (Nightly Consolidation Run) ist der zentrale Langzeitprozess: Er bewegt 
 
 ## Akzeptanzkriterien
 
-- [ ] Neuer Sidebar-Eintrag "Consolidation" mit Icon (z.B. `RefreshCw` von lucide-react)
-- [ ] `?view=consolidation` zeigt das NCR Dashboard
-- [ ] "Run NCR Now" Button mit Confirmation Dialog
-- [ ] Loading State während NCR läuft (kann Minuten dauern)
-- [ ] Last Run Summary: 4 Cards (Consolidation, Decay, Strengthen, Schema) mit Zahlen
-- [ ] Run History: Tabelle der letzten 20 Runs mit Zeitstempel, Dauer, Trigger-Type, Ergebnis-Summary
-- [ ] Fehler-Anzeige: Expandable Error List wenn ein Run Errors hatte
-- [ ] Cooldown-Hinweis: Wenn letzter Run < 5min her, Warnung anzeigen (nicht blockieren)
+- [x] Neuer Sidebar-Eintrag "Consolidation" mit `RefreshCw`-Icon
+- [x] `?view=consolidation` zeigt das NCR Dashboard
+- [x] "Run NCR Now" Button mit Confirmation Dialog (`AlertDialog` aus `@/components/ui/alert-dialog`)
+- [x] Loading State während NCR läuft (spinning Icon, Button disabled, Label "Running NCR...")
+- [x] Last Run Summary: 4 Cards (Consolidation / Decay / Strengthen / Schema) mit Metrics aus `history[0]._stats`
+- [x] Run History: Tabelle der letzten 20 Runs mit Zeitstempel, Duration, Trigger-Badge, Summary
+- [x] Expandable Row-Details mit JSON-Dumps aller Phase-Stats + rote Error-Section bei Errors
+- [x] Cooldown-Hinweis wenn letzter Run < 5min her (gelber Warn-Box, Button bleibt klickbar)
 
 ## Tasks
 
-- [ ] **T1 — Sidebar erweitern** — In `sidebar.tsx` neues Nav-Item: `{ id: "consolidation", label: "Consolidation", icon: RefreshCw }`. NavItem Type erweitern.
+- [x] **T1 — Sidebar erweitern** — `sidebar.tsx`: `NavItem`-Type um `"consolidation"` erweitert (multi-line union), `RefreshCw`-Import und Nav-Item zwischen "Engrams" und "Memory Bank" eingefügt.
 
-- [ ] **T2 — Router erweitern** — In `page.tsx` neuen `{view === "consolidation" && ...}` Block. Titel "Consolidation Dashboard", Beschreibung, `<NCRDashboardView />` einbinden.
+- [x] **T2 — Router erweitern** — `page.tsx`: `NavItem`-Type aligned, `NCRDashboardView`-Import und `{view === "consolidation" && ...}`-Block mit Titel "Consolidation Dashboard" und Beschreibung eingefügt.
 
-- [ ] **T3 — Component: `ncr-dashboard-view.tsx`** — Neues Component. Sections:
-  - **Trigger Section:** "Run NCR Now" Button. Klick → Confirmation Dialog ("This will run the full consolidation pipeline. Continue?"). Bei Bestätigung: `client.triggerNCR(bankId)`. Loading Spinner während der Ausführung. Nach Erfolg: Last Run Summary aktualisieren.
-  - **Last Run Summary:** 4 Cards nebeneinander: Consolidation (total/consolidated), Decay (total/decayed/archived), Strengthen (total/promoted), Schema (created/strengthened/deleted). Daten vom neuesten Run in History.
-  - **Run History Table:** Spalten: Timestamp, Duration, Trigger (manual/scheduled Badge), Summary (one-line: "12 consolidated, 15 decayed, 8 promoted, 2 schemas"). Expandable Row für Details + Errors.
+- [x] **T3 — Component: `ncr-dashboard-view.tsx`** — Neues Component mit `useBank()` + `useState` für `history/loading/triggering/error/dialogOpen/expanded`. Trigger-Section mit `AlertDialog` Confirmation. State-Entkopplung: nach erfolgreichem Trigger wird die History neu geladen, `lastRun = history[0]` speist die 4 Summary-Cards. Gradient-Cards mit Metrics (total/consolidated/decayed/archived/promoted/created/strengthened/deleted). Run History Table mit `Fragment`-gewrappten expandable Rows (ChevronRight/Down Toggle), JSON-Dumps pro Phase im Expand + roter Error-Section mit Bullet-Liste. Robust gegen fehlende Stats via `numFromStats`-Helper.
 
-- [ ] **T4 — Error Handling** — NCR kann lange dauern (Minuten). Timeout auf 5min setzen. Bei Timeout: Hinweis "NCR is still running in the background". Bei API-Error: Error-Toast mit Details. Bei NCR-Errors im Report: Rot markierte Error-Section im Last Run Summary.
+- [x] **T4 — Error Handling** — Inline-Error-Panel (rote Border+Background+AlertTriangle) im Trigger-Card. 5-min Timeout ist bereits auf der `/api/ncr/trigger` CP-Proxy-Route via AbortController implementiert (Story 03), liefert 504 mit Hinweis "may still be running". Dashboard fängt HTTP-Errors ab und zeigt sie inline. Pro History-Row ein Status-Icon (CheckCircle grün oder AlertTriangle rot mit Error-Count) und im Expand die volle Error-Liste.
 
-- [ ] **T5 — Cooldown-Logik** — Beim Laden prüfen: War der letzte Run < 5min her? Wenn ja: Gelber Hinweis "Last run was X minutes ago. Running NCR too frequently may not produce meaningful changes." Button bleibt klickbar (kein Hard-Block).
+- [x] **T5 — Cooldown-Logik** — `useMemo` vergleicht `Date.now() - history[0].started_at` gegen 5 min. Zeigt gelbe Warn-Box mit Minuten-Angabe und zusätzlichem Hinweis auf die Server-Rate-Limit (1h). Button bleibt klickbar — nicht hard-blockiert. Bei 429 vom Server greift automatisch der Error-Panel aus T4.
