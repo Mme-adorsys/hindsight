@@ -569,10 +569,13 @@ export function DataView({ factType }: DataViewProps) {
                             <Table className="table-fixed">
                               <TableHeader>
                                 <TableRow className="bg-muted/50">
-                                  <TableHead className="w-[45%]">Memory</TableHead>
-                                  <TableHead className="w-[20%]">Entities</TableHead>
-                                  <TableHead className="w-[15%]">Occurred</TableHead>
-                                  <TableHead className="w-[15%]">Mentioned</TableHead>
+                                  <TableHead className="w-[35%]">Memory</TableHead>
+                                  <TableHead className="w-[12%]">Layer</TableHead>
+                                  <TableHead className="w-[10%]">Strength</TableHead>
+                                  <TableHead className="w-[5%] text-center">#</TableHead>
+                                  <TableHead className="w-[13%]">Entities</TableHead>
+                                  <TableHead className="w-[12%]">Occurred</TableHead>
+                                  <TableHead className="w-[8%]">Mentioned</TableHead>
                                   <TableHead className="w-[5%]"></TableHead>
                                 </TableRow>
                               </TableHeader>
@@ -608,6 +611,52 @@ export function DataView({ factType }: DataViewProps) {
                                             {row.context}
                                           </div>
                                         )}
+                                      </TableCell>
+                                      {/* Layer Badge */}
+                                      <TableCell className="py-2">
+                                        {row.layer === "neocortex" ? (
+                                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 font-medium">
+                                            Neocortex
+                                          </span>
+                                        ) : row.layer === "buffer" ? (
+                                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400 font-medium">
+                                            Buffer
+                                          </span>
+                                        ) : (
+                                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground font-medium">
+                                            Working
+                                          </span>
+                                        )}
+                                      </TableCell>
+                                      {/* Strength Bar */}
+                                      <TableCell className="py-2">
+                                        {row.strength != null ? (
+                                          <div className="flex items-center gap-1">
+                                            <div className="w-12 h-1.5 rounded-full bg-muted overflow-hidden">
+                                              <div
+                                                className={`h-full rounded-full ${
+                                                  row.strength > 0.7
+                                                    ? "bg-green-500"
+                                                    : row.strength > 0.3
+                                                      ? "bg-yellow-500"
+                                                      : "bg-red-500"
+                                                }`}
+                                                style={{ width: `${Math.round(row.strength * 100)}%` }}
+                                              />
+                                            </div>
+                                            <span className="text-[10px] text-muted-foreground">
+                                              {row.strength.toFixed(2)}
+                                            </span>
+                                          </div>
+                                        ) : (
+                                          <span className="text-xs text-muted-foreground">N/A</span>
+                                        )}
+                                      </TableCell>
+                                      {/* Access Count */}
+                                      <TableCell className="py-2 text-center">
+                                        <span className="text-xs text-muted-foreground">
+                                          {row.access_count ?? "–"}
+                                        </span>
                                       </TableCell>
                                       <TableCell className="py-2">
                                         {row.entities ? (

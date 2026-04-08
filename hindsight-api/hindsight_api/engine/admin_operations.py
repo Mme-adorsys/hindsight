@@ -217,10 +217,16 @@ class AdminOperations:
             param_count += 1
             units = await conn.fetch(
                 f"""
-                SELECT id, text, event_date, context, occurred_start, occurred_end, mentioned_at, document_id, chunk_id, fact_type
-                FROM {fq_table("memory_units")}
-                {where_clause}
-                ORDER BY mentioned_at DESC NULLS LAST, event_date DESC
+                SELECT
+                    mu.id, mu.text, mu.event_date, mu.context, mu.occurred_start, mu.occurred_end,
+                    mu.mentioned_at, mu.document_id, mu.chunk_id, mu.fact_type,
+                    ed.strength, ed.layer, ed.access_count,
+                    ed.thalamus_overall, ed.novelty, ed.surprise,
+                    ed.task_relevance, ed.emotional_valence
+                FROM {fq_table("memory_units")} mu
+                LEFT JOIN {fq_table("engram_dictionary")} ed ON ed.engram_id = mu.id
+                {where_clause.replace("bank_id", "mu.bank_id").replace("fact_type", "mu.fact_type")}
+                ORDER BY mu.mentioned_at DESC NULLS LAST, mu.event_date DESC
                 LIMIT ${param_count}
                 """,
                 *query_params,
@@ -308,6 +314,15 @@ class AdminOperations:
         for row in units:
             unit_id = row["id"]
             entities = entity_map.get(unit_id, [])
+            thalamus_scores = None
+            if row["thalamus_overall"] is not None:
+                thalamus_scores = {
+                    "overall": row["thalamus_overall"],
+                    "novelty": row["novelty"],
+                    "surprise": row["surprise"],
+                    "task_relevance": row["task_relevance"],
+                    "emotional_valence": row["emotional_valence"],
+                }
             table_rows.append(
                 {
                     "id": str(unit_id),
@@ -321,6 +336,10 @@ class AdminOperations:
                     "document_id": row["document_id"],
                     "chunk_id": row["chunk_id"] if row["chunk_id"] else None,
                     "fact_type": row["fact_type"],
+                    "strength": float(row["strength"]) if row["strength"] is not None else None,
+                    "layer": row["layer"],
+                    "access_count": row["access_count"],
+                    "thalamus_scores": thalamus_scores,
                 }
             )
 
@@ -379,10 +398,16 @@ class AdminOperations:
 
             units = await conn.fetch(
                 f"""
-                SELECT id, text, event_date, context, fact_type, mentioned_at, occurred_start, occurred_end, chunk_id
-                FROM {fq_table("memory_units")}
-                {where_clause}
-                ORDER BY mentioned_at DESC NULLS LAST, created_at DESC
+                SELECT
+                    mu.id, mu.text, mu.event_date, mu.context, mu.fact_type,
+                    mu.mentioned_at, mu.occurred_start, mu.occurred_end, mu.chunk_id,
+                    ed.strength, ed.layer, ed.access_count,
+                    ed.thalamus_overall, ed.novelty, ed.surprise,
+                    ed.task_relevance, ed.emotional_valence
+                FROM {fq_table("memory_units")} mu
+                LEFT JOIN {fq_table("engram_dictionary")} ed ON ed.engram_id = mu.id
+                {where_clause.replace("bank_id", "mu.bank_id").replace("fact_type", "mu.fact_type")}
+                ORDER BY mu.mentioned_at DESC NULLS LAST, mu.created_at DESC
                 LIMIT {limit_param} OFFSET {offset_param}
                 """,
                 *query_params,
@@ -411,6 +436,15 @@ class AdminOperations:
             for row in units:
                 unit_id = row["id"]
                 entities = entity_map.get(unit_id, [])
+                thalamus_scores = None
+                if row["thalamus_overall"] is not None:
+                    thalamus_scores = {
+                        "overall": row["thalamus_overall"],
+                        "novelty": row["novelty"],
+                        "surprise": row["surprise"],
+                        "task_relevance": row["task_relevance"],
+                        "emotional_valence": row["emotional_valence"],
+                    }
                 items.append(
                     {
                         "id": str(unit_id),
@@ -423,6 +457,10 @@ class AdminOperations:
                         "occurred_end": row["occurred_end"].isoformat() if row["occurred_end"] else None,
                         "entities": ", ".join(entities) if entities else "",
                         "chunk_id": row["chunk_id"] if row["chunk_id"] else None,
+                        "strength": float(row["strength"]) if row["strength"] is not None else None,
+                        "layer": row["layer"],
+                        "access_count": row["access_count"],
+                        "thalamus_scores": thalamus_scores,
                     }
                 )
 

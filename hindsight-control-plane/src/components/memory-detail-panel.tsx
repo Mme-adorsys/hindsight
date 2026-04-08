@@ -138,6 +138,102 @@ export function MemoryDetailPanel({
               </div>
             )}
 
+            {/* Engram Metadata */}
+            {(memory.strength != null || memory.layer != null || memory.access_count != null) && (
+              <div className="p-4 bg-muted/50 rounded-lg">
+                <div className="text-xs font-bold text-muted-foreground uppercase mb-3">
+                  Engram
+                </div>
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <div className="text-[10px] text-muted-foreground uppercase mb-1">Layer</div>
+                    {memory.layer === "neocortex" ? (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 font-medium">
+                        Neocortex
+                      </span>
+                    ) : memory.layer === "buffer" ? (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400 font-medium">
+                        Buffer
+                      </span>
+                    ) : (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground font-medium">
+                        Working
+                      </span>
+                    )}
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-muted-foreground uppercase mb-1">Strength</div>
+                    {memory.strength != null ? (
+                      <div className="flex items-center gap-1.5">
+                        <div className="w-16 h-2 rounded-full bg-muted overflow-hidden">
+                          <div
+                            className={`h-full rounded-full ${
+                              memory.strength > 0.7
+                                ? "bg-green-500"
+                                : memory.strength > 0.3
+                                  ? "bg-yellow-500"
+                                  : "bg-red-500"
+                            }`}
+                            style={{ width: `${Math.round(memory.strength * 100)}%` }}
+                          />
+                        </div>
+                        <span className="text-xs text-foreground">{memory.strength.toFixed(2)}</span>
+                      </div>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">N/A</span>
+                    )}
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-muted-foreground uppercase mb-1">Accesses</div>
+                    <span className="text-xs font-mono text-foreground">
+                      {memory.access_count ?? "–"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Thalamus Scores */}
+            {memory.thalamus_scores ? (
+              <div className="p-4 bg-muted/50 rounded-lg">
+                <div className="text-xs font-bold text-muted-foreground uppercase mb-3">
+                  Thalamus Scores
+                </div>
+                <div className="space-y-2">
+                  {[
+                    { key: "overall", label: "Overall" },
+                    { key: "novelty", label: "Novelty" },
+                    { key: "surprise", label: "Surprise" },
+                    { key: "task_relevance", label: "Task Relevance" },
+                    { key: "emotional_valence", label: "Emotional Valence" },
+                  ].map(({ key, label }) => {
+                    const val = memory.thalamus_scores[key];
+                    return (
+                      <div key={key} className="flex items-center gap-2">
+                        <div className="w-28 text-xs text-muted-foreground shrink-0">{label}</div>
+                        <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                          <div
+                            className="h-full rounded-full bg-primary"
+                            style={{ width: val != null ? `${Math.round(val * 100)}%` : "0%" }}
+                          />
+                        </div>
+                        <span className="text-xs font-mono text-foreground w-8 text-right">
+                          {val != null ? val.toFixed(2) : "N/A"}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              <div className="p-4 bg-muted/50 rounded-lg">
+                <div className="text-xs font-bold text-muted-foreground uppercase mb-2">
+                  Thalamus Scores
+                </div>
+                <div className="text-xs text-muted-foreground">N/A</div>
+              </div>
+            )}
+
             {/* ID */}
             {memoryId && (
               <div className="p-4 bg-muted/50 rounded-lg">

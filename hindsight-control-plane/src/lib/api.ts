@@ -3,6 +3,32 @@
  * This should be used in client components, not the SDK directly
  */
 
+export interface ThalamusScores {
+  overall: number | null;
+  novelty: number | null;
+  surprise: number | null;
+  task_relevance: number | null;
+  emotional_valence: number | null;
+}
+
+export interface MemoryListItem {
+  id: string;
+  text: string;
+  context: string;
+  date: string;
+  fact_type: string;
+  mentioned_at: string | null;
+  occurred_start: string | null;
+  occurred_end: string | null;
+  entities: string;
+  chunk_id: string | null;
+  // Engram metadata (null for legacy entries without engram_dictionary row)
+  strength: number | null;
+  layer: string | null;
+  access_count: number | null;
+  thalamus_scores: ThalamusScores | null;
+}
+
 export class ControlPlaneClient {
   private async fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
     const response = await fetch(path, {
