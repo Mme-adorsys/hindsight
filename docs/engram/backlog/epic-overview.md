@@ -168,7 +168,7 @@ Phase 8:  * → 23 (Benchmarking)
 - [x] Epic 18 — Working Memory Persistence & Cache Layer
 
 ### Phase 7 — Control Plane Extension
-- [ ] Epic 19 — CP: Engram Metadata & Session Modes
+- [x] Epic 19 — CP: Engram Metadata & Session Modes
 - [x] Epic 20 — CP: Bank Profile & System Configuration
 - [ ] Epic 21 — CP: Engram Lifecycle & NCR Dashboard
 - [ ] Epic 22 — CP: Schema Explorer

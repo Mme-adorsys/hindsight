@@ -17,22 +17,22 @@ Die Engine speichert pro Engram: `strength` (0.0–1.0), `layer` (null/buffer/ne
 
 ## Akzeptanzkriterien
 
-- [ ] Memory List Response enthält `strength`, `layer`, `access_count`, `thalamus_scores` pro Item
-- [ ] `data-view.tsx` zeigt Layer als farbcodierten Badge (grau=Working, gelb=Buffer, grün=Neocortex)
-- [ ] `data-view.tsx` zeigt Strength als Progress Bar (rot < 0.3, gelb 0.3–0.7, grün > 0.7)
-- [ ] `data-view.tsx` zeigt Access Count als Zähler
-- [ ] Memory Detail Panel zeigt Thalamus Scores als 4 horizontale Bars + Overall
-- [ ] Felder sind optional — ältere Engrams ohne Scores zeigen "N/A"
-- [ ] Kein Breaking Change in der API
+- [x] Memory List Response enthält `strength`, `layer`, `access_count`, `thalamus_scores` pro Item
+- [x] `data-view.tsx` zeigt Layer als farbcodierten Badge (grau=Working, gelb=Buffer, grün=Neocortex)
+- [x] `data-view.tsx` zeigt Strength als Progress Bar (rot < 0.3, gelb 0.3–0.7, grün > 0.7)
+- [x] `data-view.tsx` zeigt Access Count als Zähler
+- [x] Memory Detail Panel zeigt Thalamus Scores als 4 horizontale Bars + Overall
+- [x] Felder sind optional — ältere Engrams ohne Scores zeigen "N/A"
+- [x] Kein Breaking Change in der API
 
 ## Tasks
 
-- [ ] **T1 — Dataplane: Memory List Response erweitern** — `ListMemoryUnitsResponse` in `http.py` um `strength: float | None`, `layer: str | None`, `access_count: int | None`, `thalamus_scores: object | None` erweitern. Daten aus Qdrant Payload mappen. Sicherstellen dass der `EngramStorageService` diese Felder beim List-Call mitliefert.
+- [x] **T1 — Dataplane: Memory List Response erweitern** — Umgesetzt via `admin_operations.py` (LEFT JOIN `engram_dictionary` in `list_memory_units()` und `get_graph_data()`). Felder `strength`, `layer`, `access_count`, `thalamus_scores` werden pro Item mitgeliefert. Additive Änderung, backward-compat für Legacy-Einträge ohne engram_dictionary Row.
 
-- [ ] **T2 — CP API Route erweitern** — `src/app/api/list/route.ts`: Die erweiterten Felder durchreichen. Keine Transformation nötig, nur sicherstellen dass die Felder im Proxy nicht verloren gehen.
+- [x] **T2 — CP API Route erweitern** — `src/app/api/list/route.ts` ist Pass-Through via `hindsightClient.listMemories()` — keine Transformation nötig, Felder kommen automatisch durch.
 
-- [ ] **T3 — CP Client typesafe machen** — In `src/lib/api.ts` ein `MemoryListItem` Interface definieren mit allen Feldern (bestehende + neue). `ThalamusScoresDisplay` Interface für die 5 Score-Dimensionen. Response-Type der `listMemories()`-Methode anpassen.
+- [x] **T3 — CP Client typesafe machen** — `src/lib/api.ts` mit `ThalamusScores` und `MemoryListItem` Interfaces erweitert (strength, layer, access_count, thalamus_scores als nullable Felder).
 
-- [ ] **T4 — data-view.tsx: Neue Spalten** — Layer-Badge Component (3 Farben), Strength-ProgressBar Component (3 Farbstufen), Access-Count Anzeige. Spalten sind responsive — auf kleinen Screens können Layer und Strength als Icons dargestellt werden.
+- [x] **T4 — data-view.tsx: Neue Spalten** — Layer-Badge (grau/gelb/grün), Strength-Bar (rot/gelb/grün), Access-Count Column in Table View.
 
-- [ ] **T5 — Memory Detail Panel: Thalamus Scores** — Im Detail-Panel (Click auf Memory) die 4+1 Thalamus-Scores als horizontale Bars anzeigen. Jeder Bar zeigt: Label, Wert (0.0–1.0), farbcodierte Füllung. Fallback "N/A" wenn `thalamus_scores` null ist.
+- [x] **T5 — Memory Detail Panel: Thalamus Scores** — `memory-detail-panel.tsx` mit Engram-Section (Layer+Strength+Accesses) + 5 Thalamus-Score-Bars (Overall, Novelty, Surprise, Task Relevance, Emotional Valence) im inPanel Mode; "N/A" Fallback für Legacy-Einträge.
