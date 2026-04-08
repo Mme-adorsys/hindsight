@@ -102,6 +102,7 @@ ENV_TASK_BACKEND_MEMORY_BATCH_INTERVAL = "HINDSIGHT_API_TASK_BACKEND_MEMORY_BATC
 # Nightly Consolidation Run (NCR)
 ENV_NCR_ENABLED = "HINDSIGHT_API_NCR_ENABLED"
 ENV_NCR_INTERVAL_HOURS = "HINDSIGHT_API_NCR_INTERVAL_HOURS"
+ENV_NCR_SHARED_BANK_ID = "HINDSIGHT_API_NCR_SHARED_BANK_ID"
 
 # Qdrant (Content Store)
 ENV_QDRANT_URL = "QDRANT_URL"
@@ -357,6 +358,7 @@ class HindsightConfig:
     # Nightly Consolidation Run (NCR)
     ncr_enabled: bool
     ncr_interval_hours: float
+    ncr_shared_bank_id: str | None  # Shared Bank for Phase 4 promotion (B3/B5) — None = skip Phase 4
 
     # Qdrant (Content Store)
     qdrant_url: str
@@ -452,6 +454,7 @@ class HindsightConfig:
             # NCR
             ncr_enabled=os.getenv(ENV_NCR_ENABLED, str(DEFAULT_NCR_ENABLED)).lower() == "true",
             ncr_interval_hours=float(os.getenv(ENV_NCR_INTERVAL_HOURS, str(DEFAULT_NCR_INTERVAL_HOURS))),
+            ncr_shared_bank_id=os.getenv(ENV_NCR_SHARED_BANK_ID) or None,
             # Qdrant
             qdrant_url=os.getenv(ENV_QDRANT_URL, DEFAULT_QDRANT_URL),
             qdrant_api_key=os.getenv(ENV_QDRANT_API_KEY) or None,

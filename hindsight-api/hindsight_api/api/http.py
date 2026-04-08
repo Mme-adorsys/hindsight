@@ -1163,12 +1163,20 @@ def create_app(
                     llm=_schema_llm,
                     embed_fn=_schema_embed_fn,
                 )
+                _promotion_llm = memory._ctx.llm_registry.get_llm("retain", "conflict_resolution")
                 _orchestrator = NCROrchestrator(
                     pool=memory._pool,
                     consolidation=_consolidation,
                     decay=_decay,
                     strengthen=_strengthen,
                     schema=_schema,
+                    # Phase 4: Shared Bank Promotion (B3/B5 + B2 Conflict Resolution)
+                    # shared_bank_id=None → Phase 4 skipped (default when HINDSIGHT_API_NCR_SHARED_BANK_ID not set)
+                    shared_bank_id=_config.ncr_shared_bank_id,
+                    agent_bank_ids=None,  # Cross-agent convergence check skipped until dynamic lookup is wired
+                    qdrant_client=qdrant,
+                    neo4j_client=neo4j,
+                    llm=_promotion_llm,
                 )
                 app.state.ncr_orchestrator = _orchestrator
                 ncr_scheduler = NCRScheduler(
@@ -2427,10 +2435,13 @@ def _register_routes(app: FastAPI):
         summary="Manually trigger NCR for a bank",
         description=(
             "Runs the Nightly Consolidation Run (NCR) pipeline immediately for the given bank.\n\n"
-            "The NCR executes three sequential phases:\n"
+            "The NCR executes four sequential phases:\n"
             "1. **Consolidation 1** — Session → Buffer layer upgrade\n"
             "2. **Decay** — Strength decay + archival of weak Engrams\n"
-            "3. **Strengthen** — Buffer → Neocortex promotion for strong Engrams\n\n"
+            "3. **Strengthen** — Buffer → Neocortex promotion for strong Engrams\n"
+            "4. **Shared Bank Promotion** — Neocortex → Shared Bank (B3/B5); "
+            "requires `HINDSIGHT_API_NCR_SHARED_BANK_ID` to be set. "
+            "Includes B2 Write Conflict Resolution (contradiction-link creation).\n\n"
             "**Rate-limited:** at most one manual trigger per bank per hour.\n\n"
             "Returns `503` if NCR is not enabled, `429` if triggered too recently, "
             "`409` if another NCR run is already in progress (advisory lock held)."
