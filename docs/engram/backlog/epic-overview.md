@@ -169,7 +169,7 @@ Phase 8:  * → 23 (Benchmarking)
 
 ### Phase 7 — Control Plane Extension
 - [ ] Epic 19 — CP: Engram Metadata & Session Modes
-- [ ] Epic 20 — CP: Bank Profile & System Configuration
+- [x] Epic 20 — CP: Bank Profile & System Configuration
 - [ ] Epic 21 — CP: Engram Lifecycle & NCR Dashboard
 - [ ] Epic 22 — CP: Schema Explorer
 
