@@ -6,6 +6,7 @@ import { useBank } from "@/lib/bank-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { SessionModeSelector, SessionMode } from "@/components/session-mode-selector";
 import {
   Select,
   SelectContent,
@@ -24,6 +25,7 @@ export function ThinkView() {
   const [query, setQuery] = useState("");
   const [context, setContext] = useState("");
   const [budget, setBudget] = useState<"low" | "mid" | "high">("mid");
+  const [mode, setMode] = useState<SessionMode>("precision");
   const [includeFacts, setIncludeFacts] = useState(true);
   const [showRawJson, setShowRawJson] = useState(false);
   const [result, setResult] = useState<any>(null);
@@ -39,6 +41,7 @@ export function ThinkView() {
         bank_id: currentBank,
         query,
         budget,
+        mode,
         context: context || undefined,
         include_facts: includeFacts,
       });
@@ -79,6 +82,7 @@ export function ThinkView() {
                 </SelectContent>
               </Select>
             </div>
+            <SessionModeSelector value={mode} onChange={setMode} />
             <div className="flex items-center gap-2">
               <Checkbox
                 id="include-facts"

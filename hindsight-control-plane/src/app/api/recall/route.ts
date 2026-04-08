@@ -5,7 +5,7 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const bankId = body.bank_id || body.agent_id || "default";
-    const { query, types, fact_type, max_tokens, trace, budget, include, query_timestamp } = body;
+    const { query, types, fact_type, max_tokens, trace, budget, include, query_timestamp, mode } = body;
 
     const response = await sdk.recallMemories({
       client: lowLevelClient,
@@ -18,6 +18,7 @@ export async function POST(request: NextRequest) {
         budget: budget || "mid",
         include,
         query_timestamp,
+        mode: mode || undefined,
       },
     });
 

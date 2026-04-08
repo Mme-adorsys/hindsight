@@ -79,6 +79,7 @@ export class ControlPlaneClient {
       chunks?: { max_tokens: number } | null;
     };
     query_timestamp?: string;
+    mode?: string;
   }) {
     return this.fetchApi("/api/recall", {
       method: "POST",
@@ -95,6 +96,7 @@ export class ControlPlaneClient {
     budget?: string;
     context?: string;
     include_facts?: boolean;
+    mode?: string;
   }) {
     return this.fetchApi("/api/reflect", {
       method: "POST",

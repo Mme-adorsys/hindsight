@@ -5,7 +5,7 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const bankId = body.bank_id || body.agent_id || "default";
-    const { query, context, budget, thinking_budget, include_facts } = body;
+    const { query, context, budget, thinking_budget, include_facts, mode } = body;
 
     const requestBody: any = {
       query,
@@ -18,6 +18,10 @@ export async function POST(request: NextRequest) {
       requestBody.include = {
         facts: {},
       };
+    }
+
+    if (mode) {
+      requestBody.mode = mode;
     }
 
     const response = await sdk.reflect({

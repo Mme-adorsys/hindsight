@@ -29,6 +29,7 @@ import {
 import JsonView from "react18-json-view";
 import "react18-json-view/src/style.css";
 import { MemoryDetailPanel } from "./memory-detail-panel";
+import type { SessionMode } from "./session-mode-selector";
 
 type FactType = "world" | "experience" | "opinion";
 type Budget = "low" | "mid" | "high";
@@ -45,6 +46,7 @@ export function SearchDebugView() {
   const [queryDate, setQueryDate] = useState("");
   const [includeChunks, setIncludeChunks] = useState(false);
   const [includeEntities, setIncludeEntities] = useState(false);
+  const [mode, setMode] = useState<SessionMode>("precision");
 
   // Results state
   const [results, setResults] = useState<any[] | null>(null);
@@ -105,6 +107,7 @@ export function SearchDebugView() {
         types: factTypes,
         budget: budget,
         max_tokens: maxTokens,
+        mode: mode,
         trace: true,
         include: {
           entities: includeEntities ? { max_tokens: 500 } : null,
@@ -199,6 +202,32 @@ export function SearchDebugView() {
                   <SelectItem value="high">High</SelectItem>
                 </SelectContent>
               </Select>
+            </div>
+
+            <div className="h-6 w-px bg-border" />
+
+            {/* Session Mode */}
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium text-muted-foreground">Mode:</span>
+              <div className="flex gap-1">
+                {(["precision", "exploration", "analogy", "validation"] as SessionMode[]).map((m) => (
+                  <Button
+                    key={m}
+                    variant={mode === m ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setMode(m)}
+                    className="h-8 text-xs capitalize px-3"
+                    title={
+                      m === "precision" ? "Few strong facts, conservative inferences" :
+                      m === "exploration" ? "Many facts including weak ones, bold inferences" :
+                      m === "analogy" ? "Structural similarity, patterns from other domains" :
+                      "Juxtapose contradictions, verify consistency"
+                    }
+                  >
+                    {m}
+                  </Button>
+                ))}
+              </div>
             </div>
 
             {/* Max Tokens */}

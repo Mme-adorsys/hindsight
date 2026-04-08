@@ -27,10 +27,10 @@ Die API akzeptiert `mode` auf `/recall` und `/reflect` seit der MCP Parameter Pa
 
 ## Tasks
 
-- [ ] **T1 — Shared Component: `session-mode-selector.tsx`** — Neues Component mit `SessionMode` Type (`"precision" | "exploration" | "analogy" | "validation"`). UI als Segmented Control oder Radio Group. Jeder Mode hat: Label, Kurztext (1 Satz), Icon. Props: `value: SessionMode`, `onChange: (mode: SessionMode) => void`. Default: precision.
+- [x] **T1 — Shared Component: `session-mode-selector.tsx`** — Neues Component mit `SessionMode` Type (`"precision" | "exploration" | "analogy" | "validation"`). UI als Segmented Control oder Radio Group. Jeder Mode hat: Label, Kurztext (1 Satz), Icon. Props: `value: SessionMode`, `onChange: (mode: SessionMode) => void`. Default: precision.
 
-- [ ] **T2 — Recall View erweitern** — `search-debug-view.tsx`: Mode Selector einbauen (unterhalb des Query-Inputs oder neben Budget). State für `selectedMode`. Den Mode an `client.recall({ ..., mode: selectedMode })` übergeben. Nur senden wenn nicht "precision" (oder immer senden — konsistenter).
+- [x] **T2 — Recall View erweitern** — `search-debug-view.tsx`: Mode Selector einbauen (unterhalb des Query-Inputs oder neben Budget). State für `selectedMode`. Den Mode an `client.recall({ ..., mode: selectedMode })` übergeben. Nur senden wenn nicht "precision" (oder immer senden — konsistenter).
 
-- [ ] **T3 — Reflect View erweitern** — `think-view.tsx`: Mode Selector einbauen. State für `selectedMode`. Den Mode an `client.reflect({ ..., mode: selectedMode })` übergeben.
+- [x] **T3 — Reflect View erweitern** — `think-view.tsx`: Mode Selector einbauen. State für `selectedMode`. Den Mode an `client.reflect({ ..., mode: selectedMode })` übergeben.
 
-- [ ] **T4 — CP API Routes erweitern** — `src/app/api/recall/route.ts`: `mode` aus dem Request Body extrahieren und an die Dataplane weiterleiten. `src/app/api/reflect/route.ts`: Ebenso `mode` durchreichen. In `api.ts` die `reflect()` Methode um `mode?: string` Parameter erweitern.
+- [x] **T4 — CP API Routes erweitern** — `src/app/api/recall/route.ts`: `mode` aus dem Request Body extrahieren und an die Dataplane weiterleiten. `src/app/api/reflect/route.ts`: Ebenso `mode` durchreichen. In `api.ts` die `reflect()` Methode um `mode?: string` Parameter erweitern.
