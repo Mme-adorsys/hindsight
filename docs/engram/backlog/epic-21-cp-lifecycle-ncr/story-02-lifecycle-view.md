@@ -16,20 +16,20 @@ Das Concept definiert 3 Engram-Layer: Working Memory (layer=null, frisch), Buffe
 
 ## Akzeptanzkriterien
 
-- [ ] Neuer Sidebar-Eintrag "Engrams" mit Layer-Icon (z.B. `Layers` von lucide-react)
-- [ ] `?view=engrams` zeigt die Engram Lifecycle View
-- [ ] 3 Layer Cards nebeneinander: Working Memory, Buffer, Neocortex — je Count + Avg Strength
-- [ ] Flow-Visualisierung: Pfeile oder Sankey-artige Darstellung Working Memory → Buffer → Neocortex
-- [ ] Strength Distribution als Histogram oder Stacked Bar (weak/moderate/strong)
-- [ ] Auto-Refresh alle 30 Sekunden (oder manueller Refresh-Button)
-- [ ] Loading Skeleton bei initialem Load
+- [x] Neuer Sidebar-Eintrag "Engrams" mit Layer-Icon (`Layers` von lucide-react)
+- [x] `?view=engrams` zeigt die Engram Lifecycle View
+- [x] 3 Layer Cards nebeneinander: Working Memory, Buffer, Neocortex — je Count + Avg Strength
+- [x] Flow-Visualisierung: Pfeile (CSS, `ArrowRight`-Icon zwischen den Cards auf md+ Screens)
+- [x] Strength Distribution als Stacked Bar (weak=rot, moderate=gelb, strong=grün) mit Legende
+- [x] Auto-Refresh alle 30 Sekunden + zusätzlicher manueller Refresh-Button
+- [x] Loading Skeleton bei initialem Load
 
 ## Tasks
 
-- [ ] **T1 — Sidebar erweitern** — In `sidebar.tsx` neues Nav-Item: `{ id: "engrams", label: "Engrams", icon: Layers }`. NavItem Type in `sidebar.tsx` und `page.tsx` um `"engrams"` erweitern.
+- [x] **T1 — Sidebar erweitern** — `sidebar.tsx`: `NavItem`-Type um `"engrams"` erweitert, `Layers`-Import und Nav-Item `{ id: "engrams", label: "Engrams", icon: Layers }` eingefügt (zwischen "Entities" und "Memory Bank" platziert).
 
-- [ ] **T2 — Router erweitern** — In `page.tsx` neuen `{view === "engrams" && ...}` Block. Titel "Engram Lifecycle", Beschreibung, `<EngramLifecycleView />` einbinden.
+- [x] **T2 — Router erweitern** — `page.tsx`: `NavItem`-Type aligned, `EngramLifecycleView`-Import und `{view === "engrams" && ...}`-Block mit Titel "Engram Lifecycle" und Beschreibung eingefügt.
 
-- [ ] **T3 — Component: `engram-lifecycle-view.tsx`** — Neues Component. Lädt `client.getEngramStats(bankId)` beim Mount. 3 Layer Cards (top row): Working Memory (grau), Buffer (gelb), Neocortex (grün). Jede Card zeigt Count, Avg Strength als Progress Bar, Prozent vom Total. Unterhalb: Flow-Visualisierung mit Pfeilen (CSS-basiert, kein Charting-Library nötig) und Strength Distribution als 3-Segment Bar (weak=rot, moderate=gelb, strong=grün).
+- [x] **T3 — Component: `engram-lifecycle-view.tsx`** — Neues Component mit `useBank()` + `client.getEngramStats(bankId)`. 3 Layer Cards (Working Memory grau/slate, Buffer gelb/amber, Neocortex grün/emerald) zeigen Count, Prozent vom Total, Avg-Strength-Bar mit Referenzlinie bei 0.4 (Epic 12 Promotion-Schwelle) und Kurzbeschreibung. `ArrowRight`-Icons zwischen den Cards als Flow-Visualisierung. Strength Distribution als 3-Segment Stacked Bar mit Tooltips + Legende. Loading-Skeleton mit Card/animate-pulse, Error-State mit rotem Hinweis. Pattern folgt `system-config-section.tsx` aus Epic 20.
 
-- [ ] **T4 — Refresh-Mechanismus** — Auto-Refresh via `setInterval` (30s) oder manueller Button. Sanftes Update (kein Flicker — vorherige Daten behalten bis neue da sind).
+- [x] **T4 — Refresh-Mechanismus** — `useEffect` + `setInterval(30_000)`, silent-Refresh-Mode (behält alte Daten im State) + manueller Button mit `RefreshCw`-Spinner. Cleanup via `clearInterval` in Effect-Return. `useCallback` für stabile Dependencies.

@@ -9,8 +9,9 @@ import { EntitiesView } from "@/components/entities-view";
 import { ThinkView } from "@/components/think-view";
 import { SearchDebugView } from "@/components/search-debug-view";
 import { BankProfileView } from "@/components/bank-profile-view";
+import { EngramLifecycleView } from "@/components/engram-lifecycle-view";
 
-type NavItem = "recall" | "reflect" | "data" | "documents" | "entities" | "profile";
+type NavItem = "recall" | "reflect" | "data" | "documents" | "entities" | "engrams" | "profile";
 type DataSubTab = "world" | "experience" | "opinion";
 
 export default function BankPage() {
@@ -152,6 +153,17 @@ export default function BankPage() {
                   Explore entities (people, organizations, places) mentioned in memories.
                 </p>
                 <EntitiesView />
+              </div>
+            )}
+
+            {/* Engrams Tab */}
+            {view === "engrams" && (
+              <div>
+                <h1 className="text-3xl font-bold mb-2 text-foreground">Engram Lifecycle</h1>
+                <p className="text-muted-foreground mb-6">
+                  Layer distribution and strength health across Working Memory, Buffer, and Neocortex.
+                </p>
+                <EngramLifecycleView />
               </div>
             )}
           </div>
