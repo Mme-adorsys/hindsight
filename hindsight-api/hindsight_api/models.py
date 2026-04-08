@@ -388,3 +388,45 @@ class EngramDictionary(Base):
         Index("idx_engram_dictionary_bank_layer_status", "bank_id", "layer", "status"),
         Index("idx_engram_dictionary_bank_strength", "bank_id", "strength"),
     )
+
+
+class NCRRun(Base):
+    """
+    History record of a single Nightly Consolidation Run (NCR).
+
+    Persisted so the Control Plane NCR Dashboard can display the last N runs
+    per bank after server restarts. The phase-level statistics are stored as
+    JSONB for schema flexibility — only query-relevant fields (bank_id,
+    started_at, trigger, duration) are materialised as columns with indices.
+
+    Epic 21 (CP Engram Lifecycle & NCR Dashboard), Story 03.
+    """
+
+    __tablename__ = "ncr_runs"
+
+    run_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    bank_id: Mapped[str] = mapped_column(Text, ForeignKey("banks.bank_id", ondelete="CASCADE"), nullable=False)
+
+    # 'manual' = HTTP trigger via /ncr/trigger, 'scheduled' = NCRScheduler._loop()
+    trigger: Mapped[str] = mapped_column(Text, nullable=False)
+
+    started_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    duration_seconds: Mapped[float | None] = mapped_column(Float)
+
+    # Phase-level reports (NCRReport fields, serialised via dataclasses.asdict)
+    consolidation_stats: Mapped[dict | None] = mapped_column(JSONB)
+    decay_stats: Mapped[dict | None] = mapped_column(JSONB)  # report.phase1
+    strengthen_stats: Mapped[dict | None] = mapped_column(JSONB)  # report.phase2
+    schema_stats: Mapped[dict | None] = mapped_column(JSONB)  # report.phase3
+    promotion_stats: Mapped[dict | None] = mapped_column(JSONB)  # Epic 14 B5 (optional)
+
+    # Phase-level error messages collected during the run
+    errors: Mapped[list | None] = mapped_column(JSONB)
+
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        CheckConstraint("trigger IN ('manual', 'scheduled')", name="ck_ncr_runs_trigger"),
+        Index("idx_ncr_runs_bank_started", "bank_id", "started_at"),
+    )

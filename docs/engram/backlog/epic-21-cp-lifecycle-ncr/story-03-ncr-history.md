@@ -16,20 +16,20 @@ Der NCR Orchestrator (`ncr_orchestrator.py`) führt die 4-Phase Pipeline aus und
 
 ## Akzeptanzkriterien
 
-- [ ] Neue Tabelle `ncr_runs` mit: run_id, bank_id, started_at, completed_at, duration_seconds, trigger (manual/scheduled), consolidation_stats, decay_stats, strengthen_stats, schema_stats, errors
-- [ ] Jeder NCR-Run wird automatisch persistiert (sowohl manuell getriggert als auch scheduled)
-- [ ] `GET /v1/default/banks/{bank_id}/ncr/history?limit=20` liefert die letzten Runs
-- [ ] Trigger-Endpoint liefert weiterhin den Report als Response (Backward Compatible)
-- [ ] Migration ist Alembic-basiert
+- [x] Neue Tabelle `ncr_runs` mit: run_id, bank_id, started_at, completed_at, duration_seconds, trigger (manual/scheduled), consolidation_stats, decay_stats, strengthen_stats, schema_stats, promotion_stats, errors
+- [x] Jeder NCR-Run wird automatisch persistiert (sowohl manuell getriggert als auch scheduled via `trigger` Parameter)
+- [x] `GET /v1/default/banks/{bank_id}/ncr/history?limit=20` liefert die letzten Runs (limit 1–100)
+- [x] Trigger-Endpoint liefert weiterhin den Report als Response (Backward Compatible — Response-Shape unverändert)
+- [x] Migration ist Alembic-basiert (`a2b3c4d5e6f7_add_ncr_runs_table.py`, down_revision → `f0a1b2c3d4e5`)
 
 ## Tasks
 
-- [ ] **T1 — DB Model & Migration** — Neues SQLAlchemy Model `NCRRun` mit allen Feldern. Alembic Migration `add_ncr_runs_table`. Stats-Felder als JSONB (consolidation_stats, decay_stats, strengthen_stats, schema_stats, errors) — flexibel für zukünftige Schema-Änderungen.
+- [x] **T1 — DB Model & Migration** — `NCRRun` SQLAlchemy-Model in `models.py` angehängt (UUID run_id mit `gen_random_uuid()`, FK auf `banks.bank_id` CASCADE, CheckConstraint `trigger IN ('manual','scheduled')`, Index `idx_ncr_runs_bank_started`). Alle Phase-Stats als JSONB. Alembic-Migration `a2b3c4d5e6f7_add_ncr_runs_table.py` folgt dem `f0a1b2c3d4e5_add_working_memory` Pattern (Multi-Schema via `op.get_context().config.get_main_option('target_schema')`, up+down implementiert).
 
-- [ ] **T2 — NCR Orchestrator: Persistence Hook** — Nach erfolgreichem NCR-Run den Report in `ncr_runs` speichern. Trigger-Type als Parameter (`manual` vs. `scheduled`). Fehler bei der Persistierung dürfen den NCR-Run selbst nicht blockieren (try/except, log warning).
+- [x] **T2 — NCR Orchestrator: Persistence Hook** — `NCROrchestrator.run()` um `trigger: Literal["manual","scheduled"] = "manual"` Parameter erweitert. Neue Methode `_persist_report()` serialisiert Phasen via `dataclasses.asdict()` + `json.dumps(default=str)` und INSERTed mit `$N::jsonb`-Cast (Pattern aus `working_memory_repo.py`). Aufruf im `finally`-Block der `run()`-Methode (nach `completed_at`-Set, nach lock-release) **und** auf dem lock-already-held-Frühabbruch-Pfad — beide in try/except eingepackt, Fehler landen im Warning-Log ohne den NCR-Run zu blockieren. `NCRScheduler._loop()` nutzt `trigger="scheduled"`. 53 bestehende NCR-Unit-Tests grün.
 
-- [ ] **T3 — History Endpoint** — Neuer Route Handler `GET /v1/default/banks/{bank_id}/ncr/history` in `http.py`. Query-Parameter: `limit` (default 20, max 100). Response: `{ runs: NCRRunResponse[] }`. Sortiert nach `started_at DESC`.
+- [x] **T3 — History Endpoint** — `api_ncr_history` Handler in `http.py` mit `limit: int = Query(default=20, ge=1, le=100)`. Pydantic-Models `NCRRunHistoryItem` und `NCRHistoryResponse`. SQL: `SELECT ... FROM ncr_runs WHERE bank_id = $1 ORDER BY started_at DESC LIMIT $2`. Robuster `_parse_jsonb`-Helper für asyncpg-Ergebnisse (dict oder String). Authentication via `_authenticate_tenant`. `api_ncr_trigger` ruft `run(bank_id, trigger="manual")`.
 
-- [ ] **T4 — CP API Routes** — Zwei Routes: `src/app/api/ncr/trigger/route.ts` (POST, proxy), `src/app/api/ncr/history/route.ts` (GET, proxy mit bank_id und limit Parameter).
+- [x] **T4 — CP API Routes** — `src/app/api/ncr/trigger/route.ts` (POST, `bank_id` aus JSON-Body, AbortController mit 5-min-Timeout + 504-Response bei Timeout, leitet Dataplane-Errors mit Original-Status-Code weiter). `src/app/api/ncr/history/route.ts` (GET, `bank_id` + `limit` aus Query, `cache: "no-store"`). Direct-fetch-Pattern wie `/api/config` und Story 01.
 
-- [ ] **T5 — CP Client erweitern** — In `src/lib/api.ts`: `triggerNCR(bankId: string): Promise<NCRReport>`, `getNCRHistory(bankId: string, limit?: number): Promise<{ runs: NCRReport[] }>`. Typed Interfaces für NCRReport.
+- [x] **T5 — CP Client erweitern** — `src/lib/api.ts`: Getrennte Interfaces — `NCRReport` (flache Shape für Trigger-Response mit phase1_decay/phase2_strengthen/phase3_schema) und `NCRRunHistoryItem` (JSONB-Shape mit `*_stats`-Feldern, passend zum History-Endpoint). `NCRHistoryResponse` als `{runs: NCRRunHistoryItem[]}`. Methoden `triggerNCR(bankId)` und `getNCRHistory(bankId, limit?)` in `ControlPlaneClient`.

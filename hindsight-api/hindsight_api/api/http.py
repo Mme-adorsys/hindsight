@@ -950,6 +950,29 @@ class EngramLayerStats(BaseModel):
     avg_strength: float
 
 
+class NCRRunHistoryItem(BaseModel):
+    """Single NCR run record from the ncr_runs history table."""
+
+    run_id: str
+    bank_id: str
+    trigger: str  # 'manual' | 'scheduled'
+    started_at: str  # ISO-8601
+    completed_at: str | None
+    duration_seconds: float | None
+    consolidation_stats: dict | None
+    decay_stats: dict | None
+    strengthen_stats: dict | None
+    schema_stats: dict | None
+    promotion_stats: dict | None
+    errors: list | None
+
+
+class NCRHistoryResponse(BaseModel):
+    """Response model for the NCR run history endpoint."""
+
+    runs: list[NCRRunHistoryItem]
+
+
 class EngramStatsResponse(BaseModel):
     """Aggregated Engram lifecycle statistics for a memory bank."""
 
@@ -2629,7 +2652,7 @@ def _register_routes(app: FastAPI):
         orchestrator: NCROrchestrator = app.state.ncr_orchestrator
 
         try:
-            report = await orchestrator.run(bank_id)
+            report = await orchestrator.run(bank_id, trigger="manual")
         except Exception as e:
             import traceback
 
@@ -2676,6 +2699,82 @@ def _register_routes(app: FastAPI):
             else None,
             "errors": report.errors,
         }
+
+    @app.get(
+        "/v1/default/banks/{bank_id}/ncr/history",
+        response_model=NCRHistoryResponse,
+        summary="Get NCR run history for a bank",
+        description=(
+            "Returns the most recent NCR runs persisted in the ncr_runs table "
+            "for the given bank, ordered by started_at DESC. Used by the "
+            "Control Plane NCR Dashboard (Epic 21, Story 03/04)."
+        ),
+        operation_id="get_ncr_history",
+        tags=["Consolidation"],
+    )
+    async def api_ncr_history(
+        bank_id: str,
+        limit: int = Query(default=20, ge=1, le=100, description="Maximum number of runs to return"),
+        request_context: RequestContext = Depends(get_request_context),
+    ):
+        """Return the most recent NCR runs for a bank."""
+        try:
+            await app.state.memory._authenticate_tenant(request_context)
+            pool = await app.state.memory._get_pool()
+            async with acquire_with_retry(pool) as conn:
+                rows = await conn.fetch(
+                    f"""
+                    SELECT run_id, bank_id, trigger, started_at, completed_at,
+                           duration_seconds, consolidation_stats, decay_stats,
+                           strengthen_stats, schema_stats, promotion_stats, errors
+                    FROM {fq_table("ncr_runs")}
+                    WHERE bank_id = $1
+                    ORDER BY started_at DESC
+                    LIMIT $2
+                    """,
+                    bank_id,
+                    limit,
+                )
+
+            def _parse_jsonb(value):
+                # asyncpg may return JSONB as a string or as a decoded dict/list
+                if value is None:
+                    return None
+                if isinstance(value, (dict, list)):
+                    return value
+                try:
+                    import json as _json
+
+                    return _json.loads(value)
+                except Exception:
+                    return None
+
+            items = [
+                NCRRunHistoryItem(
+                    run_id=str(row["run_id"]),
+                    bank_id=row["bank_id"],
+                    trigger=row["trigger"],
+                    started_at=row["started_at"].isoformat(),
+                    completed_at=row["completed_at"].isoformat() if row["completed_at"] else None,
+                    duration_seconds=row["duration_seconds"],
+                    consolidation_stats=_parse_jsonb(row["consolidation_stats"]),
+                    decay_stats=_parse_jsonb(row["decay_stats"]),
+                    strengthen_stats=_parse_jsonb(row["strengthen_stats"]),
+                    schema_stats=_parse_jsonb(row["schema_stats"]),
+                    promotion_stats=_parse_jsonb(row["promotion_stats"]),
+                    errors=_parse_jsonb(row["errors"]),
+                )
+                for row in rows
+            ]
+            return NCRHistoryResponse(runs=items)
+        except (AuthenticationError, HTTPException):
+            raise
+        except Exception as e:
+            import traceback
+
+            error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+            logger.error(f"Error in /v1/default/banks/{bank_id}/ncr/history: {error_detail}")
+            raise HTTPException(status_code=500, detail=str(e))
 
     @app.get(
         "/v1/default/banks/{bank_id}/model-config",

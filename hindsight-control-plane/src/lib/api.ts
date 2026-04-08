@@ -74,6 +74,63 @@ export interface EngramStatsResponse {
   };
 }
 
+// NCR (Nightly Consolidation Run) — Epic 21, Story 03
+
+export interface NCRConsolidationStats {
+  total: number;
+  consolidated: number;
+}
+
+export interface NCRDecayStats {
+  total: number;
+  decayed: number;
+  archived: number;
+}
+
+export interface NCRStrengthenStats {
+  total: number;
+  promoted: number;
+}
+
+export interface NCRSchemaStats {
+  created: number;
+  strengthened: number;
+  deleted: number;
+}
+
+/** Live response from POST /ncr/trigger — flat shape, used by the trigger button. */
+export interface NCRReport {
+  bank_id: string;
+  started_at: string;
+  completed_at: string | null;
+  duration_seconds: number | null;
+  consolidation: NCRConsolidationStats | null;
+  phase1_decay: NCRDecayStats | null;
+  phase2_strengthen: NCRStrengthenStats | null;
+  phase3_schema: NCRSchemaStats | null;
+  errors: string[];
+}
+
+/** Historical row from GET /ncr/history — stats as flexible JSONB. */
+export interface NCRRunHistoryItem {
+  run_id: string;
+  bank_id: string;
+  trigger: "manual" | "scheduled";
+  started_at: string;
+  completed_at: string | null;
+  duration_seconds: number | null;
+  consolidation_stats: Record<string, unknown> | null;
+  decay_stats: Record<string, unknown> | null;
+  strengthen_stats: Record<string, unknown> | null;
+  schema_stats: Record<string, unknown> | null;
+  promotion_stats: Record<string, unknown> | null;
+  errors: string[] | null;
+}
+
+export interface NCRHistoryResponse {
+  runs: NCRRunHistoryItem[];
+}
+
 export class ControlPlaneClient {
   private async fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
     const response = await fetch(path, {
@@ -187,6 +244,27 @@ export class ControlPlaneClient {
       `/api/engrams/stats?bank_id=${encodeURIComponent(bankId)}`,
       { cache: "no-store" as RequestCache }
     );
+  }
+
+  /**
+   * Manually trigger the NCR pipeline for a bank. Can take several minutes.
+   */
+  async triggerNCR(bankId: string) {
+    return this.fetchApi<NCRReport>("/api/ncr/trigger", {
+      method: "POST",
+      body: JSON.stringify({ bank_id: bankId }),
+    });
+  }
+
+  /**
+   * Get the NCR run history for a bank (most recent first).
+   */
+  async getNCRHistory(bankId: string, limit?: number) {
+    const qs = new URLSearchParams({ bank_id: bankId });
+    if (limit !== undefined) qs.set("limit", String(limit));
+    return this.fetchApi<NCRHistoryResponse>(`/api/ncr/history?${qs.toString()}`, {
+      cache: "no-store" as RequestCache,
+    });
   }
 
   /**

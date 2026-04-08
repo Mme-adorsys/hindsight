@@ -18,10 +18,11 @@ Epic 12, Story 05.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import asyncpg
 
@@ -32,6 +33,7 @@ from hindsight_api.engine.consolidation.ncr_decay import DecayProcessor, DecayRe
 from hindsight_api.engine.consolidation.ncr_strengthen import StrengthenProcessor, StrengthenResult
 from hindsight_api.engine.consolidation.schema_processor import SchemaProcessor, SchemaResult
 from hindsight_api.engine.db_utils import acquire_with_retry
+from hindsight_api.engine.utils import fq_table
 
 if TYPE_CHECKING:
     from hindsight_api.engine.engram_storage import EngramStorageInterface
@@ -143,15 +145,26 @@ class NCROrchestrator:
         self._neo4j_client = neo4j_client
         self._llm = llm  # Optional LLM for B2 conflict resolution during promotion
 
-    async def run(self, bank_id: str) -> NCRReport:
+    async def run(
+        self,
+        bank_id: str,
+        trigger: Literal["manual", "scheduled"] = "manual",
+    ) -> NCRReport:
         """
         Run the full NCR pipeline for a bank.
 
         Acquires an advisory lock, runs all phases, releases lock.
         Each phase result is recorded in the returned NCRReport.
 
+        The report is persisted to the ``ncr_runs`` table after the run
+        completes (Epic 21, Story 03). Persistence failures are logged as
+        warnings and never block the NCR run itself.
+
         Args:
             bank_id: The memory bank to process.
+            trigger: Whether this run was invoked manually via the HTTP trigger
+                     or by the scheduled NCRScheduler. Used for observability
+                     and to discriminate in the NCR Dashboard.
 
         Returns:
             NCRReport with results from all phases.
@@ -167,9 +180,10 @@ class NCROrchestrator:
                 logger.warning("[NCR] %s", msg)
                 report.errors.append(msg)
                 report.completed_at = datetime.now(timezone.utc)
+                await self._persist_report(report, trigger)
                 return report
 
-        logger.info("[NCR] Starting run for bank=%s (lock=%d)", bank_id, lock_id)
+        logger.info("[NCR] Starting run for bank=%s (lock=%d trigger=%s)", bank_id, lock_id, trigger)
         try:
             await self._run_phases(bank_id, report)
         finally:
@@ -182,8 +196,75 @@ class NCROrchestrator:
                 report.duration_seconds or 0,
                 len(report.errors),
             )
+            await self._persist_report(report, trigger)
 
         return report
+
+    async def _persist_report(
+        self,
+        report: NCRReport,
+        trigger: Literal["manual", "scheduled"],
+    ) -> None:
+        """
+        Persist an NCRReport to the ``ncr_runs`` table for the Control Plane
+        NCR Dashboard history view (Epic 21, Story 03).
+
+        Phase-level stats are serialised via ``dataclasses.asdict`` +
+        ``json.dumps(..., default=str)`` so datetimes become ISO strings. The
+        whole call is wrapped in try/except: persistence is observability, it
+        must never cause an NCR-run itself to fail.
+        """
+
+        def _phase_to_json(phase) -> str | None:
+            if phase is None:
+                return None
+            try:
+                return json.dumps(asdict(phase), default=str)
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.warning("[NCR] failed to serialise phase for persistence: %s", exc)
+                return None
+
+        try:
+            consolidation_json = _phase_to_json(report.consolidation)
+            decay_json = _phase_to_json(report.phase1)
+            strengthen_json = _phase_to_json(report.phase2)
+            schema_json = _phase_to_json(report.phase3)
+            promotion_json = _phase_to_json(report.promotion)
+            errors_json = json.dumps(report.errors) if report.errors else None
+
+            async with acquire_with_retry(self._pool) as conn:
+                await conn.execute(
+                    f"""
+                    INSERT INTO {fq_table("ncr_runs")} (
+                        bank_id, trigger, started_at, completed_at, duration_seconds,
+                        consolidation_stats, decay_stats, strengthen_stats,
+                        schema_stats, promotion_stats, errors
+                    )
+                    VALUES (
+                        $1, $2, $3, $4, $5,
+                        $6::jsonb, $7::jsonb, $8::jsonb,
+                        $9::jsonb, $10::jsonb, $11::jsonb
+                    )
+                    """,
+                    report.bank_id,
+                    trigger,
+                    report.started_at,
+                    report.completed_at,
+                    report.duration_seconds,
+                    consolidation_json,
+                    decay_json,
+                    strengthen_json,
+                    schema_json,
+                    promotion_json,
+                    errors_json,
+                )
+        except Exception as exc:
+            logger.warning(
+                "[NCR] failed to persist report bank=%s trigger=%s: %s",
+                report.bank_id,
+                trigger,
+                exc,
+            )
 
     async def _run_phases(self, bank_id: str, report: NCRReport) -> None:
         # Consolidation 1: Session → Buffer
@@ -315,7 +396,7 @@ class NCRScheduler:
             await asyncio.sleep(self._interval_seconds)
             for bank_id in self._bank_ids:
                 try:
-                    report = await self._orchestrator.run(bank_id)
+                    report = await self._orchestrator.run(bank_id, trigger="scheduled")
                     logger.info(
                         "[NCRScheduler] Cycle complete bank=%s duration=%.1fs",
                         bank_id,
