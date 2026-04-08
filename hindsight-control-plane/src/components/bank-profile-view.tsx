@@ -39,6 +39,7 @@ import {
   Activity,
   Trash2,
 } from "lucide-react";
+import { SystemConfigSection } from "./system-config-section";
 
 interface DispositionTraits {
   skepticism: number;
@@ -436,6 +437,9 @@ export function BankProfileView() {
           </div>
         </div>
       )}
+
+      {/* System Configuration */}
+      <SystemConfigSection />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Disposition Chart */}

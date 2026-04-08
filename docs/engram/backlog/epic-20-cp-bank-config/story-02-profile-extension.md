@@ -15,22 +15,22 @@ Das Bank Profile (`bank-profile-view.tsx`) zeigt aktuell: Name, Disposition (3 T
 
 ## Akzeptanzkriterien
 
-- [ ] Neue Section "System Configuration" unterhalb der bestehenden Stats
-- [ ] LLM Config als Info-Cards: Provider + Primary Model + Tier-Routing (Small/Medium/Large → Model)
-- [ ] Infrastructure als Status-Badges: PostgreSQL, Qdrant, Neo4j — jeweils grün (connected) oder rot (disconnected)
-- [ ] NCR Config: Enabled/Disabled Badge + Interval in Stunden
-- [ ] Embedding + Reranker Model als Info-Text
-- [ ] Daten werden beim Page-Load geladen (parallel zum Bank Profile)
-- [ ] Loading State und Error Handling
+- [x] Neue Section "System Configuration" unterhalb der bestehenden Stats
+- [x] LLM Config als Info-Cards: Provider + Primary Model + Tier-Routing (Small/Medium/Large → Model)
+- [x] Infrastructure als Status-Badges: PostgreSQL, Qdrant, Neo4j — jeweils grün (connected) oder rot (disconnected)
+- [x] NCR Config: Enabled/Disabled Badge + Interval in Stunden
+- [x] Embedding + Reranker Model als Info-Text
+- [x] Daten werden beim Page-Load geladen (parallel zum Bank Profile)
+- [x] Loading State und Error Handling
 
 ## Tasks
 
-- [ ] **T1 — System Config Section Component** — Neues Sub-Component `system-config-section.tsx` (oder inline in `bank-profile-view.tsx`). Ruft `client.getSystemConfig()` beim Mount auf. Zeigt Loading-Skeleton während des Fetches.
+- [x] **T1 — System Config Section Component** — Neues Sub-Component `system-config-section.tsx` (oder inline in `bank-profile-view.tsx`). Ruft `client.getSystemConfig()` beim Mount auf. Zeigt Loading-Skeleton während des Fetches.
 
-- [ ] **T2 — LLM Config Cards** — 3 Cards nebeneinander: (1) "Primary Model" — Provider + Model, (2) "Tier Routing" — Tabelle Small→Model, Medium→Model, Large→Model, (3) "Embedding & Reranker" — Model-Namen. Tailwind styling konsistent mit bestehenden Stats Cards.
+- [x] **T2 — LLM Config Cards** — 3 Cards nebeneinander: (1) "Primary Model" — Provider + Model, (2) "Tier Routing" — Tabelle Small→Model, Medium→Model, Large→Model, (3) "Embedding & Reranker" — Model-Namen. Tailwind styling konsistent mit bestehenden Stats Cards.
 
-- [ ] **T3 — Infrastructure Status Badges** — Horizontal: 3 Badges für PostgreSQL, Qdrant, Neo4j. Grüner Dot + "Connected" oder roter Dot + "Disconnected". Bei Disconnect: Warn-Styling (rote Border).
+- [x] **T3 — Infrastructure Status Badges** — Horizontal: 3 Badges für PostgreSQL, Qdrant, Neo4j. Grüner Dot + "Connected" oder roter Dot + "Disconnected". Bei Disconnect: Warn-Styling (rote Border).
 
-- [ ] **T4 — NCR Config Anzeige** — Badge "NCR Enabled" (grün) oder "NCR Disabled" (grau). Daneben: "Interval: Xh". Falls disabled: Hinweis-Text.
+- [x] **T4 — NCR Config Anzeige** — Badge "NCR Enabled" (grün) oder "NCR Disabled" (grau). Daneben: "Interval: Xh". Falls disabled: Hinweis-Text.
 
-- [ ] **T5 — Integration in bank-profile-view.tsx** — Die neue Section unterhalb der bestehenden Stats-Section einfügen. Sicherstellen dass das Layout konsistent ist.
+- [x] **T5 — Integration in bank-profile-view.tsx** — Die neue Section unterhalb der bestehenden Stats-Section einfügen. Sicherstellen dass das Layout konsistent ist.
