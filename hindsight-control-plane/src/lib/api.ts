@@ -3,6 +3,31 @@
  * This should be used in client components, not the SDK directly
  */
 
+export interface SystemConfig {
+  llm: {
+    provider: string;
+    model: string;
+    tier_routing: Record<string, string>;
+  };
+  embeddings: {
+    provider: string;
+    model: string;
+  };
+  reranker: {
+    provider: string;
+    model: string;
+  };
+  database: {
+    postgres: string;
+    qdrant: string;
+    neo4j: string;
+  };
+  ncr: {
+    enabled: boolean;
+    interval_hours: number;
+  };
+}
+
 export interface ThalamusScores {
   overall: number | null;
   novelty: number | null;
@@ -222,6 +247,13 @@ export class ControlPlaneClient {
     }>(`/api/banks/${bankId}`, {
       method: "DELETE",
     });
+  }
+
+  /**
+   * Get system configuration (read-only, no secrets)
+   */
+  async getSystemConfig(): Promise<SystemConfig> {
+    return this.fetchApi<SystemConfig>("/api/config", { cache: "no-store" as RequestCache });
   }
 
   /**

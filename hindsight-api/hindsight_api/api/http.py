@@ -1055,6 +1055,32 @@ class UpdateBankModelConfigRequest(BaseModel):
     step_overrides: dict[str, str] | None = None
 
 
+class LLMConfigInfo(BaseModel):
+    """LLM configuration details for the system config response."""
+
+    provider: str
+    model: str
+    tier_routing: dict[str, str]
+
+
+class DBStatusInfo(BaseModel):
+    """Live DB connectivity status."""
+
+    postgres: str  # "connected" | "disconnected"
+    qdrant: str  # "connected" | "disconnected"
+    neo4j: str  # "connected" | "disconnected" | "not_configured"
+
+
+class SystemConfigResponse(BaseModel):
+    """Response model for GET /v1/default/config."""
+
+    llm: LLMConfigInfo
+    embeddings: dict[str, str]
+    reranker: dict[str, str]
+    database: DBStatusInfo
+    ncr: dict[str, Any]
+
+
 def create_app(
     memory: MemoryEngine,
     initialize_memory: bool = True,
@@ -1339,6 +1365,68 @@ def _register_routes(app: FastAPI):
         health = await app.state.memory.health_check()
         status_code = 200 if health.get("status") == "healthy" else 503
         return JSONResponse(content=health, status_code=status_code)
+
+    @app.get(
+        "/v1/default/config",
+        response_model=SystemConfigResponse,
+        summary="System configuration",
+        description="Returns the current system configuration: LLM provider/model, tier routing, embedding/reranker info, live DB status, NCR config. No secrets (API keys, connection strings) are included.",
+        operation_id="get_system_config",
+        tags=["Monitoring"],
+    )
+    async def config_endpoint():
+        """Read-only system configuration snapshot with live DB connectivity checks."""
+        from hindsight_api.engine.llm_routing import PROVIDER_TIER_MODELS
+
+        cfg = get_config()
+
+        # Build tier routing map for the active provider
+        tier_models = PROVIDER_TIER_MODELS.get(cfg.llm_provider, {})
+        tier_routing = {tier.value: model for tier, model in tier_models.items()}
+
+        # Live DB connectivity checks
+        postgres_status = "disconnected"
+        qdrant_status = "disconnected"
+        neo4j_status = "disconnected"
+
+        try:
+            health = await app.state.memory.health_check()
+            if health.get("status") == "healthy":
+                postgres_status = "connected"
+        except Exception:
+            pass
+
+        try:
+            qdrant_client = getattr(app.state, "qdrant", None)
+            if qdrant_client is not None:
+                await qdrant_client._require_client().get_collections()
+                qdrant_status = "connected"
+        except Exception:
+            pass
+
+        try:
+            neo4j_client = getattr(app.state, "neo4j", None)
+            if neo4j_client is not None:
+                await neo4j_client._require_driver().verify_connectivity()
+                neo4j_status = "connected"
+        except Exception:
+            pass
+
+        return SystemConfigResponse(
+            llm=LLMConfigInfo(
+                provider=cfg.llm_provider,
+                model=cfg.llm_model,
+                tier_routing=tier_routing,
+            ),
+            embeddings={"provider": cfg.embeddings_provider, "model": cfg.embeddings_local_model},
+            reranker={"provider": cfg.reranker_provider, "model": cfg.reranker_local_model},
+            database=DBStatusInfo(
+                postgres=postgres_status,
+                qdrant=qdrant_status,
+                neo4j=neo4j_status,
+            ),
+            ncr={"enabled": cfg.ncr_enabled, "interval_hours": cfg.ncr_interval_hours},
+        )
 
     @app.get(
         "/metrics",

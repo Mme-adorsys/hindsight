@@ -24,10 +24,10 @@ Die Konfiguration liegt aktuell nur in `config.py` (Environment Variables) und `
 
 ## Tasks
 
-- [ ] **T1 — Dataplane Endpoint implementieren** — Neuer Route Handler `GET /v1/default/config` in `http.py`. Sammelt Konfiguration aus `Config`, `LLMRegistry`, und prüft DB-Connectivity (PostgreSQL ping, Qdrant health, Neo4j verify_connectivity). Response-Pydantic-Model `SystemConfigResponse` mit Feldern: `llm` (provider, model, tier_routing), `embeddings` (provider, model), `reranker` (provider, model), `database` (postgres: status, qdrant: status, neo4j: status), `ncr` (enabled, interval_hours).
+- [x] **T1 — Dataplane Endpoint implementieren** — Neuer Route Handler `GET /v1/default/config` in `http.py`. Sammelt Konfiguration aus `Config`, `LLMRegistry`, und prüft DB-Connectivity (PostgreSQL ping, Qdrant health, Neo4j verify_connectivity). Response-Pydantic-Model `SystemConfigResponse` mit Feldern: `llm` (provider, model, tier_routing), `embeddings` (provider, model), `reranker` (provider, model), `database` (postgres: status, qdrant: status, neo4j: status), `ncr` (enabled, interval_hours).
 
-- [ ] **T2 — CP API Route** — Neue Route `src/app/api/config/route.ts`. GET-Handler der zur Dataplane proxied. Caching: `no-store` (Config kann sich ändern).
+- [x] **T2 — CP API Route** — Neue Route `src/app/api/config/route.ts`. GET-Handler der zur Dataplane proxied. Caching: `no-store` (Config kann sich ändern).
 
-- [ ] **T3 — CP Client erweitern** — In `src/lib/api.ts` neue Methode `getSystemConfig()` mit typed Response. Interface `SystemConfig` mit allen Feldern.
+- [x] **T3 — CP Client erweitern** — In `src/lib/api.ts` neue Methode `getSystemConfig()` mit typed Response. Interface `SystemConfig` mit allen Feldern.
 
-- [ ] **T4 — Tests** — Unit-Test: Config Endpoint liefert erwartete Struktur. Integration-Test: DB-Status spiegelt tatsächlichen Zustand wider (Mock eine DB als disconnected).
+- [x] **T4 — Tests** — Unit-Test: Config Endpoint liefert erwartete Struktur. Integration-Test: DB-Status spiegelt tatsächlichen Zustand wider (Mock eine DB als disconnected).
