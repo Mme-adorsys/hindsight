@@ -738,6 +738,89 @@ class AdminOperations:
                 "operations": {row["status"]: row["count"] for row in ops_stats},
             }
 
+    async def get_engram_stats(
+        self,
+        bank_id: str,
+        *,
+        request_context: "RequestContext",
+    ) -> dict[str, Any]:
+        """
+        Aggregated Engram lifecycle statistics for a bank.
+
+        Counts active Engrams grouped by layer (working_memory = layer IS NULL,
+        buffer, neocortex) with avg strength per layer, plus a global
+        strength distribution (weak < 0.3, moderate 0.3–0.7, strong > 0.7).
+
+        Reads from ``engram_dictionary`` (the canonical hippocampal pointer index,
+        Epic 01 ch. 3) via SQL GROUP BY — the existing indices
+        ``idx_engram_dictionary_bank_layer_status`` and
+        ``idx_engram_dictionary_bank_strength`` make this constant-cost regardless
+        of bank size. Only ``status = 'active'`` rows are counted; archived and
+        decayed engrams are excluded.
+
+        Returns a dict suitable for the ``GET /engrams/stats`` endpoint response.
+        Empty banks return zero counts instead of raising.
+        """
+        await self._ctx.authenticate_tenant(request_context)
+        pool = await self._ctx.get_pool()
+        async with acquire_with_retry(pool) as conn:
+            layer_rows = await conn.fetch(
+                f"""
+                SELECT
+                    COALESCE(layer, 'working_memory') AS layer_name,
+                    COUNT(*) AS count,
+                    AVG(strength) AS avg_strength
+                FROM {fq_table("engram_dictionary")}
+                WHERE bank_id = $1 AND status = 'active'
+                GROUP BY COALESCE(layer, 'working_memory')
+                """,
+                bank_id,
+            )
+            distribution_rows = await conn.fetch(
+                f"""
+                SELECT
+                    CASE
+                        WHEN strength < 0.3 THEN 'weak'
+                        WHEN strength <= 0.7 THEN 'moderate'
+                        ELSE 'strong'
+                    END AS bucket,
+                    COUNT(*) AS count
+                FROM {fq_table("engram_dictionary")}
+                WHERE bank_id = $1 AND status = 'active'
+                GROUP BY bucket
+                """,
+                bank_id,
+            )
+
+        # Default zero-counts — ensures all three layers/buckets are always present.
+        layers: dict[str, dict[str, float | int]] = {
+            "working_memory": {"count": 0, "avg_strength": 0.0},
+            "buffer": {"count": 0, "avg_strength": 0.0},
+            "neocortex": {"count": 0, "avg_strength": 0.0},
+        }
+        for row in layer_rows:
+            name = row["layer_name"]
+            if name in layers:
+                layers[name] = {
+                    "count": int(row["count"]),
+                    "avg_strength": float(row["avg_strength"] or 0.0),
+                }
+
+        strength_distribution: dict[str, int] = {"weak": 0, "moderate": 0, "strong": 0}
+        for row in distribution_rows:
+            bucket = row["bucket"]
+            if bucket in strength_distribution:
+                strength_distribution[bucket] = int(row["count"])
+
+        total = sum(int(layer["count"]) for layer in layers.values())
+
+        return {
+            "bank_id": bank_id,
+            "total": total,
+            "layers": layers,
+            "strength_distribution": strength_distribution,
+        }
+
     # ------------------------------------------------------------------
     # Async operations
     # ------------------------------------------------------------------

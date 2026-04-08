@@ -1025,6 +1025,9 @@ class MemoryEngine(MemoryEngineInterface):
     async def get_bank_stats(self, bank_id, *, request_context):
         return await self._admin.get_bank_stats(bank_id, request_context=request_context)
 
+    async def get_engram_stats(self, bank_id, *, request_context):
+        return await self._admin.get_engram_stats(bank_id, request_context=request_context)
+
     async def list_operations(self, bank_id, *, request_context):
         return await self._admin.list_operations(bank_id, request_context=request_context)
 

@@ -15,17 +15,17 @@ Die Engine speichert pro Engram ein `layer` Feld (null=Working Memory, "buffer",
 
 ## Akzeptanzkriterien
 
-- [ ] `GET /v1/default/banks/{bank_id}/engrams/stats` liefert Layer-Counts, Avg-Strength pro Layer, Strength-Distribution
-- [ ] Response ist performant (Aggregation, nicht Full-List)
-- [ ] Leere Bank liefert Null-Counts, keine Fehler
-- [ ] Response-Schema ist dokumentiert
+- [x] `GET /v1/default/banks/{bank_id}/engrams/stats` liefert Layer-Counts, Avg-Strength pro Layer, Strength-Distribution
+- [x] Response ist performant (Aggregation, nicht Full-List)
+- [x] Leere Bank liefert Null-Counts, keine Fehler
+- [x] Response-Schema ist dokumentiert
 
 ## Tasks
 
-- [ ] **T1 — Qdrant Aggregation Query** — In `EngramStorageService` eine Methode `get_layer_statistics(bank_id)` implementieren. Nutzt Qdrant Scroll/Filter um Layer-Counts zu ermitteln. Für Strength-Distribution: 3 Qdrant Filter-Queries (strength < 0.3, 0.3–0.7, > 0.7) oder ein Scroll mit Client-Side Aggregation (je nach Qdrant-API-Support für Aggregation).
+- [x] **T1 — PostgreSQL Aggregation Query** — *Abweichung vom Story-Text (mit User-Zustimmung):* Statt Qdrant Scroll/Filter wird `engram_dictionary` in PostgreSQL aggregiert. `AdminOperations.get_engram_stats()` nutzt zwei `GROUP BY`-Queries (Layer mit `COALESCE(layer, 'working_memory')`, Strength-Buckets via `CASE`). Indices `idx_engram_dictionary_bank_layer_status` und `idx_engram_dictionary_bank_strength` bestehen bereits — konstante Kosten unabhängig von der Bank-Größe. Folgt dem `get_bank_stats()`-Pattern. Nur `status = 'active'` zählt; archivierte/decayed Engrams werden ausgeschlossen.
 
-- [ ] **T2 — Dataplane Endpoint** — Neuer Route Handler `GET /v1/default/banks/{bank_id}/engrams/stats` in `http.py`. Response-Model `EngramStatsResponse`: `layers` (working_memory, buffer, neocortex — je count + avg_strength), `total`, `strength_distribution` (weak, moderate, strong counts).
+- [x] **T2 — Dataplane Endpoint** — `GET /v1/default/banks/{bank_id}/engrams/stats` in `http.py` (nach `/stats`-Endpoint). Pydantic Response-Model `EngramStatsResponse` mit `EngramLayerStats` für `working_memory`/`buffer`/`neocortex` + `total` + `strength_distribution` (weak/moderate/strong). `MemoryEngine.get_engram_stats()` delegiert zu `AdminOperations`.
 
-- [ ] **T3 — CP API Route** — Neue Route `src/app/api/engrams/stats/route.ts`. GET-Handler mit `bank_id` Parameter. Proxy zur Dataplane.
+- [x] **T3 — CP API Route** — `src/app/api/engrams/stats/route.ts`. GET-Handler mit `bank_id` Query-Parameter. Direkter `fetch()` zur Dataplane (wie `/api/config/route.ts`, um SDK-Regeneration zu vermeiden).
 
-- [ ] **T4 — CP Client erweitern** — In `src/lib/api.ts` neue Methode `getEngramStats(bankId: string)` mit typed Response.
+- [x] **T4 — CP Client erweitern** — `src/lib/api.ts`: `EngramLayerStats` + `EngramStatsResponse` Interfaces, Methode `getEngramStats(bankId)` mit `cache: "no-store"`.

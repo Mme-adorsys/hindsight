@@ -943,6 +943,41 @@ class BankStatsResponse(BaseModel):
     failed_operations: int
 
 
+class EngramLayerStats(BaseModel):
+    """Per-layer aggregate for the Engram lifecycle view."""
+
+    count: int
+    avg_strength: float
+
+
+class EngramStatsResponse(BaseModel):
+    """Aggregated Engram lifecycle statistics for a memory bank."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "bank_id": "user123",
+                "total": 1234,
+                "layers": {
+                    "working_memory": {"count": 800, "avg_strength": 0.15},
+                    "buffer": {"count": 300, "avg_strength": 0.45},
+                    "neocortex": {"count": 134, "avg_strength": 0.72},
+                },
+                "strength_distribution": {
+                    "weak": 950,
+                    "moderate": 234,
+                    "strong": 50,
+                },
+            }
+        }
+    )
+
+    bank_id: str
+    total: int
+    layers: dict[str, EngramLayerStats]
+    strength_distribution: dict[str, int]
+
+
 class OperationResponse(BaseModel):
     """Response model for a single async operation."""
 
@@ -1868,6 +1903,36 @@ def _register_routes(app: FastAPI):
 
             error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
             logger.error(f"Error in /v1/default/banks/{bank_id}/stats: {error_detail}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.get(
+        "/v1/default/banks/{bank_id}/engrams/stats",
+        response_model=EngramStatsResponse,
+        summary="Get Engram lifecycle statistics",
+        description=(
+            "Aggregated Engram counts and strength distribution per layer "
+            "(working_memory / buffer / neocortex). Reads from the engram_dictionary "
+            "pointer index (only status='active' rows). Used by the Control Plane "
+            "Engram Lifecycle View."
+        ),
+        operation_id="get_engram_stats",
+        tags=["Banks"],
+    )
+    async def api_engram_stats(
+        bank_id: str,
+        request_context: RequestContext = Depends(get_request_context),
+    ):
+        """Get aggregated Engram lifecycle statistics for a memory bank."""
+        try:
+            stats = await app.state.memory.get_engram_stats(bank_id, request_context=request_context)
+            return EngramStatsResponse(**stats)
+        except (AuthenticationError, HTTPException):
+            raise
+        except Exception as e:
+            import traceback
+
+            error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+            logger.error(f"Error in /v1/default/banks/{bank_id}/engrams/stats: {error_detail}")
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.get(

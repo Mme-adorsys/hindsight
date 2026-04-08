@@ -54,6 +54,26 @@ export interface MemoryListItem {
   thalamus_scores: ThalamusScores | null;
 }
 
+export interface EngramLayerStats {
+  count: number;
+  avg_strength: number;
+}
+
+export interface EngramStatsResponse {
+  bank_id: string;
+  total: number;
+  layers: {
+    working_memory: EngramLayerStats;
+    buffer: EngramLayerStats;
+    neocortex: EngramLayerStats;
+  };
+  strength_distribution: {
+    weak: number;
+    moderate: number;
+    strong: number;
+  };
+}
+
 export class ControlPlaneClient {
   private async fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
     const response = await fetch(path, {
@@ -157,6 +177,16 @@ export class ControlPlaneClient {
    */
   async getBankStats(bankId: string) {
     return this.fetchApi(`/api/stats/${bankId}`);
+  }
+
+  /**
+   * Get Engram lifecycle statistics (layer distribution + strength buckets)
+   */
+  async getEngramStats(bankId: string) {
+    return this.fetchApi<EngramStatsResponse>(
+      `/api/engrams/stats?bank_id=${encodeURIComponent(bankId)}`,
+      { cache: "no-store" as RequestCache }
+    );
   }
 
   /**
