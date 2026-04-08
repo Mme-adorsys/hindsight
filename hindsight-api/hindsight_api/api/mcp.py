@@ -152,6 +152,7 @@ def create_mcp_server(memory: MemoryEngine) -> FastMCP:
         include_chunks: bool = False,
         tags: str | None = None,
         bank_id: str | None = None,
+        shared_bank_id: str | None = None,
     ) -> dict:
         """
         Search memories to provide personalized, context-aware responses.
@@ -174,6 +175,7 @@ def create_mcp_server(memory: MemoryEngine) -> FastMCP:
             include_chunks: Include raw text chunks that memories were extracted from (default: false).
             tags: Comma-separated tags to filter by.
             bank_id: Optional bank to search in (defaults to session bank). Use for cross-bank operations.
+            shared_bank_id: Optional shared/global bank to query in parallel (dual-bank recall, B6).
         """
         try:
             target_bank = bank_id or get_current_bank_id()
@@ -207,6 +209,7 @@ def create_mcp_server(memory: MemoryEngine) -> FastMCP:
                 tags=tag_list,
                 session=session,
                 request_context=RequestContext(),
+                shared_bank_id=shared_bank_id,
             )
 
             return recall_result.model_dump()

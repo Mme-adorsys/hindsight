@@ -27,14 +27,64 @@ from __future__ import annotations
 import logging
 import uuid as _uuid_mod
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from typing import Any
+from uuid import UUID
 
 import asyncpg
 
 from hindsight_api.engine import engram_dictionary as dict_repo
+from hindsight_api.engine.consolidation import conflict_resolution
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Private proxy — bridges dict-shaped candidate to resolve_conflict() interface
+# ---------------------------------------------------------------------------
+
+
+class _Meta:
+    __slots__ = ("strength", "thalamus_overall", "created_at")
+
+    def __init__(self, strength: float, thalamus_overall: float, created_at: datetime | None) -> None:
+        self.strength = strength
+        self.thalamus_overall = thalamus_overall
+        self.created_at = created_at
+
+
+class _Content:
+    __slots__ = ("text",)
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+class _CandidateProxy:
+    """Minimal adapter from an engram_dictionary dict to the FullEngram interface used by resolve_conflict()."""
+
+    __slots__ = ("engram_id", "content", "metadata")
+
+    def __init__(self, candidate: dict[str, Any]) -> None:
+        raw_id = candidate.get("engram_id")
+        try:
+            self.engram_id = UUID(str(raw_id)) if raw_id else _uuid_mod.uuid4()
+        except (ValueError, AttributeError):
+            self.engram_id = _uuid_mod.uuid4()
+        self.content = _Content(str(candidate.get("text", "") or ""))
+        ts = candidate.get("created_at")
+        if isinstance(ts, str):
+            try:
+                ts = datetime.fromisoformat(ts)
+            except (ValueError, TypeError):
+                ts = None
+        self.metadata = _Meta(
+            strength=float(candidate.get("strength", 0.0)),
+            thalamus_overall=float(candidate.get("thalamus_overall") or 0.0),
+            created_at=ts if isinstance(ts, datetime) else None,
+        )
+
 
 # Threshold for novelty / conflict detection
 NOVELTY_SIMILARITY_THRESHOLD = 0.85
@@ -400,6 +450,7 @@ async def promote_batch(
     shared_bank_id: str,
     agent_bank_ids: list[str] | None = None,
     strength_threshold: float = 0.6,
+    llm=None,
 ) -> PromotionResult:
     """
     Run the full promotion pipeline for one Agent Bank → Shared Bank.
@@ -409,8 +460,8 @@ async def promote_batch(
     Pipeline per candidate:
       1. Determine effective threshold (Cross-Agent Convergence may lower it).
       2. Novelty check against Shared Bank.
-      3. NOVEL  → promote_to_shared()
-         REDUNDANT → reinforce_shared()
+      3. NOVEL     → promote_to_shared()
+         REDUNDANT → conflict_resolution (B2) if llm is provided, else reinforce_shared()
 
     Schema-triggered candidates bypass the strength threshold entirely.
 
@@ -423,6 +474,8 @@ async def promote_batch(
         agent_bank_ids:     All agent dictionary bank IDs (for convergence check).
                             If None, convergence check is skipped.
         strength_threshold: Default NCR promotion threshold (default 0.6).
+        llm:                Optional LLM instance for B2 contradiction detection.
+                            If None, REDUNDANT path falls back to reinforce_shared().
 
     Returns:
         PromotionResult with counts for promoted, reinforced, skipped, errors.
@@ -473,6 +526,7 @@ async def promote_batch(
                 agent_bank_ids=agent_bank_ids or [],
                 default_threshold=strength_threshold,
                 result=result,
+                llm=llm,
             )
         except Exception as exc:
             msg = f"Candidate {candidate.get('engram_id')} failed: {exc}"
@@ -499,6 +553,7 @@ async def _process_candidate(
     agent_bank_ids: list[str],
     default_threshold: float,
     result: PromotionResult,
+    llm=None,
 ) -> None:
     """Process a single promotion candidate through the full pipeline."""
     embedding = candidate.get("embedding") or []
@@ -535,7 +590,113 @@ async def _process_candidate(
         await promote_to_shared(pool, qdrant_client, neo4j_client, candidate, shared_bank_id)
         result.promoted += 1
     else:
-        # T4 — Reinforce existing Shared Engram
-        if novelty.existing_engram_id:
-            await reinforce_shared(pool, novelty.existing_engram_id, novelty.existing_strength)
+        # B2 — Conflict Resolution: detect contradictions before reinforcing
+        if llm is not None and novelty.existing_engram_id:
+            await _resolve_redundant(
+                pool=pool,
+                qdrant_client=qdrant_client,
+                neo4j_client=neo4j_client,
+                candidate=candidate,
+                shared_bank_id=shared_bank_id,
+                existing_engram_id=novelty.existing_engram_id,
+                existing_strength=novelty.existing_strength,
+                llm=llm,
+                result=result,
+            )
+        else:
+            # No LLM available — fall back to plain reinforce (backward compat)
+            if novelty.existing_engram_id:
+                await reinforce_shared(pool, novelty.existing_engram_id, novelty.existing_strength)
+            result.reinforced += 1
+
+
+async def _resolve_redundant(
+    pool: asyncpg.Pool,
+    qdrant_client,
+    neo4j_client,
+    candidate: dict[str, Any],
+    shared_bank_id: str,
+    existing_engram_id: str,
+    existing_strength: float,
+    llm,
+    result: PromotionResult,
+) -> None:
+    """
+    B2 — Write Conflict Resolution for a REDUNDANT candidate.
+
+    Calls detect_conflicts() to get full ConflictCandidate metadata, then
+    resolve_conflict() to decide MERGE / REPLACE / KEEP_EXISTING / CONTRADICTION_LINK.
+
+    Falls back to reinforce_shared() on any error.
+    """
+    embedding = candidate.get("embedding") or []
+
+    try:
+        conflicts = await conflict_resolution.detect_conflicts(qdrant_client, embedding, shared_bank_id)
+    except Exception as exc:
+        logger.warning("[Promote] B2 detect_conflicts failed, falling back to reinforce: %s", exc)
+        await reinforce_shared(pool, existing_engram_id, existing_strength)
+        result.reinforced += 1
+        return
+
+    if not conflicts:
+        # detect_conflicts found nothing at threshold — just reinforce
+        await reinforce_shared(pool, existing_engram_id, existing_strength)
+        result.reinforced += 1
+        return
+
+    # Use the most similar existing Engram as the conflict target
+    conflict = conflicts[0]
+    proxy = _CandidateProxy(candidate)
+
+    try:
+        cr = await conflict_resolution.resolve_conflict(proxy, conflict, llm)
+    except Exception as exc:
+        logger.warning("[Promote] B2 resolve_conflict failed, falling back to reinforce: %s", exc)
+        await reinforce_shared(pool, existing_engram_id, existing_strength)
+        result.reinforced += 1
+        return
+
+    logger.info(
+        "[Promote] B2 resolution=%s winner=%s loser=%s | %s",
+        cr.resolution,
+        cr.winner_id,
+        cr.loser_id,
+        cr.description,
+    )
+
+    from hindsight_api.engine.consolidation.conflict_resolution import Resolution
+
+    if cr.resolution == Resolution.KEEP_EXISTING:
+        # Existing Shared Engram wins — reinforce it, candidate discarded
+        await reinforce_shared(pool, existing_engram_id, existing_strength)
+        result.reinforced += 1
+
+    elif cr.resolution == Resolution.MERGE:
+        # Existing is stronger base — reinforce it, candidate context folded in
+        await reinforce_shared(pool, existing_engram_id, existing_strength)
+        result.reinforced += 1
+
+    elif cr.resolution == Resolution.REPLACE:
+        # Candidate is stronger — promote as new Shared Engram
+        await promote_to_shared(pool, qdrant_client, neo4j_client, candidate, shared_bank_id)
+        result.promoted += 1
+
+    elif cr.resolution == Resolution.CONTRADICTION_LINK:
+        # Contradiction: promote candidate, create link to existing (loser)
+        shared_id = await promote_to_shared(pool, qdrant_client, neo4j_client, candidate, shared_bank_id)
+        try:
+            await conflict_resolution.create_contradiction_link(
+                neo4j_client,
+                winner_id=UUID(shared_id),
+                loser_id=conflict.engram_id,
+                description=cr.description,
+            )
+        except Exception as exc:
+            logger.warning("[Promote] B2 create_contradiction_link failed: %s", exc)
+        result.promoted += 1
+
+    else:
+        # Unknown resolution — safe fallback
+        await reinforce_shared(pool, existing_engram_id, existing_strength)
         result.reinforced += 1

@@ -689,3 +689,297 @@ class TestPromoteBatch:
 
         assert result.skipped == 1
         mock_promote.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# B2 — Conflict Resolution integration tests
+# ---------------------------------------------------------------------------
+
+
+def _conflict_candidate(
+    engram_id: str = "cccccccc-cccc-cccc-cccc-cccccccccccc", similarity: float = 0.92
+) -> "ConflictCandidate":
+    from uuid import UUID
+    from datetime import datetime, UTC
+    from hindsight_api.engine.consolidation.conflict_resolution import ConflictCandidate
+
+    return ConflictCandidate(
+        engram_id=UUID(engram_id),
+        similarity=similarity,
+        text="conflicting text",
+        strength=0.5,
+        thalamus_overall=0.6,
+        created_at=datetime.now(UTC),
+    )
+
+
+class TestConflictResolutionIntegration:
+    """promote_batch with llm= wired — tests the B2 REDUNDANT path."""
+
+    def _patches(self, candidate, novelty_result, conflicts, conflict_result):
+        from hindsight_api.engine.consolidation.conflict_resolution import Resolution, ConflictResult
+        from uuid import UUID
+
+        return (
+            patch(
+                "hindsight_api.engine.consolidation.multi_bank_promoter.find_promotion_candidates",
+                AsyncMock(return_value=[candidate]),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.multi_bank_promoter.find_schema_triggered_candidates",
+                AsyncMock(return_value=[]),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.multi_bank_promoter.check_novelty",
+                AsyncMock(return_value=novelty_result),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.conflict_resolution.detect_conflicts",
+                AsyncMock(return_value=conflicts),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.conflict_resolution.resolve_conflict",
+                AsyncMock(return_value=conflict_result),
+            ),
+        )
+
+    @pytest.mark.asyncio
+    async def test_redundant_no_llm_falls_back_to_reinforce(self):
+        """Without llm=, REDUNDANT always calls reinforce_shared (backward compat)."""
+        pool = _pool()
+        qdrant = _qdrant()
+        neo4j = _neo4j()
+        candidate = _candidate(strength=0.7)
+        novelty = NoveltyCheckResult(result=NoveltyResult.REDUNDANT, existing_engram_id="eee-000", existing_strength=0.4)
+
+        with (
+            patch(
+                "hindsight_api.engine.consolidation.multi_bank_promoter.find_promotion_candidates",
+                AsyncMock(return_value=[candidate]),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.multi_bank_promoter.find_schema_triggered_candidates",
+                AsyncMock(return_value=[]),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.multi_bank_promoter.check_novelty",
+                AsyncMock(return_value=novelty),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.multi_bank_promoter.reinforce_shared",
+                AsyncMock(),
+            ) as mock_reinforce,
+        ):
+            result = await promote_batch(pool, qdrant, neo4j, "agent-1:dict", "shared-bank", llm=None)
+
+        assert result.reinforced == 1
+        mock_reinforce.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_redundant_with_llm_keep_existing(self):
+        """REDUNDANT + LLM + resolution=KEEP_EXISTING → reinforce_shared called."""
+        from hindsight_api.engine.consolidation.conflict_resolution import Resolution, ConflictResult
+        from uuid import UUID
+
+        pool = _pool()
+        qdrant = _qdrant()
+        neo4j = _neo4j()
+        candidate = _candidate(strength=0.7)
+        existing_id = "00000000-0000-0000-0000-000000000001"
+        novelty = NoveltyCheckResult(
+            result=NoveltyResult.REDUNDANT, existing_engram_id=existing_id, existing_strength=0.5
+        )
+        conflict = _conflict_candidate()
+        cr = ConflictResult(
+            resolution=Resolution.KEEP_EXISTING,
+            winner_id=UUID(existing_id),
+            loser_id=conflict.engram_id,
+            description="existing wins",
+        )
+
+        with (
+            patch(
+                "hindsight_api.engine.consolidation.multi_bank_promoter.find_promotion_candidates",
+                AsyncMock(return_value=[candidate]),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.multi_bank_promoter.find_schema_triggered_candidates",
+                AsyncMock(return_value=[]),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.multi_bank_promoter.check_novelty",
+                AsyncMock(return_value=novelty),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.conflict_resolution.detect_conflicts",
+                AsyncMock(return_value=[conflict]),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.conflict_resolution.resolve_conflict",
+                AsyncMock(return_value=cr),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.multi_bank_promoter.reinforce_shared",
+                AsyncMock(),
+            ) as mock_reinforce,
+        ):
+            mock_llm = MagicMock()
+            result = await promote_batch(pool, qdrant, neo4j, "agent-1:dict", "shared-bank", llm=mock_llm)
+
+        assert result.reinforced == 1
+        mock_reinforce.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_redundant_with_llm_replace(self):
+        """REDUNDANT + LLM + resolution=REPLACE → promote_to_shared called."""
+        from hindsight_api.engine.consolidation.conflict_resolution import Resolution, ConflictResult
+        from uuid import UUID
+
+        pool = _pool()
+        qdrant = _qdrant()
+        neo4j = _neo4j()
+        candidate = _candidate(strength=0.9)
+        existing_id = "00000000-0000-0000-0000-000000000001"
+        novelty = NoveltyCheckResult(
+            result=NoveltyResult.REDUNDANT, existing_engram_id=existing_id, existing_strength=0.3
+        )
+        conflict = _conflict_candidate()
+        cand_uuid = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        cr = ConflictResult(
+            resolution=Resolution.REPLACE,
+            winner_id=cand_uuid,
+            loser_id=UUID(existing_id),
+            description="candidate stronger",
+        )
+
+        with (
+            patch(
+                "hindsight_api.engine.consolidation.multi_bank_promoter.find_promotion_candidates",
+                AsyncMock(return_value=[candidate]),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.multi_bank_promoter.find_schema_triggered_candidates",
+                AsyncMock(return_value=[]),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.multi_bank_promoter.check_novelty",
+                AsyncMock(return_value=novelty),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.conflict_resolution.detect_conflicts",
+                AsyncMock(return_value=[conflict]),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.conflict_resolution.resolve_conflict",
+                AsyncMock(return_value=cr),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.multi_bank_promoter.promote_to_shared",
+                AsyncMock(return_value=str(cand_uuid)),
+            ) as mock_promote,
+        ):
+            mock_llm = MagicMock()
+            result = await promote_batch(pool, qdrant, neo4j, "agent-1:dict", "shared-bank", llm=mock_llm)
+
+        assert result.promoted == 1
+        mock_promote.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_redundant_with_llm_contradiction_link(self):
+        """REDUNDANT + LLM + resolution=CONTRADICTION_LINK → promote + create_contradiction_link."""
+        from hindsight_api.engine.consolidation.conflict_resolution import Resolution, ConflictResult
+        from uuid import UUID
+
+        pool = _pool()
+        qdrant = _qdrant()
+        neo4j = _neo4j()
+        candidate = _candidate(strength=0.8)
+        existing_id = "00000000-0000-0000-0000-000000000001"
+        novelty = NoveltyCheckResult(
+            result=NoveltyResult.REDUNDANT, existing_engram_id=existing_id, existing_strength=0.4
+        )
+        conflict = _conflict_candidate()
+        winner_uuid = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+        cr = ConflictResult(
+            resolution=Resolution.CONTRADICTION_LINK,
+            winner_id=winner_uuid,
+            loser_id=conflict.engram_id,
+            description="contradiction detected",
+        )
+
+        with (
+            patch(
+                "hindsight_api.engine.consolidation.multi_bank_promoter.find_promotion_candidates",
+                AsyncMock(return_value=[candidate]),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.multi_bank_promoter.find_schema_triggered_candidates",
+                AsyncMock(return_value=[]),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.multi_bank_promoter.check_novelty",
+                AsyncMock(return_value=novelty),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.conflict_resolution.detect_conflicts",
+                AsyncMock(return_value=[conflict]),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.conflict_resolution.resolve_conflict",
+                AsyncMock(return_value=cr),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.multi_bank_promoter.promote_to_shared",
+                AsyncMock(return_value=str(winner_uuid)),
+            ) as mock_promote,
+            patch(
+                "hindsight_api.engine.consolidation.conflict_resolution.create_contradiction_link",
+                AsyncMock(),
+            ) as mock_link,
+        ):
+            mock_llm = MagicMock()
+            result = await promote_batch(pool, qdrant, neo4j, "agent-1:dict", "shared-bank", llm=mock_llm)
+
+        assert result.promoted == 1
+        mock_promote.assert_called_once()
+        mock_link.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_detect_conflicts_error_falls_back_to_reinforce(self):
+        """detect_conflicts() failure → graceful fallback to reinforce_shared."""
+        pool = _pool()
+        qdrant = _qdrant()
+        neo4j = _neo4j()
+        candidate = _candidate(strength=0.7)
+        existing_id = "00000000-0000-0000-0000-000000000002"
+        novelty = NoveltyCheckResult(
+            result=NoveltyResult.REDUNDANT, existing_engram_id=existing_id, existing_strength=0.4
+        )
+
+        with (
+            patch(
+                "hindsight_api.engine.consolidation.multi_bank_promoter.find_promotion_candidates",
+                AsyncMock(return_value=[candidate]),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.multi_bank_promoter.find_schema_triggered_candidates",
+                AsyncMock(return_value=[]),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.multi_bank_promoter.check_novelty",
+                AsyncMock(return_value=novelty),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.conflict_resolution.detect_conflicts",
+                AsyncMock(side_effect=RuntimeError("Qdrant down")),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.multi_bank_promoter.reinforce_shared",
+                AsyncMock(),
+            ) as mock_reinforce,
+        ):
+            mock_llm = MagicMock()
+            result = await promote_batch(pool, qdrant, neo4j, "agent-1:dict", "shared-bank", llm=mock_llm)
+
+        assert result.reinforced == 1
+        mock_reinforce.assert_called_once()

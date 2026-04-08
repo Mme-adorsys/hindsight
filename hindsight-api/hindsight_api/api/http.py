@@ -129,6 +129,10 @@ class RecallRequest(BaseModel):
         default=None,
         description="Session mode: precision, exploration, analogy, or validation (default: precision)",
     )
+    shared_bank_id: str | None = Field(
+        default=None,
+        description="Optional shared/global bank to query in parallel (dual-bank recall, B6).",
+    )
 
     @model_validator(mode="after")
     def resolve_query(self) -> "RecallRequest":
@@ -1482,6 +1486,7 @@ def _register_routes(app: FastAPI):
                     request_context=request_context,
                     tags=request.tags,
                     expectation=request.expectation,
+                    shared_bank_id=request.shared_bank_id,
                 )
 
             # Convert core MemoryFact objects to API RecallResult objects (excluding internal metrics)

@@ -179,6 +179,13 @@ class EngramStorageService(EngramStorageInterface):
             "abstraction_level": data.get("abstraction_level", 0.0),
             "status": data.get("status", "active"),
             "thalamus_overall": data.get("thalamus_overall"),
+            # Tags mirrored for Cypher queries (e.g. filter by tag within graph traversal)
+            "tags": data.get("tags") or [],
+            # Individual Thalamus dimensions mirrored for Cypher scoring queries
+            "thalamus_novelty": data.get("novelty"),
+            "thalamus_surprise": data.get("surprise"),
+            "thalamus_task_relevance": data.get("task_relevance"),
+            "thalamus_emotional_valence": data.get("emotional_valence"),
         }
         # Filter out None values — Neo4j handles missing properties gracefully
         neo4j_props = {k: v for k, v in neo4j_props.items() if v is not None}
@@ -277,7 +284,18 @@ class EngramStorageService(EngramStorageInterface):
         await dict_repo.update_entry(self._pool, engram_id, updates)
 
         # Mirror scalar fields to Neo4j node properties
-        neo4j_mirror = {"strength", "layer", "abstraction_level", "status", "thalamus_overall"}
+        neo4j_mirror = {
+            "strength",
+            "layer",
+            "abstraction_level",
+            "status",
+            "thalamus_overall",
+            "tags",  # array property — enables tag-based Cypher queries
+            "thalamus_novelty",  # individual Thalamus dimensions for graph-level scoring
+            "thalamus_surprise",
+            "thalamus_task_relevance",
+            "thalamus_emotional_valence",
+        }
         neo4j_updates = {k: v for k, v in updates.items() if k in neo4j_mirror}
         if neo4j_updates:
             set_clause = ", ".join(f"e.{k} = $p_{k}" for k in neo4j_updates)

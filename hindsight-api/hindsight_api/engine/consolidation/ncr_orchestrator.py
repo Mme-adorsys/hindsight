@@ -128,6 +128,7 @@ class NCROrchestrator:
         agent_bank_ids: list[str] | None = None,
         qdrant_client=None,
         neo4j_client=None,
+        llm=None,
     ) -> None:
         self._pool = pool
         self._consolidation = consolidation
@@ -140,6 +141,7 @@ class NCROrchestrator:
         self._agent_bank_ids = agent_bank_ids or []
         self._qdrant_client = qdrant_client
         self._neo4j_client = neo4j_client
+        self._llm = llm  # Optional LLM for B2 conflict resolution during promotion
 
     async def run(self, bank_id: str) -> NCRReport:
         """
@@ -218,9 +220,9 @@ class NCROrchestrator:
             neocortex_entries = await dict_repo.filter_entries(
                 self._pool, bank_id, layer="neocortex", status="active", limit=10000
             )
-            # Phase 3 receives FullEngram list; pass lightweight dicts for now
-            # Epic 13 will enrich with full Engram objects
-            report.phase3 = await self._schema.process(bank_id, engrams=[])  # type: ignore[arg-type]
+            # SchemaProcessor queries Neo4j directly; neocortex_entries are passed for
+            # potential future use (e.g. pre-filtering candidates before graph queries).
+            report.phase3 = await self._schema.process(bank_id, engrams=neocortex_entries)  # type: ignore[arg-type]
             logger.info(
                 "[NCR] Phase3/Schema done: neocortex_count=%d created=%d",
                 len(neocortex_entries),
@@ -241,6 +243,7 @@ class NCROrchestrator:
                     bank_id=bank_id,
                     shared_bank_id=self._shared_bank_id,
                     agent_bank_ids=self._agent_bank_ids,
+                    llm=self._llm,
                 )
                 logger.info(
                     "[NCR] Phase4/Promotion done: promoted=%d reinforced=%d",

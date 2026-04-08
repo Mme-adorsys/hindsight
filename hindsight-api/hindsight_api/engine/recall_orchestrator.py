@@ -1158,6 +1158,28 @@ class RecallOrchestrator:
             )
             logger.info("\n" + "\n".join(log_buffer))
 
+            # MIN-3: Batch update last_accessed for returned Engrams (best-effort).
+            # Bio mapping: LTP-Late — accessing a consolidated Engram resets its decay clock.
+            # This keeps last_accessed current so NCR Decay computes correct forgetting-curve values.
+            if top_scored:
+                try:
+                    from hindsight_api.engine.utils import fq_table as _fq_table
+
+                    async with acquire_with_retry(pool) as _access_conn:
+                        engram_ids_for_access = [sr.id for sr in top_scored if sr.id]
+                        if engram_ids_for_access:
+                            await _access_conn.execute(
+                                f"""
+                                UPDATE {_fq_table("engram_dictionary")}
+                                SET access_count = access_count + 1,
+                                    last_accessed = NOW()
+                                WHERE engram_id = ANY($1::uuid[])
+                                """,
+                                engram_ids_for_access,
+                            )
+                except Exception as _access_err:
+                    logger.debug("[RECALL] update_access batch failed (non-fatal): %s", _access_err)
+
             return (
                 RecallResultModel(results=memory_facts, trace=trace_dict, entities=entities_dict, chunks=chunks_dict),
                 top_scored,
