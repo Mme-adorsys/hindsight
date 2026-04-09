@@ -272,7 +272,7 @@ def create_mcp_server(memory: MemoryEngine) -> FastMCP:
             except ValueError as e:
                 return {"error": str(e), "text": ""}
 
-            parsed_schema: dict | None = None
+            parsed_schema: dict | list | None = None
             if response_schema:
                 try:
                     parsed_schema = parse_json_param(response_schema, "response_schema")

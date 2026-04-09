@@ -43,6 +43,7 @@ if TYPE_CHECKING:
 
     from .engine_context import EngineContext
     from .response_models import Session
+    from .search.types import ScoredResult
 
 logger = logging.getLogger(__name__)
 
@@ -451,7 +452,7 @@ class RecallOrchestrator:
         tags: list[str] | None = None,
         mode=None,  # RetrievalMode | None — forwarded to retrieve_parallel for MPFP pattern selection
         shared_bank_id: str | None = None,  # Optional second bank for dual-bank parallel query (S5)
-    ) -> RecallResultModel:
+    ) -> tuple[RecallResultModel, list[ScoredResult]]:
         """
         Search implementation with modular retrieval and reranking.
 
