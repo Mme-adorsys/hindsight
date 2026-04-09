@@ -222,7 +222,9 @@ class AdminOperations:
                     mu.mentioned_at, mu.document_id, mu.chunk_id, mu.fact_type,
                     ed.strength, ed.layer, ed.access_count,
                     ed.thalamus_overall, ed.novelty, ed.surprise,
-                    ed.task_relevance, ed.emotional_valence
+                    ed.task_relevance, ed.emotional_valence,
+                    ed.tags, ed.expectation, ed.outcome,
+                    ed.session_mode, ed.task_context, ed.retain_context
                 FROM {fq_table("memory_units")} mu
                 LEFT JOIN {fq_table("engram_dictionary")} ed ON ed.engram_id = mu.id
                 {where_clause.replace("bank_id", "mu.bank_id").replace("fact_type", "mu.fact_type")}
@@ -323,6 +325,16 @@ class AdminOperations:
                     "task_relevance": row["task_relevance"],
                     "emotional_valence": row["emotional_valence"],
                 }
+            # Phase A5 provenance — retain_context is JSONB, asyncpg may return
+            # it as a string or a decoded dict depending on driver version.
+            retain_context_raw = row["retain_context"]
+            if isinstance(retain_context_raw, str):
+                try:
+                    import json as _json
+
+                    retain_context_raw = _json.loads(retain_context_raw)
+                except Exception:
+                    retain_context_raw = None
             table_rows.append(
                 {
                     "id": str(unit_id),
@@ -340,6 +352,13 @@ class AdminOperations:
                     "layer": row["layer"],
                     "access_count": row["access_count"],
                     "thalamus_scores": thalamus_scores,
+                    # Phase A5 provenance — mirrors the /memories/list shape
+                    "tags": row["tags"],
+                    "expectation": row["expectation"],
+                    "outcome": row["outcome"],
+                    "session_mode": row["session_mode"],
+                    "task_context": row["task_context"],
+                    "retain_context": retain_context_raw,
                 }
             )
 
