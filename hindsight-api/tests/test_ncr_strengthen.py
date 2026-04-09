@@ -20,13 +20,12 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 import pytest
 
 from hindsight_api.engine.consolidation.ncr_strengthen import (
+    _PROMOTION_STRENGTH_BOOST,
+    _STRENGTH_MAX,
     StrengthenConfig,
     StrengthenProcessor,
     StrengthenResult,
-    _PROMOTION_STRENGTH_BOOST,
-    _STRENGTH_MAX,
 )
-
 
 # ---------------------------------------------------------------------------
 # StrengthenConfig
@@ -299,6 +298,65 @@ class TestStrengthenProcessor:
 
         assert result.total == 0
         storage.update_metadata.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_process_pagination_terminates_with_all_incremented(self):
+        """Regression: NCRStrengthen.process() must terminate when every batch
+        is incremented (not promoted).
+
+        Before commit d6b2980 the while-loop only advanced `offset` by
+        `batch_result.errors`, so an incremented-only batch kept re-reading the
+        same 5 rows from offset=0 forever. Live repro: ncr_cycles_survived
+        reached 183,313 on 5 engrams in ~10 minutes before the process was
+        killed. See docs/engram/concept.md § 12 (NCR Phase 2).
+
+        This test simulates two back-to-back non-empty batches using an
+        offset-aware side-effect. A counter-based safety brake aborts with
+        RuntimeError if the processor calls `list_buffer_for_strengthen`
+        more than 10 times — that never happens under correct pagination.
+        """
+        # Two full batches: 5 engrams each, none meet promotion criteria.
+        batch_by_offset = {
+            0: [_make_entry(f"off0-{i}", strength=0.1, access_count=0, ncr_cycles_survived=0) for i in range(5)],
+            5: [_make_entry(f"off5-{i}", strength=0.1, access_count=0, ncr_cycles_survived=0) for i in range(5)],
+        }
+
+        call_counter = {"n": 0}
+
+        async def list_side_effect(pool, bank_id, *, batch_size, offset):
+            call_counter["n"] += 1
+            if call_counter["n"] > 10:
+                raise RuntimeError(
+                    f"list_buffer_for_strengthen called {call_counter['n']} times — "
+                    "NCRStrengthen pagination is looping!"
+                )
+            return batch_by_offset.get(offset, [])
+
+        pool = MagicMock()
+        storage = AsyncMock()
+
+        with (
+            patch(
+                "hindsight_api.engine.consolidation.ncr_strengthen.dict_repo.list_buffer_for_strengthen",
+                side_effect=list_side_effect,
+            ) as mock_list,
+            patch(
+                "hindsight_api.engine.consolidation.ncr_strengthen.dict_repo.increment_ncr_cycles",
+                new_callable=AsyncMock,
+            ) as mock_inc,
+        ):
+            proc = StrengthenProcessor(pool=pool, storage_service=storage)
+            result = await proc.process("test-bank")
+
+        # Correct behaviour: exactly 3 calls (offset 0, 5, 10→empty)
+        assert mock_list.call_count == 3, (
+            f"Expected 3 pagination calls, got {mock_list.call_count}. "
+            "Pagination likely regressed — check offset advancement in process()."
+        )
+        assert result.total == 10
+        assert result.promoted == 0
+        assert result.incremented == 10
+        assert mock_inc.call_count == 10
 
     @pytest.mark.asyncio
     async def test_multiple_batches(self):
