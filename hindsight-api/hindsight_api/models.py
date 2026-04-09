@@ -424,9 +424,38 @@ class NCRRun(Base):
     # Phase-level error messages collected during the run
     errors: Mapped[list | None] = mapped_column(JSONB)
 
+    # Observability Phase B — PipelineTracer output for this run. Flat list of
+    # TraceStep dicts keyed under 'steps', see engine/tracer.py:PipelineTrace.to_dict.
+    # Nullable: pre-existing rows from before B4 stay null.
+    trace_data: Mapped[dict | None] = mapped_column(JSONB)
+
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
 
     __table_args__ = (
         CheckConstraint("trigger IN ('manual', 'scheduled')", name="ck_ncr_runs_trigger"),
         Index("idx_ncr_runs_bank_started", "bank_id", "started_at"),
     )
+
+
+class RetainTrace(Base):
+    """
+    One PipelineTracer snapshot persisted from retain_batch (Phase B, Item B3).
+
+    Each retain invocation gets its own row. trace_data is an opaque JSONB
+    blob — the CP is the only consumer right now, and it renders the whole
+    thing via a generic timeline component. Querying *into* trace_data is
+    out of scope for Phase B; if that ever becomes relevant we can add a
+    GIN index on trace_data->'steps' later.
+    """
+
+    __tablename__ = "retain_traces"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    bank_id: Mapped[str] = mapped_column(Text, ForeignKey("banks.bank_id", ondelete="CASCADE"), nullable=False)
+    operation_id: Mapped[PyUUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    trace_data: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (Index("idx_retain_traces_bank_started", "bank_id", "started_at"),)
