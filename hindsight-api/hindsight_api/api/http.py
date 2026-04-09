@@ -326,6 +326,14 @@ class RecallResponse(BaseModel):
 
     results: list[RecallResult]
     trace: dict[str, Any] | None = None
+    # Observability Phase B, Item B6 — high-level pipeline trace with one
+    # step per recall phase (query_analysis, retrieval_parallel, rrf_merge,
+    # strength_pre_filter, cross_encoder_rerank, combined_scoring, ...).
+    # Distinct from `trace` which carries the low-level SearchTrace details.
+    pipeline_trace: dict[str, Any] | None = Field(
+        default=None,
+        description="High-level recall pipeline trace (Phase B). See engine/tracer.py.",
+    )
     entities: dict[str, EntityStateResponse] | None = Field(
         default=None, description="Entity states for entities mentioned in results"
     )
@@ -977,12 +985,48 @@ class NCRRunHistoryItem(BaseModel):
     schema_stats: dict | None
     promotion_stats: dict | None
     errors: list | None
+    # Observability Phase B, Item B6 — high-level PipelineTrace per run.
+    # Populated from ncr_runs.trace_data (column added in B2).
+    trace_data: dict | None = None
 
 
 class NCRHistoryResponse(BaseModel):
     """Response model for the NCR run history endpoint."""
 
     runs: list[NCRRunHistoryItem]
+
+
+# ---------------------------------------------------------------------------
+# Observability Phase B, Item B6 — retain_traces API
+# ---------------------------------------------------------------------------
+
+
+class RetainTraceListItem(BaseModel):
+    """Single row in the retain_traces list endpoint."""
+
+    id: str
+    operation_id: str | None
+    started_at: str  # ISO-8601
+    duration_ms: int
+    step_count: int
+    status: str  # "ok" | "error" (degraded if any step had status=error)
+
+
+class RetainTraceListResponse(BaseModel):
+    """Response for the retain_traces list endpoint."""
+
+    traces: list[RetainTraceListItem]
+
+
+class RetainTraceResponse(BaseModel):
+    """Full retain trace payload including the trace_data JSONB blob."""
+
+    id: str
+    bank_id: str
+    operation_id: str | None
+    started_at: str
+    duration_ms: int
+    trace_data: dict
 
 
 class EngramStatsResponse(BaseModel):
@@ -1739,7 +1783,11 @@ def _register_routes(app: FastAPI):
                     )
 
             return RecallResponse(
-                results=recall_results, trace=core_result.trace, entities=entities_response, chunks=chunks_response
+                results=recall_results,
+                trace=core_result.trace,
+                pipeline_trace=getattr(core_result, "pipeline_trace", None),
+                entities=entities_response,
+                chunks=chunks_response,
             )
         except HTTPException:
             raise
@@ -2858,7 +2906,8 @@ def _register_routes(app: FastAPI):
                     f"""
                     SELECT run_id, bank_id, trigger, started_at, completed_at,
                            duration_seconds, consolidation_stats, decay_stats,
-                           strengthen_stats, schema_stats, promotion_stats, errors
+                           strengthen_stats, schema_stats, promotion_stats, errors,
+                           trace_data
                     FROM {fq_table("ncr_runs")}
                     WHERE bank_id = $1
                     ORDER BY started_at DESC
@@ -2895,6 +2944,7 @@ def _register_routes(app: FastAPI):
                     schema_stats=_parse_jsonb(row["schema_stats"]),
                     promotion_stats=_parse_jsonb(row["promotion_stats"]),
                     errors=_parse_jsonb(row["errors"]),
+                    trace_data=_parse_jsonb(row["trace_data"]),
                 )
                 for row in rows
             ]
@@ -2906,6 +2956,140 @@ def _register_routes(app: FastAPI):
 
             error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
             logger.error(f"Error in /v1/default/banks/{bank_id}/ncr/history: {error_detail}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.get(
+        "/v1/default/banks/{bank_id}/retain_traces",
+        response_model=RetainTraceListResponse,
+        summary="List retain pipeline traces for a bank",
+        description=(
+            "Return the most recent retain pipeline traces for the given bank, "
+            "ordered by started_at DESC. Each entry contains summary info only "
+            "(id, operation_id, started_at, duration_ms, step_count, status); "
+            "use GET /retain_traces/{trace_id} for the full trace_data. "
+            "Observability Phase B, Item B6."
+        ),
+        operation_id="list_retain_traces",
+        tags=["Observability"],
+    )
+    async def api_list_retain_traces(
+        bank_id: str,
+        limit: int = Query(default=20, ge=1, le=100, description="Maximum number of traces to return"),
+        request_context: RequestContext = Depends(get_request_context),
+    ):
+        """Return the most recent retain pipeline traces for a bank."""
+        try:
+            await app.state.memory._authenticate_tenant(request_context)
+            pool = await app.state.memory._get_pool()
+            async with acquire_with_retry(pool) as conn:
+                rows = await conn.fetch(
+                    f"""
+                    SELECT id, operation_id, started_at, duration_ms, trace_data
+                    FROM {fq_table("retain_traces")}
+                    WHERE bank_id = $1
+                    ORDER BY started_at DESC
+                    LIMIT $2
+                    """,
+                    bank_id,
+                    limit,
+                )
+
+            def _parse_jsonb(value):
+                if value is None:
+                    return None
+                if isinstance(value, (dict, list)):
+                    return value
+                try:
+                    import json as _json
+
+                    return _json.loads(value)
+                except Exception:
+                    return None
+
+            items: list[RetainTraceListItem] = []
+            for row in rows:
+                td = _parse_jsonb(row["trace_data"]) or {}
+                steps = td.get("steps", []) if isinstance(td, dict) else []
+                has_error = any(s.get("status") == "error" for s in steps if isinstance(s, dict))
+                items.append(
+                    RetainTraceListItem(
+                        id=str(row["id"]),
+                        operation_id=str(row["operation_id"]) if row["operation_id"] else None,
+                        started_at=row["started_at"].isoformat(),
+                        duration_ms=int(row["duration_ms"]),
+                        step_count=len(steps),
+                        status="error" if has_error else "ok",
+                    )
+                )
+            return RetainTraceListResponse(traces=items)
+        except (AuthenticationError, HTTPException):
+            raise
+        except Exception as e:
+            import traceback
+
+            logger.error(f"Error in list_retain_traces bank={bank_id}: {traceback.format_exc()}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.get(
+        "/v1/default/banks/{bank_id}/retain_traces/{trace_id}",
+        response_model=RetainTraceResponse,
+        summary="Get a single retain pipeline trace",
+        description=(
+            "Return the full retain pipeline trace for the given id, including "
+            "the complete trace_data JSONB blob with all recorded steps. "
+            "Observability Phase B, Item B6."
+        ),
+        operation_id="get_retain_trace",
+        tags=["Observability"],
+    )
+    async def api_get_retain_trace(
+        bank_id: str,
+        trace_id: str,
+        request_context: RequestContext = Depends(get_request_context),
+    ):
+        """Return a single retain trace by id."""
+        try:
+            await app.state.memory._authenticate_tenant(request_context)
+            pool = await app.state.memory._get_pool()
+            async with acquire_with_retry(pool) as conn:
+                row = await conn.fetchrow(
+                    f"""
+                    SELECT id, bank_id, operation_id, started_at, duration_ms, trace_data
+                    FROM {fq_table("retain_traces")}
+                    WHERE bank_id = $1 AND id = $2::uuid
+                    """,
+                    bank_id,
+                    trace_id,
+                )
+            if row is None:
+                raise HTTPException(status_code=404, detail=f"retain trace {trace_id} not found in bank {bank_id}")
+
+            def _parse_jsonb(value):
+                if value is None:
+                    return None
+                if isinstance(value, (dict, list)):
+                    return value
+                try:
+                    import json as _json
+
+                    return _json.loads(value)
+                except Exception:
+                    return None
+
+            return RetainTraceResponse(
+                id=str(row["id"]),
+                bank_id=row["bank_id"],
+                operation_id=str(row["operation_id"]) if row["operation_id"] else None,
+                started_at=row["started_at"].isoformat(),
+                duration_ms=int(row["duration_ms"]),
+                trace_data=_parse_jsonb(row["trace_data"]) or {},
+            )
+        except (AuthenticationError, HTTPException):
+            raise
+        except Exception as e:
+            import traceback
+
+            logger.error(f"Error in get_retain_trace bank={bank_id} id={trace_id}: {traceback.format_exc()}")
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.get(
