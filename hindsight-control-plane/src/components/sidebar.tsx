@@ -13,6 +13,7 @@ import {
   Box,
   Layers,
   RefreshCw,
+  Network,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import Link from "next/link";
@@ -25,6 +26,7 @@ type NavItem =
   | "entities"
   | "engrams"
   | "consolidation"
+  | "schemas"
   | "profile";
 
 interface SidebarProps {
@@ -48,6 +50,7 @@ export function Sidebar({ currentTab, onTabChange }: SidebarProps) {
     { id: "entities" as NavItem, label: "Entities", icon: Users },
     { id: "engrams" as NavItem, label: "Engrams", icon: Layers },
     { id: "consolidation" as NavItem, label: "Consolidation", icon: RefreshCw },
+    { id: "schemas" as NavItem, label: "Schemas", icon: Network },
     { id: "profile" as NavItem, label: "Memory Bank", icon: Box },
   ];
 

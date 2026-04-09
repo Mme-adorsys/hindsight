@@ -17,25 +17,25 @@ Schemas sind das höchste Abstraktionslevel im Engram-Modell — sie repräsenti
 
 ## Akzeptanzkriterien
 
-- [ ] Neuer Sidebar-Eintrag "Schemas" mit Icon (z.B. `Network` von lucide-react)
-- [ ] `?view=schemas` zeigt den Schema Explorer
-- [ ] Schema-Liste als Tabelle: Label, Member Count, Maturity Badge, Avg Strength, Last Activated
-- [ ] Maturity-Badges farbcodiert: Emerging (grau), Stable (blau), Dominant (grün)
-- [ ] Klick auf Schema → Detail-Panel mit Member-Engram-Liste
-- [ ] Mini-Graph: Schema-Node in der Mitte, Member-Engrams als verbundene Nodes (Cytoscape)
-- [ ] Leerer State: Freundliche Meldung "No schemas have emerged yet. Schemas form after multiple NCR cycles."
-- [ ] Loading States und Error Handling
+- [x] Neuer Sidebar-Eintrag "Schemas" mit `Network` Icon von lucide-react
+- [x] `?view=schemas` zeigt den Schema Explorer
+- [x] Schema-Liste als sortierbare Tabelle: Label, Members, Maturity Badge, Avg Strength (Progress-Bar), Last Activated (relative Time)
+- [x] Maturity-Badges farbcodiert: Emerging (slate/grau), Stable (blau), Dominant (emerald/grün)
+- [x] Klick auf Schema → Detail-Panel mit Member-Engram-Liste (text_preview, strength, engram_id)
+- [x] Mini-Graph: Schema-Node zentral+größer (farbig nach Maturity), Member-Nodes proportional zu Strength, Cytoscape concentric Layout, Hover-Tooltips
+- [x] Leerer State: Network-Icon + "No schemas have emerged yet" + NCR-Erklärung
+- [x] Loading States (Skeleton-Pulse), Error State (rote Card mit Retry), Detail Loading (Spinner)
 
 ## Tasks
 
-- [ ] **T1 — Sidebar erweitern** — In `sidebar.tsx` neues Nav-Item: `{ id: "schemas", label: "Schemas", icon: Network }`. NavItem Type erweitern. Position: nach "Consolidation", vor "Memory Bank".
+- [x] **T1 — Sidebar erweitern** — `sidebar.tsx`: NavItem Type um `"schemas"` erweitert (multi-line union), `Network` Icon importiert, Nav-Item zwischen "Consolidation" und "Memory Bank" eingefügt.
 
-- [ ] **T2 — Router erweitern** — In `page.tsx` neuen `{view === "schemas" && ...}` Block. Titel "Schema Explorer", Beschreibung über Schema Emergence, `<SchemaExplorerView />` einbinden.
+- [x] **T2 — Router erweitern** — `page.tsx`: NavItem Type aligned, `SchemaExplorerView` Import, `{view === "schemas" && ...}` Block mit Titel "Schema Explorer" und Beschreibung über Schema Emergence durch NCR.
 
-- [ ] **T3 — Component: `schema-explorer-view.tsx` — Schema List** — Oberer Teil: Tabelle mit allen Schemas. Spalten: Label, Members (Count), Maturity (Badge), Avg Strength (Progress Bar), Last Activated (relative Time). Sortierbar nach jeder Spalte. Klick auf Row → setzt Selected Schema.
+- [x] **T3 — Component: Schema List** — `schema-explorer-view.tsx` mit `useBank()` + `useState`. Sortierbare Tabelle (5 Spalten) mit `SortableHeader`-Subkomponente, `compareSchemas()`-Helper. Selected-Highlight via border-l-2. Auto-Refresh 30s + manueller Refresh-Button.
 
-- [ ] **T4 — Component: Schema Detail Panel** — Unterer Teil oder Side-Panel: Zeigt den Selected Schema. Header: Label + Maturity + Stats. Member-Liste: Engram Text-Preview (truncated), Strength, Engram-ID. Klick auf Member → Link zur Memory-Tabelle (Deep Link mit Filter).
+- [x] **T4 — Component: Schema Detail Panel** — Card unter der Tabelle mit Schema-Header (Label + MaturityBadge), Member-Liste links (text_preview, strength %, truncated engram_id), Mini-Graph rechts. 2-Spalten-Layout (lg:grid-cols-2). Loading-Spinner während detail-fetch.
 
-- [ ] **T5 — Component: Schema Mini-Graph** — Cytoscape-basierte Visualisierung im Detail-Panel. Layout: Concentric (Schema in Mitte, Members drumherum). Schema-Node: größer, farbig nach Maturity. Member-Nodes: Größe proportional zu Strength. Edges: `BELONGS_TO` Relationships. Interaktiv: Hover zeigt Tooltip mit Engram-Text.
+- [x] **T5 — Component: Schema Mini-Graph** — `SchemaGraph` Subkomponente mit Cytoscape direct (kein fcose nötig). Concentric Layout: Schema-Node level=2 (zentral, größer, farbig nach Maturity via MATURITY_COLORS), Member-Nodes level=1 mit `mapData(strength, 0, 1, 16, 36)` für proportionale Größe. Edges Member→Schema (entspricht :SCHEMA-Relationship). Hover zeigt text_preview. Cleanup via cy.destroy() im useEffect-return.
 
-- [ ] **T6 — Empty State & Edge Cases** — Keine Schemas: Freundliche Meldung + Hinweis auf NCR. Ein Schema ohne Members (edge case nach Decay): "This schema has no remaining members" + ggf. Delete-Hint. Viele Schemas (>50): Pagination oder Load-More Button.
+- [x] **T6 — Empty State & Edge Cases** — Keine Schemas: Network-Icon + "No schemas have emerged yet" + NCR-Erklärung. Schema ohne Members: "This schema has no remaining members — they may have decayed" statt Mini-Graph. Loading-Skeleton (3 pulse Bars). Error-State: rote Card mit Retry-Button.

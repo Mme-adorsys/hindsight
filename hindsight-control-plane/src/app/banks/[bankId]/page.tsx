@@ -11,6 +11,7 @@ import { SearchDebugView } from "@/components/search-debug-view";
 import { BankProfileView } from "@/components/bank-profile-view";
 import { EngramLifecycleView } from "@/components/engram-lifecycle-view";
 import { NCRDashboardView } from "@/components/ncr-dashboard-view";
+import { SchemaExplorerView } from "@/components/schema-explorer-view";
 
 type NavItem =
   | "recall"
@@ -20,6 +21,7 @@ type NavItem =
   | "entities"
   | "engrams"
   | "consolidation"
+  | "schemas"
   | "profile";
 type DataSubTab = "world" | "experience" | "opinion";
 
@@ -184,6 +186,18 @@ export default function BankPage() {
                   Trigger the Nightly Consolidation Run, review results, and inspect the run history.
                 </p>
                 <NCRDashboardView />
+              </div>
+            )}
+
+            {/* Schemas Tab */}
+            {view === "schemas" && (
+              <div>
+                <h1 className="text-3xl font-bold mb-2 text-foreground">Schema Explorer</h1>
+                <p className="text-muted-foreground mb-6">
+                  Explore emergent knowledge schemas — abstract patterns distilled from repeated
+                  experiences through the NCR consolidation process.
+                </p>
+                <SchemaExplorerView />
               </div>
             )}
           </div>
