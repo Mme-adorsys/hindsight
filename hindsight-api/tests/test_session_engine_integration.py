@@ -10,9 +10,13 @@ Tests validate WITHOUT requiring a running database or LLM:
 - _session_from_mode returns None for None input
 - _session_from_mode raises HTTPException for invalid mode
 - MemoryEngine constructor accepts session_manager kwarg
-"""
 
-from unittest.mock import MagicMock
+Note (2026-04-09): Updated after the MemoryEngine God-Object decomposition.
+`_resolve_session_config` and `_get_session_manager` are now thin facades
+that delegate to `self._ctx` (EngineContext). The test helpers construct a
+bare EngineContext via `object.__new__` and populate only the session-manager
+attributes — no DB pool, LLM client, or embeddings needed.
+"""
 
 import pytest
 
@@ -20,6 +24,38 @@ from hindsight_api.api.http import _session_from_mode
 from hindsight_api.engine.response_models import RetrievalMode, Session
 from hindsight_api.engine.session.mode_config import MODE_PROFILES, ModeConfig
 from hindsight_api.engine.session.session_manager import SessionManager
+
+
+def _make_minimal_context(session_manager=None):
+    """Create a bare EngineContext with only the session-manager attributes.
+
+    The real EngineContext constructor pulls config, DB pool, LLM clients
+    etc. For tests that only exercise `resolve_session_config()` and
+    `get_session_manager()` we bypass __init__ entirely and populate the
+    exact attributes those two methods touch.
+    """
+    import threading
+
+    from hindsight_api.engine.engine_context import EngineContext
+
+    ctx = object.__new__(EngineContext)
+    ctx._session_manager = session_manager
+    ctx._session_manager_lock = threading.Lock()
+    return ctx
+
+
+def _make_minimal_engine(session_manager=None):
+    """Create a minimal MemoryEngine with only the `_ctx` attribute set.
+
+    Good enough for tests that call `_resolve_session_config` or
+    `_get_session_manager`, both of which delegate to `self._ctx`.
+    """
+    from hindsight_api.engine.memory_engine import MemoryEngine
+
+    engine = object.__new__(MemoryEngine)
+    engine._ctx = _make_minimal_context(session_manager=session_manager)
+    return engine
+
 
 # ---------------------------------------------------------------------------
 # _resolve_session_config (T3)
@@ -31,16 +67,7 @@ class TestResolveSessionConfig:
 
     def _make_minimal_engine(self):
         """Create a minimal MemoryEngine-like object with just the helper method."""
-        import threading
-
-        from hindsight_api.engine.memory_engine import MemoryEngine
-
-        # Patch __init__ to avoid full DB setup
-        engine = object.__new__(MemoryEngine)
-        engine._session_manager = None
-        engine._session_manager_lazy_init = True
-        engine._session_manager_lock = threading.Lock()
-        return engine
+        return _make_minimal_engine()
 
     def test_none_session_returns_precision_config(self):
         engine = self._make_minimal_engine()
@@ -98,22 +125,15 @@ class TestResolveSessionConfig:
 
 class TestGetSessionManager:
     def _make_minimal_engine(self, session_manager=None):
-        import threading
-
-        from hindsight_api.engine.memory_engine import MemoryEngine
-
-        engine = object.__new__(MemoryEngine)
-        engine._session_manager = session_manager
-        engine._session_manager_lazy_init = session_manager is None
-        engine._session_manager_lock = threading.Lock()
-        return engine
+        return _make_minimal_engine(session_manager=session_manager)
 
     def test_lazy_creates_session_manager_on_first_call(self):
         engine = self._make_minimal_engine()
-        assert engine._session_manager is None
+        # Session manager lives on the context now, not on the engine.
+        assert engine._ctx._session_manager is None
         manager = engine._get_session_manager()
         assert isinstance(manager, SessionManager)
-        assert engine._session_manager is manager  # cached after first call
+        assert engine._ctx._session_manager is manager  # cached after first call
 
     def test_returns_injected_session_manager(self):
         injected = SessionManager()
@@ -185,11 +205,7 @@ class TestSessionFromMode:
 
 class TestBackwardCompatibility:
     def test_resolve_none_equals_precision_profile(self):
-        from hindsight_api.engine.memory_engine import MemoryEngine
-
-        engine = object.__new__(MemoryEngine)
-        engine._session_manager = None
-        engine._session_manager_lazy_init = True
+        engine = _make_minimal_engine()
 
         config_none = engine._resolve_session_config(None)
         config_precision = engine._resolve_session_config(Session(mode=RetrievalMode.PRECISION))
