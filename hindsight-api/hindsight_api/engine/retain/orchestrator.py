@@ -4,6 +4,7 @@ Main orchestrator for the retain pipeline.
 Coordinates all retain pipeline modules to store memories efficiently.
 """
 
+import json
 import logging
 import time
 import uuid
@@ -12,6 +13,7 @@ from datetime import UTC, datetime
 from ...config import get_config
 from ..db_utils import acquire_with_retry
 from ..llm_routing import LLMRegistry
+from ..tracer import PipelineTrace, PipelineTracer
 from . import bank_utils
 
 
@@ -79,6 +81,17 @@ async def retain_batch(
     start_time = time.time()
     total_chars = sum(len(item.get("content", "")) for item in contents_dicts)
 
+    # Observability Phase B — pipeline tracer for the whole retain_batch.
+    # Records one TraceStep per pipeline phase via tracer.record_step() at
+    # each existing log_buffer.append boundary (see B3). The trace is
+    # persisted to the retain_traces table after the PostgreSQL transaction
+    # commits — persist failures are logged but never propagated.
+    tracer = PipelineTracer(pipeline="retain", bank_id=bank_id)
+    tracer.set_metadata("batch_size", len(contents_dicts))
+    tracer.set_metadata("total_chars", total_chars)
+    if document_id is not None:
+        tracer.set_metadata("document_id", document_id)
+
     # Buffer all logs
     log_buffer = []
     log_buffer.append(f"{'=' * 60}")
@@ -132,10 +145,30 @@ async def retain_batch(
                 expanded.extend(new_dicts)
 
         contents_dicts = expanded
+        _r0_duration_ms = (time.time() - r0_start) * 1000
         log_buffer.append(
             f"[R0] Sequence Analysis: {r0_total_units} units from {original_count} items "
             f"(budget={budget.value if hasattr(budget, 'value') else budget}) "
-            f"in {time.time() - r0_start:.3f}s"
+            f"in {_r0_duration_ms / 1000:.3f}s"
+        )
+        tracer.record_step(
+            name="r0_sequence_analysis",
+            duration_ms=_r0_duration_ms,
+            inputs={
+                "num_contents": original_count,
+                "budget": budget.value if hasattr(budget, "value") else str(budget),
+            },
+            outputs={"num_units": r0_total_units, "expanded_count": len(expanded)},
+            rationale=(
+                f"Decomposed {original_count} contents into {r0_total_units} structured units via sequence analysis LLM"
+            ),
+        )
+    else:
+        tracer.record_step(
+            name="r0_sequence_analysis",
+            duration_ms=0.0,
+            status="skipped",
+            rationale="no budget configured — sequence analysis disabled",
         )
 
     # Convert dicts to RetainContent objects (after R0 expansion)
@@ -162,8 +195,25 @@ async def retain_batch(
     extracted_facts, chunks, usage = await fact_extraction.extract_facts_from_contents(
         contents, _r1_llm, agent_name, extract_opinions
     )
+    _r1_duration_ms = (time.time() - step_start) * 1000
     log_buffer.append(
-        f"[1] Extract facts: {len(extracted_facts)} facts, {len(chunks)} chunks from {len(contents)} contents in {time.time() - step_start:.3f}s"
+        f"[1] Extract facts: {len(extracted_facts)} facts, {len(chunks)} chunks from {len(contents)} contents in {_r1_duration_ms / 1000:.3f}s"
+    )
+    tracer.record_step(
+        name="r1_fact_extraction",
+        duration_ms=_r1_duration_ms,
+        inputs={
+            "num_contents": len(contents),
+            "extract_opinions": extract_opinions,
+        },
+        outputs={
+            "num_facts": len(extracted_facts),
+            "num_chunks": len(chunks),
+            "llm_usage_tokens": getattr(usage, "total_tokens", 0) if usage else 0,
+        },
+        rationale=(
+            f"LLM extracted {len(extracted_facts)} facts and {len(chunks)} chunks from {len(contents)} contents"
+        ),
     )
 
     # Apply gate ThalamusScores to every fact. Since Epic 16 the gate is
@@ -246,6 +296,9 @@ async def retain_batch(
         logger.info(
             f"RETAIN_BATCH COMPLETE: 0 facts extracted from {len(contents)} contents in {total_time:.3f}s (document tracked, no facts)"
         )
+        tracer.set_metadata("num_units_created", 0)
+        tracer.set_metadata("early_return", "no_facts_extracted")
+        await _persist_retain_trace(pool, bank_id, tracer.finalize())
         return [[] for _ in contents], usage
 
     # Apply fact_type_override if provided
@@ -257,7 +310,18 @@ async def retain_batch(
     step_start = time.time()
     augmented_texts = embedding_processing.augment_texts_with_context(extracted_facts, format_date_fn, session=session)
     embeddings = await embedding_processing.generate_embeddings_batch(embeddings_model, augmented_texts)
-    log_buffer.append(f"[2] Generate embeddings: {len(embeddings)} embeddings in {time.time() - step_start:.3f}s")
+    _r2_duration_ms = (time.time() - step_start) * 1000
+    log_buffer.append(f"[2] Generate embeddings: {len(embeddings)} embeddings in {_r2_duration_ms / 1000:.3f}s")
+    tracer.record_step(
+        name="r2_embeddings",
+        duration_ms=_r2_duration_ms,
+        inputs={"num_texts": len(augmented_texts)},
+        outputs={
+            "num_embeddings": len(embeddings),
+            "embedding_dim": len(embeddings[0]) if embeddings else 0,
+        },
+        rationale=f"batch-embedded {len(embeddings)} augmented texts",
+    )
 
     # Step 3: Convert to ProcessedFact objects (without chunk_ids yet).
     # Capture retain-time provenance from the active Session so it lands on
@@ -441,9 +505,24 @@ async def retain_batch(
             )
             facts_to_store, replacement_actions = deduplication.resolve_duplicates_batch(processed_facts, dup_results)
             drop_count = sum(1 for dr in dup_results if dr.is_duplicate) - len(replacement_actions)
+            _r3_duration_ms = (time.time() - step_start) * 1000
             log_buffer.append(
                 f"[4] Deduplication: {drop_count} dropped, {len(replacement_actions)} replaced"
-                f" in {time.time() - step_start:.3f}s"
+                f" in {_r3_duration_ms / 1000:.3f}s"
+            )
+            tracer.record_step(
+                name="r3_deduplication",
+                duration_ms=_r3_duration_ms,
+                inputs={"num_facts": len(processed_facts)},
+                outputs={
+                    "num_new": len(facts_to_store) - len(replacement_actions),
+                    "num_dropped": drop_count,
+                    "num_replaced": len(replacement_actions),
+                },
+                rationale=(
+                    f"score-aware dedup kept {len(facts_to_store)}, dropped {drop_count}, "
+                    f"replaced {len(replacement_actions)}"
+                ),
             )
 
             non_duplicate_facts = facts_to_store
@@ -460,7 +539,19 @@ async def retain_batch(
 
             step_start = time.time()
             new_unit_ids = await fact_storage.insert_facts_batch(conn, bank_id, keep_facts)
-            log_buffer.append(f"[5] Insert facts: {len(new_unit_ids)} units in {time.time() - step_start:.3f}s")
+            _r5_duration_ms = (time.time() - step_start) * 1000
+            log_buffer.append(f"[5] Insert facts: {len(new_unit_ids)} units in {_r5_duration_ms / 1000:.3f}s")
+            tracer.record_step(
+                name="r5_insert_batch",
+                duration_ms=_r5_duration_ms,
+                inputs={"num_to_insert": len(keep_facts)},
+                outputs={
+                    "num_inserted": len(new_unit_ids),
+                    # Truncate id list — trace_data must stay small.
+                    "unit_ids_sample": [str(u) for u in new_unit_ids[:5]],
+                },
+                rationale=f"persisted {len(new_unit_ids)} engrams to memory_units + engram_dictionary",
+            )
 
             # Build unified unit_ids in facts_to_store order (KEEP → new id, REPLACE → existing id)
             fact_id_map: dict[int, str] = {}
@@ -490,10 +581,25 @@ async def retain_batch(
                     else (llm_registry.get_llm("retain", "entity_disambiguation") if llm_registry else None)
                 ),
             )
-            log_buffer.append(f"[6] Process entities: {len(entity_links)} links in {time.time() - step_start:.3f}s")
+            _r6_duration_ms = (time.time() - step_start) * 1000
+            log_buffer.append(f"[6] Process entities: {len(entity_links)} links in {_r6_duration_ms / 1000:.3f}s")
+            tracer.record_step(
+                name="r6_entity_processing",
+                duration_ms=_r6_duration_ms,
+                inputs={"num_facts": len(non_duplicate_facts)},
+                outputs={
+                    "num_entity_links": len(entity_links),
+                    "unique_entities": len({link.entity_id for link in entity_links}) if entity_links else 0,
+                },
+                rationale=(
+                    f"resolved {len({link.entity_id for link in entity_links}) if entity_links else 0} "
+                    f"unique entities, created {len(entity_links)} unit-entity links"
+                ),
+            )
 
             # Create temporal links
-            step_start = time.time()
+            _r7_start = time.time()
+            step_start = _r7_start
             temporal_link_count = await link_creation.create_temporal_links_batch(conn, bank_id, unit_ids)
             log_buffer.append(f"[7] Temporal links: {temporal_link_count} links in {time.time() - step_start:.3f}s")
 
@@ -548,6 +654,25 @@ async def retain_batch(
                 f"[11] Temporal proximity links: {tp_link_count} links in {time.time() - step_start:.3f}s"
             )
 
+            _r7_duration_ms = (time.time() - _r7_start) * 1000
+            tracer.record_step(
+                name="r7_link_creation",
+                duration_ms=_r7_duration_ms,
+                inputs={"num_units": len(unit_ids)},
+                outputs={
+                    "temporal": temporal_link_count,
+                    "semantic": semantic_link_count,
+                    "entity": len(entity_links) if entity_links else 0,
+                    "causal": causal_link_count,
+                    "temporal_proximity": tp_link_count,
+                },
+                rationale=(
+                    f"wrote {temporal_link_count} temporal, {semantic_link_count} semantic, "
+                    f"{len(entity_links) if entity_links else 0} entity, {causal_link_count} causal, "
+                    f"{tp_link_count} temporal_proximity links"
+                ),
+            )
+
             # Dual-write: all link types to Neo4j (eventual consistency, errors logged only)
             if neo4j_client is not None:
                 import asyncio as _asyncio
@@ -582,6 +707,7 @@ async def retain_batch(
                     logger.warning(f"Neo4j link fetch failed: {_exc}")
 
                 # Check schema fit for newly retained Engrams
+                _r8_start = time.time()
                 _embeddings_for_schema = [fact.embedding for fact in non_duplicate_facts]
                 _schema_links = await _check_schema_fit_batch(neo4j_client, unit_ids, _embeddings_for_schema)
 
@@ -590,8 +716,25 @@ async def retain_batch(
                     _write_links_to_neo4j(neo4j_client, _neo4j_links),
                     _write_schema_links(neo4j_client, _schema_links),
                 )
+                _r8_duration_ms = (time.time() - _r8_start) * 1000
                 log_buffer.append(
                     f"[12] Neo4j dual-write: {len(_neo4j_links)} links, {len(_schema_links)} schema links"
+                )
+                tracer.record_step(
+                    name="r8_schema_fit",
+                    duration_ms=_r8_duration_ms,
+                    inputs={
+                        "num_units": len(unit_ids),
+                        "num_regular_links": len(_neo4j_links),
+                    },
+                    outputs={
+                        "num_schema_links": len(_schema_links),
+                        "num_schemas_touched": len({link.schema_id for link in _schema_links}) if _schema_links else 0,
+                    },
+                    rationale=(
+                        f"incremental R4 reinforcement: {len(_schema_links)} schema-fit links across "
+                        f"{len({link.schema_id for link in _schema_links}) if _schema_links else 0} schemas"
+                    ),
                 )
 
                 # Step 12.5: Experience links — CAUSAL (ACTION_EFFECT) + PREDICTION_ERROR (EXPERIENCE)
@@ -623,12 +766,23 @@ async def retain_batch(
                     )
 
             # Regenerate observations - sync (in transaction) or async (background task)
+            _r9_start = time.time()
             config = get_config()
             if config.retain_observations_async:
                 # Queue for async processing after transaction commits
                 entity_ids_for_async = list(set(link.entity_id for link in entity_links)) if entity_links else []
                 log_buffer.append(
                     f"[11] Observations: queued {len(entity_ids_for_async)} entities for async processing"
+                )
+                tracer.record_step(
+                    name="r9_observations",
+                    duration_ms=(time.time() - _r9_start) * 1000,
+                    inputs={"num_entities": len(entity_ids_for_async)},
+                    outputs={"mode": "async"},
+                    rationale=(
+                        f"queued {len(entity_ids_for_async)} entities for background "
+                        f"observation regeneration (non-blocking)"
+                    ),
                 )
             else:
                 # Run synchronously inside transaction for atomicity
@@ -646,6 +800,13 @@ async def retain_batch(
                     log_buffer,
                 )
                 entity_ids_for_async = []
+                tracer.record_step(
+                    name="r9_observations",
+                    duration_ms=(time.time() - _r9_start) * 1000,
+                    inputs={"num_entity_links": len(entity_links) if entity_links else 0},
+                    outputs={"mode": "sync"},
+                    rationale="regenerated observations synchronously inside transaction",
+                )
 
             # Build dropped flags (DROP=True, KEEP/REPLACE=False) for result mapping
             is_dropped_flags = [
@@ -667,6 +828,11 @@ async def retain_batch(
         log_buffer.append(f"{'=' * 60}")
 
         logger.info("\n" + "\n".join(log_buffer) + "\n")
+
+        # Persist the pipeline trace — non-blocking, errors are logged but
+        # never propagated so a trace-write failure cannot break retain.
+        tracer.set_metadata("num_units_created", len(unit_ids))
+        await _persist_retain_trace(pool, bank_id, tracer.finalize())
 
         return result_unit_ids, usage
 
@@ -700,6 +866,33 @@ def _map_results_to_contents(
         result_unit_ids.append(content_unit_ids)
 
     return result_unit_ids
+
+
+async def _persist_retain_trace(pool, bank_id: str, trace: PipelineTrace) -> None:
+    """Write a finalized PipelineTrace into the retain_traces table.
+
+    Non-blocking: on failure the exception is swallowed and logged. A broken
+    trace-write must never be able to kill an otherwise-successful retain.
+    """
+    try:
+        from ..memory_engine import fq_table
+
+        duration_ms = int(trace.duration_ms)
+        async with acquire_with_retry(pool) as conn:
+            await conn.execute(
+                f"""
+                INSERT INTO {fq_table("retain_traces")}
+                    (bank_id, operation_id, started_at, duration_ms, trace_data)
+                VALUES ($1, $2, $3, $4, $5::jsonb)
+                """,
+                bank_id,
+                None,  # operation_id: no operation-id threading in the current retain_batch signature
+                trace.started_at,
+                duration_ms,
+                json.dumps(trace.to_dict(), default=str),
+            )
+    except Exception as exc:  # noqa: BLE001 — non-blocking by design
+        logger.warning(f"retain_trace persist failed (non-blocking): {exc}")
 
 
 async def _trigger_background_tasks(

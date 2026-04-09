@@ -154,6 +154,37 @@ def test_mark_skipped_records_skipped_status() -> None:
     assert trace.steps[0].rationale == "no budget configured"
 
 
+def test_record_step_appends_precomputed_step() -> None:
+    """record_step() is a complement to the context manager for call-sites
+    that already compute their own duration and want flat surgical edits."""
+    tracer = PipelineTracer(pipeline="retain", bank_id="test-bank")
+
+    tracer.record_step(
+        name="r1_fact_extraction",
+        duration_ms=123.4,
+        inputs={"num_contents": 3},
+        outputs={"num_facts": 8, "num_chunks": 4},
+        rationale="LLM extracted 8 facts from 3 contents",
+    )
+
+    trace = tracer.finalize()
+    assert len(trace.steps) == 1
+    step = trace.steps[0]
+    assert step.name == "r1_fact_extraction"
+    assert step.phase == "retain"
+    assert step.duration_ms == 123.4
+    assert step.status == "ok"
+    assert step.inputs == {"num_contents": 3}
+    assert step.outputs == {"num_facts": 8, "num_chunks": 4}
+
+
+def test_record_step_disabled_tracer_is_noop() -> None:
+    tracer = PipelineTracer(pipeline="retain", bank_id="test-bank", enabled=False)
+    tracer.record_step(name="r1_fact_extraction", duration_ms=10.0, outputs={"num_facts": 1})
+    trace = tracer.finalize()
+    assert trace.steps == []
+
+
 def test_tracer_respects_env_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HINDSIGHT_API_TRACING_ENABLED", "false")
     tracer = PipelineTracer(pipeline="retain", bank_id="test-bank")

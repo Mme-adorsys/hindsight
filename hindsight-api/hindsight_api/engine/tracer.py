@@ -237,6 +237,41 @@ class PipelineTracer:
         if self._enabled:
             self._metadata[key] = value
 
+    def record_step(
+        self,
+        name: str,
+        duration_ms: float,
+        *,
+        started_at: datetime | None = None,
+        status: StepStatus = "ok",
+        inputs: dict[str, Any] | None = None,
+        outputs: dict[str, Any] | None = None,
+        rationale: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        """Record a pre-computed TraceStep directly.
+
+        Complementary to :meth:`step` — use this when the step body already
+        has its own timing/logging and wrapping it in a ``with`` block would
+        force unwanted indentation churn. The caller is responsible for
+        passing an accurate ``duration_ms``.
+        """
+        if not self._enabled:
+            return
+        self._steps.append(
+            TraceStep(
+                name=name,
+                phase=self.pipeline,
+                started_at=started_at or datetime.now(UTC),
+                duration_ms=duration_ms,
+                status=status,
+                inputs=inputs or {},
+                outputs=outputs or {},
+                rationale=rationale,
+                error=error,
+            )
+        )
+
     def _record_step(self, step: TraceStep) -> None:
         self._steps.append(step)
 
