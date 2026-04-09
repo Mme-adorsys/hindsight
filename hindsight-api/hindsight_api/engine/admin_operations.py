@@ -403,7 +403,9 @@ class AdminOperations:
                     mu.mentioned_at, mu.occurred_start, mu.occurred_end, mu.chunk_id,
                     ed.strength, ed.layer, ed.access_count,
                     ed.thalamus_overall, ed.novelty, ed.surprise,
-                    ed.task_relevance, ed.emotional_valence
+                    ed.task_relevance, ed.emotional_valence,
+                    ed.tags, ed.expectation, ed.outcome,
+                    ed.session_mode, ed.task_context, ed.retain_context
                 FROM {fq_table("memory_units")} mu
                 LEFT JOIN {fq_table("engram_dictionary")} ed ON ed.engram_id = mu.id
                 {where_clause.replace("bank_id", "mu.bank_id").replace("fact_type", "mu.fact_type")}
@@ -445,6 +447,18 @@ class AdminOperations:
                         "task_relevance": row["task_relevance"],
                         "emotional_valence": row["emotional_valence"],
                     }
+
+                # retain_context comes back from asyncpg as a string for JSONB
+                # columns in some driver versions — normalise to dict here.
+                retain_context_raw = row["retain_context"]
+                if isinstance(retain_context_raw, str):
+                    import json as _json
+
+                    try:
+                        retain_context_raw = _json.loads(retain_context_raw)
+                    except Exception:
+                        retain_context_raw = None
+
                 items.append(
                     {
                         "id": str(unit_id),
@@ -461,6 +475,13 @@ class AdminOperations:
                         "layer": row["layer"],
                         "access_count": row["access_count"],
                         "thalamus_scores": thalamus_scores,
+                        # Phase A4 — retain provenance (2026-04-09)
+                        "tags": row["tags"] if row["tags"] else None,
+                        "expectation": row["expectation"],
+                        "outcome": row["outcome"],
+                        "session_mode": row["session_mode"],
+                        "task_context": row["task_context"],
+                        "retain_context": retain_context_raw,
                     }
                 )
 

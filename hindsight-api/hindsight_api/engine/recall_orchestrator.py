@@ -968,6 +968,43 @@ class RecallOrchestrator:
                             )
             entity_map_duration = time.time() - step_start
 
+            # Phase A4 — Batch-load retain provenance from engram_dictionary
+            # for every fact that will appear in the response. The retrieval
+            # pipelines (Qdrant/Neo4j/4-way) don't carry the provenance
+            # columns, so we fetch them here in one extra round-trip.
+            provenance_map: dict[str, dict] = {}
+            if top_results_dicts:
+                result_ids = [str(r.get("id")) for r in top_results_dicts if r.get("id") is not None]
+                if result_ids:
+                    async with acquire_with_retry(pool) as conn:
+                        provenance_rows = await conn.fetch(
+                            f"""
+                            SELECT engram_id, tags, expectation, outcome,
+                                   session_mode, task_context, retain_context
+                            FROM {fq_table("engram_dictionary")}
+                            WHERE bank_id = $1 AND engram_id::text = ANY($2::text[])
+                            """,
+                            bank_id,
+                            result_ids,
+                        )
+                    for prow in provenance_rows:
+                        rc_raw = prow["retain_context"]
+                        if isinstance(rc_raw, str):
+                            try:
+                                import json as _json
+
+                                rc_raw = _json.loads(rc_raw)
+                            except Exception:
+                                rc_raw = None
+                        provenance_map[str(prow["engram_id"])] = {
+                            "tags": list(prow["tags"]) if prow["tags"] else None,
+                            "expectation": prow["expectation"],
+                            "outcome": prow["outcome"],
+                            "session_mode": prow["session_mode"],
+                            "task_context": prow["task_context"],
+                            "retain_context": rc_raw,
+                        }
+
             # Convert results to MemoryFact objects
             memory_facts = []
             for result_dict in top_results_dicts:
@@ -976,6 +1013,8 @@ class RecallOrchestrator:
                 entity_names = None
                 if include_entities and result_id in fact_entity_map:
                     entity_names = [e["canonical_name"] for e in fact_entity_map[result_id]]
+
+                prov = provenance_map.get(result_id, {})
 
                 memory_facts.append(
                     MemoryFact(
@@ -989,6 +1028,12 @@ class RecallOrchestrator:
                         mentioned_at=result_dict.get("mentioned_at"),
                         document_id=result_dict.get("document_id"),
                         chunk_id=result_dict.get("chunk_id"),
+                        tags=prov.get("tags"),
+                        expectation=prov.get("expectation"),
+                        outcome=prov.get("outcome"),
+                        session_mode=prov.get("session_mode"),
+                        task_context=prov.get("task_context"),
+                        retain_context=prov.get("retain_context"),
                     )
                 )
 

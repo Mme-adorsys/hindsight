@@ -181,6 +181,10 @@ class RecallResult(BaseModel):
     tags: list[str] | None = None  # Engram tags (user-supplied + LLM-extracted)
     expectation: str | None = None  # What the caller expected when this Engram was retained
     outcome: str | None = None  # What actually happened (from retain time)
+    # Phase A4 — retain provenance (2026-04-09)
+    session_mode: str | None = None  # Session.mode at retain time
+    task_context: str | None = None  # Session.task_context snapshot at retain time
+    retain_context: dict | None = None  # Thalamus rationale + retain-time observability bundle
 
 
 class EntityObservationResponse(BaseModel):
@@ -1700,6 +1704,10 @@ def _register_routes(app: FastAPI):
                     tags=getattr(fact, "tags", None),
                     expectation=getattr(fact, "expectation", None),
                     outcome=getattr(fact, "outcome", None),
+                    # Phase A4 — retain provenance (2026-04-09)
+                    session_mode=getattr(fact, "session_mode", None),
+                    task_context=getattr(fact, "task_context", None),
+                    retain_context=getattr(fact, "retain_context", None),
                 )
                 for fact in core_result.results
             ]

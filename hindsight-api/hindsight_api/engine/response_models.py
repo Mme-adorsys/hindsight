@@ -116,6 +116,29 @@ class MemoryFact(BaseModel):
     expectation: str | None = Field(None, description="What the caller expected when this Engram was retained")
     outcome: str | None = Field(None, description="What actually happened (stored at retain time)")
 
+    # Retain provenance (Phase A4 — 2026-04-09)
+    # These four fields are populated from engram_dictionary when the memory
+    # is read back. They remain None for legacy rows that were retained before
+    # the Observability Pass migration c4d5e6f7a8b9.
+    session_mode: str | None = Field(
+        None,
+        description="Session.mode at retain time (precision/exploration/analogy/validation).",
+    )
+    task_context: str | None = Field(
+        None,
+        description="Session.task_context snapshot at retain time (input to Thalamus task_relevance).",
+    )
+    retain_context: dict | None = Field(
+        None,
+        description=(
+            "Retain-time observability bundle. Currently contains "
+            "`thalamus_rationale` with the inputs that drove each Thalamus "
+            "score (novelty_max_similar_id, surprise flags, context source, "
+            "prediction error). The CP uses this to render per-score "
+            "explanations in the memory detail panel."
+        ),
+    )
+
 
 class ChunkInfo(BaseModel):
     """Information about a chunk."""
