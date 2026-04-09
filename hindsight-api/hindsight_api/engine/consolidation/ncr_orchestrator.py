@@ -33,6 +33,7 @@ from hindsight_api.engine.consolidation.ncr_decay import DecayProcessor, DecayRe
 from hindsight_api.engine.consolidation.ncr_strengthen import StrengthenProcessor, StrengthenResult
 from hindsight_api.engine.consolidation.schema_processor import SchemaProcessor, SchemaResult
 from hindsight_api.engine.db_utils import acquire_with_retry
+from hindsight_api.engine.tracer import PipelineTracer
 from hindsight_api.engine.utils import fq_table
 
 if TYPE_CHECKING:
@@ -172,6 +173,11 @@ class NCROrchestrator:
         report = NCRReport(bank_id=bank_id, started_at=datetime.now(timezone.utc))
         lock_id = _ncr_lock_id(bank_id)
 
+        # Observability Phase B — pipeline tracer for the whole run. The
+        # trace_data lands in ncr_runs.trace_data via _persist_report (B4).
+        tracer = PipelineTracer(pipeline="ncr", bank_id=bank_id)
+        tracer.set_metadata("trigger", trigger)
+
         async with acquire_with_retry(self._pool) as conn:
             # Try to acquire advisory lock (non-blocking)
             acquired: bool = await conn.fetchval("SELECT pg_try_advisory_lock($1)", lock_id)
@@ -180,12 +186,14 @@ class NCROrchestrator:
                 logger.warning("[NCR] %s", msg)
                 report.errors.append(msg)
                 report.completed_at = datetime.now(timezone.utc)
-                await self._persist_report(report, trigger)
+                tracer.set_metadata("lock_acquired", False)
+                await self._persist_report(report, trigger, trace_data=tracer.finalize().to_dict())
                 return report
 
+        tracer.set_metadata("lock_acquired", True)
         logger.info("[NCR] Starting run for bank=%s (lock=%d trigger=%s)", bank_id, lock_id, trigger)
         try:
-            await self._run_phases(bank_id, report)
+            await self._run_phases(bank_id, report, tracer=tracer)
         finally:
             async with acquire_with_retry(self._pool) as conn:
                 await conn.execute("SELECT pg_advisory_unlock($1)", lock_id)
@@ -196,7 +204,7 @@ class NCROrchestrator:
                 report.duration_seconds or 0,
                 len(report.errors),
             )
-            await self._persist_report(report, trigger)
+            await self._persist_report(report, trigger, trace_data=tracer.finalize().to_dict())
 
         return report
 
@@ -204,6 +212,7 @@ class NCROrchestrator:
         self,
         report: NCRReport,
         trigger: Literal["manual", "scheduled"],
+        trace_data: dict | None = None,
     ) -> None:
         """
         Persist an NCRReport to the ``ncr_runs`` table for the Control Plane
@@ -213,6 +222,9 @@ class NCROrchestrator:
         ``json.dumps(..., default=str)`` so datetimes become ISO strings. The
         whole call is wrapped in try/except: persistence is observability, it
         must never cause an NCR-run itself to fail.
+
+        trace_data (Phase B, B4) is the PipelineTracer output dict. Nullable
+        for defensive callers but normally always set.
         """
 
         def _phase_to_json(phase) -> str | None:
@@ -231,6 +243,7 @@ class NCROrchestrator:
             schema_json = _phase_to_json(report.phase3)
             promotion_json = _phase_to_json(report.promotion)
             errors_json = json.dumps(report.errors) if report.errors else None
+            trace_json = json.dumps(trace_data, default=str) if trace_data else None
 
             async with acquire_with_retry(self._pool) as conn:
                 await conn.execute(
@@ -238,12 +251,12 @@ class NCROrchestrator:
                     INSERT INTO {fq_table("ncr_runs")} (
                         bank_id, trigger, started_at, completed_at, duration_seconds,
                         consolidation_stats, decay_stats, strengthen_stats,
-                        schema_stats, promotion_stats, errors
+                        schema_stats, promotion_stats, errors, trace_data
                     )
                     VALUES (
                         $1, $2, $3, $4, $5,
                         $6::jsonb, $7::jsonb, $8::jsonb,
-                        $9::jsonb, $10::jsonb, $11::jsonb
+                        $9::jsonb, $10::jsonb, $11::jsonb, $12::jsonb
                     )
                     """,
                     report.bank_id,
@@ -257,6 +270,7 @@ class NCROrchestrator:
                     schema_json,
                     promotion_json,
                     errors_json,
+                    trace_json,
                 )
         except Exception as exc:
             logger.warning(
@@ -266,11 +280,23 @@ class NCROrchestrator:
                 exc,
             )
 
-    async def _run_phases(self, bank_id: str, report: NCRReport) -> None:
+    async def _run_phases(self, bank_id: str, report: NCRReport, tracer: PipelineTracer | None = None) -> None:
+        # Observability Phase B — each phase is wrapped in a tracer step. We
+        # use the context manager so exceptions bubble up as status="error"
+        # automatically, but we still swallow them at the outer try/except so
+        # subsequent phases continue (the existing NCR fault-tolerance model).
+        _tracer = tracer if tracer is not None else PipelineTracer(pipeline="ncr", bank_id=bank_id, enabled=False)
+
         # Consolidation 1: Session → Buffer
         try:
-            report.consolidation = await self._consolidation.run(bank_id)
-            logger.info("[NCR] Consolidation1 done: consolidated=%d", report.consolidation.consolidated)
+            with _tracer.step("consolidation1") as _s:
+                report.consolidation = await self._consolidation.run(bank_id)
+                _s.set_output(asdict(report.consolidation))
+                _s.set_rationale(
+                    f"promoted {report.consolidation.consolidated} engrams "
+                    f"Session/Working → Buffer via strength * decay_rate + base"
+                )
+                logger.info("[NCR] Consolidation1 done: consolidated=%d", report.consolidation.consolidated)
         except Exception as exc:
             msg = f"Consolidation1 failed: {exc}"
             logger.error("[NCR] %s", msg)
@@ -278,10 +304,16 @@ class NCROrchestrator:
 
         # Phase 1: Decay
         try:
-            report.phase1 = await self._decay.process(bank_id)
-            logger.info(
-                "[NCR] Phase1/Decay done: archived=%d decayed=%d", report.phase1.archived, report.phase1.decayed
-            )
+            with _tracer.step("phase1_decay") as _s:
+                report.phase1 = await self._decay.process(bank_id)
+                _s.set_output(asdict(report.phase1))
+                _s.set_rationale(
+                    f"{report.phase1.decayed} engrams decayed via strength * decay_rate, "
+                    f"{report.phase1.archived} archived below threshold"
+                )
+                logger.info(
+                    "[NCR] Phase1/Decay done: archived=%d decayed=%d", report.phase1.archived, report.phase1.decayed
+                )
         except Exception as exc:
             msg = f"Phase1/Decay failed: {exc}"
             logger.error("[NCR] %s", msg)
@@ -289,8 +321,14 @@ class NCROrchestrator:
 
         # Phase 2: Strengthen
         try:
-            report.phase2 = await self._strengthen.process(bank_id)
-            logger.info("[NCR] Phase2/Strengthen done: promoted=%d", report.phase2.promoted)
+            with _tracer.step("phase2_strengthen") as _s:
+                report.phase2 = await self._strengthen.process(bank_id)
+                _s.set_output(asdict(report.phase2))
+                _s.set_rationale(
+                    f"{report.phase2.promoted} engrams met neocortex promotion criteria "
+                    f"(strength >= 0.4, access_count >= 3, ncr_cycles_survived >= 2)"
+                )
+                logger.info("[NCR] Phase2/Strengthen done: promoted=%d", report.phase2.promoted)
         except Exception as exc:
             msg = f"Phase2/Strengthen failed: {exc}"
             logger.error("[NCR] %s", msg)
@@ -298,17 +336,25 @@ class NCROrchestrator:
 
         # Phase 3: Schema Compression (fetch neocortex Engrams, pass to processor)
         try:
-            neocortex_entries = await dict_repo.filter_entries(
-                self._pool, bank_id, layer="neocortex", status="active", limit=10000
-            )
-            # SchemaProcessor queries Neo4j directly; neocortex_entries are passed for
-            # potential future use (e.g. pre-filtering candidates before graph queries).
-            report.phase3 = await self._schema.process(bank_id, engrams=neocortex_entries)  # type: ignore[arg-type]
-            logger.info(
-                "[NCR] Phase3/Schema done: neocortex_count=%d created=%d",
-                len(neocortex_entries),
-                report.phase3.created,
-            )
+            with _tracer.step("phase3_schema") as _s:
+                neocortex_entries = await dict_repo.filter_entries(
+                    self._pool, bank_id, layer="neocortex", status="active", limit=10000
+                )
+                _s.set_input({"neocortex_count": len(neocortex_entries)})
+                # SchemaProcessor queries Neo4j directly; neocortex_entries are passed for
+                # potential future use (e.g. pre-filtering candidates before graph queries).
+                report.phase3 = await self._schema.process(bank_id, engrams=neocortex_entries)  # type: ignore[arg-type]
+                _s.set_output(asdict(report.phase3))
+                _s.set_rationale(
+                    f"Game-of-Life schema rules: {report.phase3.created} created, "
+                    f"{getattr(report.phase3, 'strengthened', 0)} strengthened, "
+                    f"{getattr(report.phase3, 'deleted', 0)} deleted"
+                )
+                logger.info(
+                    "[NCR] Phase3/Schema done: neocortex_count=%d created=%d",
+                    len(neocortex_entries),
+                    report.phase3.created,
+                )
         except Exception as exc:
             msg = f"Phase3/Schema failed: {exc}"
             logger.error("[NCR] %s", msg)
@@ -317,24 +363,38 @@ class NCROrchestrator:
         # Phase 4: Shared Bank Promotion (Epic 14 B5)
         if self._shared_bank_id and self._qdrant_client:
             try:
-                report.promotion = await promote_batch(
-                    pool=self._pool,
-                    qdrant_client=self._qdrant_client,
-                    neo4j_client=self._neo4j_client,
-                    bank_id=bank_id,
-                    shared_bank_id=self._shared_bank_id,
-                    agent_bank_ids=self._agent_bank_ids,
-                    llm=self._llm,
-                )
-                logger.info(
-                    "[NCR] Phase4/Promotion done: promoted=%d reinforced=%d",
-                    report.promotion.promoted,
-                    report.promotion.reinforced,
-                )
+                with _tracer.step("phase4_promotion") as _s:
+                    _s.set_input({"shared_bank_id": self._shared_bank_id})
+                    report.promotion = await promote_batch(
+                        pool=self._pool,
+                        qdrant_client=self._qdrant_client,
+                        neo4j_client=self._neo4j_client,
+                        bank_id=bank_id,
+                        shared_bank_id=self._shared_bank_id,
+                        agent_bank_ids=self._agent_bank_ids,
+                        llm=self._llm,
+                    )
+                    _s.set_output(asdict(report.promotion))
+                    _s.set_rationale(
+                        f"{report.promotion.promoted} engrams met shared-bank promotion criteria, "
+                        f"{report.promotion.reinforced} reinforced existing shared engrams"
+                    )
+                    logger.info(
+                        "[NCR] Phase4/Promotion done: promoted=%d reinforced=%d",
+                        report.promotion.promoted,
+                        report.promotion.reinforced,
+                    )
             except Exception as exc:
                 msg = f"Phase4/Promotion failed: {exc}"
                 logger.error("[NCR] %s", msg)
                 report.errors.append(msg)
+        else:
+            _tracer.record_step(
+                name="phase4_promotion",
+                duration_ms=0.0,
+                status="skipped",
+                rationale="no shared_bank_id or qdrant_client configured — Phase 4 disabled",
+            )
 
 
 # ---------------------------------------------------------------------------
