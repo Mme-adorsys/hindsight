@@ -22,10 +22,10 @@ from hindsight_api.engine.session.mode_config import (
     get_mode_config,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _weights_sum(w: ScoringWeights) -> float:
     return w.ce + w.rrf + w.temporal + w.recency + w.engram_strength + w.thalamus_weighted
@@ -34,6 +34,7 @@ def _weights_sum(w: ScoringWeights) -> float:
 # ---------------------------------------------------------------------------
 # T1 / T2 — ModeConfig and ScoringWeights structure
 # ---------------------------------------------------------------------------
+
 
 class TestModeConfigStructure:
     def test_mode_config_is_frozen(self):
@@ -68,10 +69,17 @@ class TestModeConfigStructure:
 # T3 — Default profiles match concept.md § 7
 # ---------------------------------------------------------------------------
 
+
 class TestDefaultProfiles:
+    # Strength pre-filter values lowered on 2026-04-09 during post-setup
+    # hardening. Fresh Engrams are initialised at strength ≈ 0.1 by
+    # Consolidation 1; the previous defaults (0.5/0.1/0.3/0.3) filtered every
+    # buffer Engram out between RRF and Cross-Encoder, leaving recall blind to
+    # anything not yet promoted to neocortex. The scoring stage (w5 ×
+    # strength_weight) still surfaces stronger engrams first.
     def test_precision_profile(self):
         cfg = MODE_PROFILES[RetrievalMode.PRECISION]
-        assert cfg.strength_pre_filter == 0.5
+        assert cfg.strength_pre_filter == 0.05
         assert cfg.thalamus_boost_dimension == "task_relevance"
         assert cfg.weak_link_policy == "ignore"
         assert cfg.traversal_depth == "shallow"
@@ -80,7 +88,7 @@ class TestDefaultProfiles:
 
     def test_exploration_profile(self):
         cfg = MODE_PROFILES[RetrievalMode.EXPLORATION]
-        assert cfg.strength_pre_filter == 0.1
+        assert cfg.strength_pre_filter == 0.0
         assert cfg.thalamus_boost_dimension == "novelty"
         assert cfg.weak_link_policy == "follow"
         assert cfg.traversal_depth == "deep"
@@ -89,7 +97,7 @@ class TestDefaultProfiles:
 
     def test_analogy_profile(self):
         cfg = MODE_PROFILES[RetrievalMode.ANALOGY]
-        assert cfg.strength_pre_filter == 0.3
+        assert cfg.strength_pre_filter == 0.05
         assert cfg.thalamus_boost_dimension is None
         assert cfg.weak_link_policy == "prefer"
         assert cfg.traversal_depth == "medium"
@@ -98,7 +106,7 @@ class TestDefaultProfiles:
 
     def test_validation_profile(self):
         cfg = MODE_PROFILES[RetrievalMode.VALIDATION]
-        assert cfg.strength_pre_filter == 0.3
+        assert cfg.strength_pre_filter == 0.1
         assert cfg.thalamus_boost_dimension == "surprise"
         assert cfg.weak_link_policy == "ignore"
         assert cfg.traversal_depth == "medium"
@@ -109,6 +117,7 @@ class TestDefaultProfiles:
 # ---------------------------------------------------------------------------
 # T2 — ScoringWeights direction checks (concept.md § 8)
 # ---------------------------------------------------------------------------
+
 
 class TestScoringWeightsDirections:
     def test_precision_high_ce(self):
@@ -135,6 +144,7 @@ class TestScoringWeightsDirections:
 # ---------------------------------------------------------------------------
 # T4 — with_overrides immutability
 # ---------------------------------------------------------------------------
+
 
 class TestWithOverrides:
     def test_with_overrides_returns_new_instance(self):
@@ -171,6 +181,7 @@ class TestWithOverrides:
 # ---------------------------------------------------------------------------
 # T5 — get_mode_config with and without env overrides
 # ---------------------------------------------------------------------------
+
 
 class TestGetModeConfig:
     def test_returns_default_without_env(self, monkeypatch):

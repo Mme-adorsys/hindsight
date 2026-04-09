@@ -12,18 +12,19 @@ Tests validate WITHOUT requiring a running database or LLM:
 - MemoryEngine constructor accepts session_manager kwarg
 """
 
-import pytest
 from unittest.mock import MagicMock
 
+import pytest
+
+from hindsight_api.api.http import _session_from_mode
 from hindsight_api.engine.response_models import RetrievalMode, Session
 from hindsight_api.engine.session.mode_config import MODE_PROFILES, ModeConfig
 from hindsight_api.engine.session.session_manager import SessionManager
-from hindsight_api.api.http import _session_from_mode
-
 
 # ---------------------------------------------------------------------------
 # _resolve_session_config (T3)
 # ---------------------------------------------------------------------------
+
 
 class TestResolveSessionConfig:
     """Test the _resolve_session_config helper without spinning up MemoryEngine."""
@@ -33,6 +34,7 @@ class TestResolveSessionConfig:
         import threading
 
         from hindsight_api.engine.memory_engine import MemoryEngine
+
         # Patch __init__ to avoid full DB setup
         engine = object.__new__(MemoryEngine)
         engine._session_manager = None
@@ -56,7 +58,9 @@ class TestResolveSessionConfig:
         session = Session(mode=RetrievalMode.EXPLORATION)
         config = engine._resolve_session_config(session)
         assert config == MODE_PROFILES[RetrievalMode.EXPLORATION]
-        assert config.strength_pre_filter == 0.1
+        # Exploration threshold lowered to 0.0 on 2026-04-09 hardening so the
+        # mode can see fresh buffer Engrams (strength ≈ 0.1) during retrieval.
+        assert config.strength_pre_filter == 0.0
         assert config.weak_link_policy == "follow"
 
     def test_analogy_session_returns_analogy_config(self):
@@ -91,11 +95,13 @@ class TestResolveSessionConfig:
 # _get_session_manager (T2)
 # ---------------------------------------------------------------------------
 
+
 class TestGetSessionManager:
     def _make_minimal_engine(self, session_manager=None):
         import threading
 
         from hindsight_api.engine.memory_engine import MemoryEngine
+
         engine = object.__new__(MemoryEngine)
         engine._session_manager = session_manager
         engine._session_manager_lazy_init = session_manager is None
@@ -125,6 +131,7 @@ class TestGetSessionManager:
 # ---------------------------------------------------------------------------
 # _session_from_mode API helper (T7)
 # ---------------------------------------------------------------------------
+
 
 class TestSessionFromMode:
     def test_none_returns_none(self):
@@ -158,6 +165,7 @@ class TestSessionFromMode:
 
     def test_invalid_mode_raises_http_exception(self):
         from fastapi import HTTPException
+
         with pytest.raises(HTTPException) as exc_info:
             _session_from_mode("turbo")
         assert exc_info.value.status_code == 400
@@ -165,6 +173,7 @@ class TestSessionFromMode:
 
     def test_empty_string_raises_http_exception(self):
         from fastapi import HTTPException
+
         with pytest.raises(HTTPException):
             _session_from_mode("")
 
@@ -173,9 +182,11 @@ class TestSessionFromMode:
 # Backward compatibility: no mode → engine uses Precision default
 # ---------------------------------------------------------------------------
 
+
 class TestBackwardCompatibility:
     def test_resolve_none_equals_precision_profile(self):
         from hindsight_api.engine.memory_engine import MemoryEngine
+
         engine = object.__new__(MemoryEngine)
         engine._session_manager = None
         engine._session_manager_lazy_init = True

@@ -170,10 +170,19 @@ _WEIGHTS_VALIDATION = ScoringWeights(
 # ---------------------------------------------------------------------------
 # MODE_PROFILES Registry — T3
 # Default values from concept.md § 7 table.
+#
+# Note on strength_pre_filter (2026-04-09 hardening):
+#   Consolidation 1 initializes fresh Engrams with strength ≈ _BASE_STRENGTH
+#   (0.1) unless thalamus_overall is high. The previous defaults (Precision
+#   0.5, Analogy/Validation 0.3) would filter out every buffer Engram between
+#   RRF and Cross-Encoder, leaving the user blind to anything not yet promoted
+#   to neocortex. Lowered defaults so fresh buffer Engrams have a chance in
+#   retrieval while the scoring stage (w5×strength_weight with log dampening)
+#   still surfaces stronger engrams first. See plan: post-setup hardening pass.
 # ---------------------------------------------------------------------------
 MODE_PROFILES: dict[RetrievalMode, ModeConfig] = {
     RetrievalMode.PRECISION: ModeConfig(
-        strength_pre_filter=0.5,
+        strength_pre_filter=0.05,
         thalamus_boost_dimension="task_relevance",
         weak_link_policy="ignore",
         traversal_depth="shallow",
@@ -182,7 +191,7 @@ MODE_PROFILES: dict[RetrievalMode, ModeConfig] = {
         scoring_weights=_WEIGHTS_PRECISION,
     ),
     RetrievalMode.EXPLORATION: ModeConfig(
-        strength_pre_filter=0.1,
+        strength_pre_filter=0.0,
         thalamus_boost_dimension="novelty",
         weak_link_policy="follow",
         traversal_depth="deep",
@@ -191,7 +200,7 @@ MODE_PROFILES: dict[RetrievalMode, ModeConfig] = {
         scoring_weights=_WEIGHTS_EXPLORATION,
     ),
     RetrievalMode.ANALOGY: ModeConfig(
-        strength_pre_filter=0.3,
+        strength_pre_filter=0.05,
         thalamus_boost_dimension=None,
         weak_link_policy="prefer",
         traversal_depth="medium",
@@ -200,7 +209,7 @@ MODE_PROFILES: dict[RetrievalMode, ModeConfig] = {
         scoring_weights=_WEIGHTS_ANALOGY,
     ),
     RetrievalMode.VALIDATION: ModeConfig(
-        strength_pre_filter=0.3,
+        strength_pre_filter=0.1,
         thalamus_boost_dimension="surprise",
         weak_link_policy="ignore",
         traversal_depth="medium",
