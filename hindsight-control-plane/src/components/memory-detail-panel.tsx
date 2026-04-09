@@ -138,6 +138,81 @@ export function MemoryDetailPanel({
               </div>
             )}
 
+            {/* Tags (Phase A5) */}
+            {memory.tags && Array.isArray(memory.tags) && memory.tags.length > 0 && (
+              <div>
+                <div className="text-xs font-bold text-muted-foreground uppercase mb-3">Tags</div>
+                <div className="flex flex-wrap gap-2">
+                  {memory.tags.map((tag: string, i: number) => (
+                    <span
+                      key={i}
+                      className="text-xs px-2.5 py-1 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 font-medium"
+                    >
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Retain Context (Phase A5) — session mode, task context, expectation/outcome */}
+            {(memory.session_mode ||
+              memory.task_context ||
+              memory.expectation ||
+              memory.outcome) && (
+              <div className="p-4 bg-muted/50 rounded-lg space-y-3">
+                <div className="text-xs font-bold text-muted-foreground uppercase">
+                  Retain Context
+                </div>
+                {memory.session_mode && (
+                  <div>
+                    <div className="text-[10px] text-muted-foreground uppercase mb-1">
+                      Session Mode
+                    </div>
+                    <span
+                      className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                        memory.session_mode === "precision"
+                          ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
+                          : memory.session_mode === "exploration"
+                            ? "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
+                            : memory.session_mode === "validation"
+                              ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
+                              : memory.session_mode === "analogy"
+                                ? "bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400"
+                                : "bg-muted text-muted-foreground"
+                      }`}
+                    >
+                      {memory.session_mode}
+                    </span>
+                  </div>
+                )}
+                {memory.task_context && (
+                  <div>
+                    <div className="text-[10px] text-muted-foreground uppercase mb-1">
+                      Task Context
+                    </div>
+                    <div className="text-sm text-foreground">{memory.task_context}</div>
+                  </div>
+                )}
+                {memory.expectation && (
+                  <div>
+                    <div className="text-[10px] text-muted-foreground uppercase mb-1">
+                      Expectation
+                    </div>
+                    <div className="text-sm text-foreground italic">{memory.expectation}</div>
+                  </div>
+                )}
+                {memory.outcome && (
+                  <div>
+                    <div className="text-[10px] text-muted-foreground uppercase mb-1">
+                      Outcome
+                    </div>
+                    <div className="text-sm text-foreground italic">{memory.outcome}</div>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Engram Metadata */}
             {(memory.strength != null || memory.layer != null || memory.access_count != null) && (
               <div className="p-4 bg-muted/50 rounded-lg">
@@ -193,7 +268,7 @@ export function MemoryDetailPanel({
               </div>
             )}
 
-            {/* Thalamus Scores */}
+            {/* Thalamus Scores — with per-dimension rationale tooltip (Phase A5) */}
             {memory.thalamus_scores ? (
               <div className="p-4 bg-muted/50 rounded-lg">
                 <div className="text-xs font-bold text-muted-foreground uppercase mb-3">
@@ -208,9 +283,53 @@ export function MemoryDetailPanel({
                     { key: "emotional_valence", label: "Emotional Valence" },
                   ].map(({ key, label }) => {
                     const val = memory.thalamus_scores[key];
+                    const rationale = memory.retain_context?.thalamus_rationale;
+                    // Human-readable "why this score" line shown as a native
+                    // title tooltip. Pulled from retain_context.thalamus_rationale
+                    // which is the deterministic input snapshot (Epic 16).
+                    let why = "";
+                    if (key === "overall") {
+                      why = "Mode-weighted combination of the four dimensions";
+                    } else if (key === "novelty" && rationale) {
+                      if (rationale.novelty_max_similar_id) {
+                        why = `Closest engram ${rationale.novelty_max_similar_id.slice(0, 8)} has similarity ${rationale.novelty_max_similarity.toFixed(2)} → novelty = 1 − ${rationale.novelty_max_similarity.toFixed(2)}`;
+                      } else {
+                        why = "Bank empty or Qdrant search failed → novelty defaults to 1.0";
+                      }
+                    } else if (key === "surprise" && rationale) {
+                      if (
+                        rationale.surprise_expectation_provided &&
+                        rationale.surprise_outcome_provided
+                      ) {
+                        why = `Prediction error ${rationale.valence_prediction_error.toFixed(2)} = 1 − cos(expectation, outcome)`;
+                      } else {
+                        why = "No expectation/outcome at retain time → neutral 0.5 fallback";
+                      }
+                    } else if (key === "task_relevance" && rationale) {
+                      const src = rationale.task_relevance_context_source;
+                      if (src === "none") {
+                        why = "No task context at retain time → neutral 0.5 fallback";
+                      } else {
+                        why = `cos(content, task_context) where context came from ${src}-level override`;
+                      }
+                    } else if (key === "emotional_valence" && rationale) {
+                      if (
+                        rationale.surprise_expectation_provided &&
+                        rationale.surprise_outcome_provided
+                      ) {
+                        const pe = rationale.valence_prediction_error;
+                        why = `Prediction error ${pe.toFixed(2)} × VALENCE_AMPLIFICATION (1.5) = ${Math.min(1.0, pe * 1.5).toFixed(2)}`;
+                      } else {
+                        why = "No expectation/outcome at retain time → 0.3 fallback";
+                      }
+                    } else {
+                      why = "Rationale not available (pre-A2 engram)";
+                    }
                     return (
-                      <div key={key} className="flex items-center gap-2">
-                        <div className="w-28 text-xs text-muted-foreground shrink-0">{label}</div>
+                      <div key={key} className="flex items-center gap-2" title={why}>
+                        <div className="w-28 text-xs text-muted-foreground shrink-0 cursor-help">
+                          {label}
+                        </div>
                         <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
                           <div
                             className="h-full rounded-full bg-primary"
@@ -224,6 +343,48 @@ export function MemoryDetailPanel({
                     );
                   })}
                 </div>
+                {memory.retain_context?.thalamus_rationale && (
+                  <div className="mt-3 pt-3 border-t border-border/50">
+                    <div className="text-[10px] text-muted-foreground uppercase mb-2">
+                      Rationale
+                    </div>
+                    <div className="text-[11px] text-muted-foreground space-y-1 font-mono">
+                      <div>
+                        closest:{" "}
+                        {memory.retain_context.thalamus_rationale.novelty_max_similar_id
+                          ? memory.retain_context.thalamus_rationale.novelty_max_similar_id.slice(
+                              0,
+                              8,
+                            ) +
+                            " @ " +
+                            memory.retain_context.thalamus_rationale.novelty_max_similarity.toFixed(
+                              3,
+                            )
+                          : "—"}
+                      </div>
+                      <div>
+                        expectation:{" "}
+                        {memory.retain_context.thalamus_rationale.surprise_expectation_provided
+                          ? "✓"
+                          : "—"}{" "}
+                        · outcome:{" "}
+                        {memory.retain_context.thalamus_rationale.surprise_outcome_provided
+                          ? "✓"
+                          : "—"}
+                      </div>
+                      <div>
+                        task_context source:{" "}
+                        {memory.retain_context.thalamus_rationale.task_relevance_context_source}
+                      </div>
+                      <div>
+                        prediction error:{" "}
+                        {memory.retain_context.thalamus_rationale.valence_prediction_error.toFixed(
+                          3,
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="p-4 bg-muted/50 rounded-lg">

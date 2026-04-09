@@ -36,6 +36,25 @@ export interface ThalamusScores {
   emotional_valence: number | null;
 }
 
+// Retain-time provenance bundle (Phase A4 — 2026-04-09).
+// Populated from engram_dictionary.retain_context JSONB. Currently carries
+// the Thalamus rationale so the CP can explain "why this score" per
+// dimension in the memory detail panel.
+export interface ThalamusRationale {
+  novelty_max_similar_id: string | null;
+  novelty_max_similarity: number;
+  surprise_expectation_provided: boolean;
+  surprise_outcome_provided: boolean;
+  task_relevance_context_source: "none" | "item" | "session";
+  valence_prediction_error: number;
+}
+
+export interface RetainContext {
+  thalamus_rationale?: ThalamusRationale;
+  // future retain-time metadata slots land here without interface churn
+  [key: string]: unknown;
+}
+
 export interface MemoryListItem {
   id: string;
   text: string;
@@ -52,6 +71,13 @@ export interface MemoryListItem {
   layer: string | null;
   access_count: number | null;
   thalamus_scores: ThalamusScores | null;
+  // Retain provenance (Phase A4)
+  tags: string[] | null;
+  expectation: string | null;
+  outcome: string | null;
+  session_mode: string | null;
+  task_context: string | null;
+  retain_context: RetainContext | null;
 }
 
 export interface EngramLayerStats {
