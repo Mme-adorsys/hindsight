@@ -166,15 +166,20 @@ async def retain_batch(
         f"[1] Extract facts: {len(extracted_facts)} facts, {len(chunks)} chunks from {len(contents)} contents in {time.time() - step_start:.3f}s"
     )
 
-    # Apply gate ThalamusScores to facts where the LLM did not produce scores.
-    # Gate scores (heuristic) are the baseline; LLM-provided scores take precedence.
+    # Apply gate ThalamusScores to every fact. Since Epic 16 the gate is
+    # the authoritative source: all four dimensions are deterministic
+    # embedding formulas computed in ThalamusFilter, not LLM heuristics.
+    # The LLM fact-extraction prompt may still produce `thalamus_scores`
+    # for legacy reasons — we intentionally ignore those and use the gate
+    # output so the ThalamusRationale (novelty_max_similar_id etc.) that
+    # was computed from the actual embedding search stays attached and
+    # lands in engram_dictionary.retain_context (Phase A3 — Apr 2026).
     for fact in extracted_facts:
         if fact.content_index < len(contents_dicts):
             content_dict = contents_dicts[fact.content_index]
-            if fact.thalamus_scores is None:
-                gate_scores = content_dict.get("thalamus_scores")
-                if gate_scores is not None:
-                    fact.thalamus_scores = gate_scores
+            gate_scores = content_dict.get("thalamus_scores")
+            if gate_scores is not None:
+                fact.thalamus_scores = gate_scores
             # Propagate API Enrichment fields (Epic 15)
             if fact.expectation is None and content_dict.get("expectation"):
                 fact.expectation = content_dict["expectation"]
@@ -254,9 +259,30 @@ async def retain_batch(
     embeddings = await embedding_processing.generate_embeddings_batch(embeddings_model, augmented_texts)
     log_buffer.append(f"[2] Generate embeddings: {len(embeddings)} embeddings in {time.time() - step_start:.3f}s")
 
-    # Step 3: Convert to ProcessedFact objects (without chunk_ids yet)
+    # Step 3: Convert to ProcessedFact objects (without chunk_ids yet).
+    # Capture retain-time provenance from the active Session so it lands on
+    # the engram_dictionary row (Phase A3 — Apr 2026):
+    #   - session_mode  : the mode the agent was in when this fact was retained
+    #   - task_context  : the Session.task_context snapshot
+    # Both are None when there is no session (e.g. background ingests) and
+    # render as "—" in the CP memory detail panel.
+    session_mode_str: str | None = None
+    session_task_context: str | None = None
+    if session is not None:
+        # session.mode is a RetrievalMode enum — .value gives us the lower-case
+        # string we want in the DB column.
+        mode_attr = getattr(session, "mode", None)
+        if mode_attr is not None:
+            session_mode_str = getattr(mode_attr, "value", str(mode_attr))
+        session_task_context = getattr(session, "task_context", None)
+
     processed_facts = [
-        ProcessedFact.from_extracted_fact(extracted_fact, embedding)
+        ProcessedFact.from_extracted_fact(
+            extracted_fact,
+            embedding,
+            session_mode=session_mode_str,
+            task_context=session_task_context,
+        )
         for extracted_fact, embedding in zip(extracted_facts, embeddings)
     ]
 

@@ -104,10 +104,18 @@ async def insert_facts_batch(
 
 
 async def _insert_engram_dictionary_batch(conn, bank_id: str, unit_ids: list[str], facts: list[ProcessedFact]) -> None:
-    """Write tags + thalamus scores into engram_dictionary for each stored fact.
+    """Write tags + thalamus scores + retain provenance into engram_dictionary.
 
     Called within the same DB transaction as insert_facts_batch so that
     memory_units and engram_dictionary stay consistent even on rollback.
+
+    Writes the full retain-provenance bundle (Phase A3 — Apr 2026):
+      - tags                              (TEXT[])
+      - novelty/surprise/task_relevance/emotional_valence/thalamus_overall (FLOAT)
+      - expectation / outcome             (TEXT, item-level from RetainContent)
+      - session_mode                      (TEXT, Session.mode at retain time)
+      - task_context                      (TEXT, effective task_context)
+      - retain_context                    (JSONB, Thalamus rationale dump)
 
     Args:
         conn: Active DB connection (already inside a transaction).
@@ -117,13 +125,33 @@ async def _insert_engram_dictionary_batch(conn, bank_id: str, unit_ids: list[str
     """
     for unit_id, fact in zip(unit_ids, facts):
         ts = fact.thalamus_scores
+
+        # Flatten the ThalamusRationale into a JSON-serialisable dict for
+        # retain_context. None-values are kept so the UI can tell "no info"
+        # apart from "zero value".
+        retain_context_dict: dict | None = None
+        if ts is not None and ts.rationale is not None:
+            r = ts.rationale
+            retain_context_dict = {
+                "thalamus_rationale": {
+                    "novelty_max_similar_id": r.novelty_max_similar_id,
+                    "novelty_max_similarity": r.novelty_max_similarity,
+                    "surprise_expectation_provided": r.surprise_expectation_provided,
+                    "surprise_outcome_provided": r.surprise_outcome_provided,
+                    "task_relevance_context_source": r.task_relevance_context_source,
+                    "valence_prediction_error": r.valence_prediction_error,
+                },
+            }
+
         await conn.execute(
             """
             INSERT INTO engram_dictionary (
                 engram_id, bank_id, tags,
                 novelty, surprise, task_relevance, emotional_valence, thalamus_overall,
-                strength, status
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                strength, status,
+                expectation, outcome, session_mode, task_context, retain_context
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                      $11, $12, $13, $14, $15::jsonb)
             ON CONFLICT (engram_id) DO NOTHING
             """,
             uuid.UUID(unit_id),
@@ -136,6 +164,11 @@ async def _insert_engram_dictionary_batch(conn, bank_id: str, unit_ids: list[str
             ts.overall if ts else None,
             0.0,
             "active",
+            fact.expectation,
+            fact.outcome,
+            fact.session_mode,
+            fact.task_context,
+            json.dumps(retain_context_dict) if retain_context_dict is not None else None,
         )
 
 

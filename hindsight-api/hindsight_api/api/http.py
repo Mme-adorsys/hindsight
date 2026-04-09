@@ -439,6 +439,14 @@ class RetainRequest(BaseModel):
         default=None,
         description="Session mode: precision, exploration, analogy, or validation (default: precision)",
     )
+    task_context: str | None = Field(
+        default=None,
+        description=(
+            "Optional task context snapshot at retain time. Feeds the Thalamus "
+            "task_relevance cosine formula and is persisted on the engram for "
+            "later observability filters (Phase A3)."
+        ),
+    )
     budget: Budget = Field(
         default=Budget.MID,
         description="R0 extraction depth: low=facts only, mid=+action/effect/exp/outcome, high=+implicit (default: mid)",
@@ -2616,8 +2624,24 @@ def _register_routes(app: FastAPI):
                     content_dict["tags"] = item.tags
                 contents.append(content_dict)
 
-            # Build session from mode if provided (Epic 06 — Session Layer)
+            # Build session from mode + task_context if provided (Epic 06 —
+            # Session Layer, extended Phase A3 — Observability Pass). We call
+            # _session_from_mode for the mode parsing, then attach the task
+            # context so it lands in engram_dictionary.task_context.
             retain_session = _session_from_mode(request.mode)
+            if retain_session is None and request.task_context:
+                # Task context was provided without an explicit mode — build a
+                # default-precision session to carry it through the pipeline.
+                from hindsight_api.engine.response_models import RetrievalMode, Session
+
+                retain_session = Session(mode=RetrievalMode.PRECISION, task_context=request.task_context)
+            elif retain_session is not None and request.task_context:
+                # Both provided — clone the session with the task context set.
+                retain_session = retain_session.__class__(
+                    mode=retain_session.mode,
+                    task_context=request.task_context,
+                    current_expectation=retain_session.current_expectation,
+                )
 
             if request.async_:
                 # Async processing: queue task and return immediately

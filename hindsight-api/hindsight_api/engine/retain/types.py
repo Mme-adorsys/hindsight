@@ -181,6 +181,14 @@ class ProcessedFact:
     expectation: str | None = None
     outcome: str | None = None
 
+    # Retain-time provenance (Observability Pass A3 — Apr 2026)
+    # Populated by the retain orchestrator from the active Session before
+    # storage. `session_mode` is the Session.mode at retain time,
+    # `task_context` is the effective task_context (item override > session
+    # fallback). These land in engram_dictionary columns with the same names.
+    session_mode: str | None = None
+    task_context: str | None = None
+
     @property
     def is_duplicate(self) -> bool:
         """Check if this fact was marked as a duplicate."""
@@ -188,7 +196,12 @@ class ProcessedFact:
 
     @staticmethod
     def from_extracted_fact(
-        extracted_fact: "ExtractedFact", embedding: list[float], chunk_id: str | None = None
+        extracted_fact: "ExtractedFact",
+        embedding: list[float],
+        chunk_id: str | None = None,
+        *,
+        session_mode: str | None = None,
+        task_context: str | None = None,
     ) -> "ProcessedFact":
         """
         Create ProcessedFact from ExtractedFact.
@@ -197,6 +210,11 @@ class ProcessedFact:
             extracted_fact: Source ExtractedFact
             embedding: Generated embedding vector
             chunk_id: Optional chunk ID
+            session_mode: Session.mode at retain time (precision/exploration/
+                analogy/validation). Passed through to the engram_dictionary
+                row as observability metadata (Phase A3).
+            task_context: Effective task_context at retain time. Passed
+                through as observability metadata (Phase A3).
 
         Returns:
             ProcessedFact ready for storage
@@ -231,6 +249,8 @@ class ProcessedFact:
             thalamus_scores=extracted_fact.thalamus_scores,
             expectation=extracted_fact.expectation,
             outcome=extracted_fact.outcome,
+            session_mode=session_mode,
+            task_context=task_context,
         )
 
 
