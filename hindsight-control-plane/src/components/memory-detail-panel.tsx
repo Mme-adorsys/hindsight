@@ -510,6 +510,106 @@ export function MemoryDetailPanel({
         {modalType && modalId && (
           <DocumentChunkModal type={modalType} id={modalId} onClose={closeModal} />
         )}
+
+        {/* Retain Trace Explorer Modal (Phase B, B7) — inPanel branch */}
+        {showTracesModal && bankId && (
+          <div
+            className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
+            onClick={closeTracesModal}
+          >
+            <div
+              className="bg-card rounded-lg shadow-2xl max-w-3xl w-full max-h-[85vh] overflow-hidden flex flex-col"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between px-4 py-3 border-b">
+                <div className="flex items-center gap-2">
+                  {selectedTrace && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 w-7 p-0"
+                      onClick={() => setSelectedTrace(null)}
+                    >
+                      <ChevronLeft className="h-4 w-4" />
+                    </Button>
+                  )}
+                  <h3 className="text-sm font-semibold">
+                    {selectedTrace ? "Retain Trace" : "Recent Retain Traces"}
+                  </h3>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 w-7 p-0"
+                  onClick={closeTracesModal}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-4">
+                {tracesError && (
+                  <div className="text-sm text-red-600 dark:text-red-400 mb-3">{tracesError}</div>
+                )}
+
+                {tracesLoading && !selectedTrace && !traceList && (
+                  <div className="text-sm text-muted-foreground text-center py-8">
+                    Loading traces…
+                  </div>
+                )}
+
+                {selectedTrace ? (
+                  <div className="space-y-3">
+                    <div className="text-xs text-muted-foreground font-mono">
+                      {selectedTrace.id}
+                    </div>
+                    <PipelineTraceView trace={selectedTrace.trace_data} />
+                  </div>
+                ) : (
+                  traceList && (
+                    <div className="space-y-2">
+                      {traceList.length === 0 && (
+                        <div className="text-sm text-muted-foreground text-center py-8">
+                          No retain traces yet for this bank.
+                        </div>
+                      )}
+                      {traceList.map((t) => (
+                        <button
+                          key={t.id}
+                          type="button"
+                          onClick={() => loadTraceDetail(t.id)}
+                          className="w-full text-left rounded-lg border bg-background hover:bg-accent/50 transition-colors px-3 py-2 flex items-center justify-between gap-3"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`w-2 h-2 rounded-full ${
+                                  t.status === "error" ? "bg-red-500" : "bg-emerald-500"
+                                }`}
+                              />
+                              <span className="font-mono text-xs truncate">
+                                {t.id.slice(0, 8)}…
+                              </span>
+                              <span className="text-[10px] text-muted-foreground">
+                                {t.step_count} steps
+                              </span>
+                            </div>
+                            <div className="text-[10px] text-muted-foreground mt-0.5">
+                              {new Date(t.started_at).toLocaleString()}
+                            </div>
+                          </div>
+                          <span className="text-xs tabular-nums text-muted-foreground shrink-0">
+                            {t.duration_ms}ms
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </>
     );
   }
