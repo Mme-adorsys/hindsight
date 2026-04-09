@@ -57,12 +57,16 @@ def create_mcp_server(memory: MemoryEngine) -> FastMCP:
     @mcp.tool()
     async def retain(
         content: str,
+        mode: str,
+        task_context: str,
         context: str = "general",
         timestamp: str | None = None,
         document_id: str | None = None,
         entities: str | None = None,
         metadata: str | None = None,
-        mode: str | None = None,
+        expectation: str | None = None,
+        outcome: str | None = None,
+        tags: str | None = None,
         async_processing: bool = True,
         bank_id: str | None = None,
     ) -> dict:
@@ -78,22 +82,51 @@ def create_mcp_server(memory: MemoryEngine) -> FastMCP:
         - Relationships or people mentioned
         - Work context, projects, or responsibilities
 
-        Args:
+        REQUIRED:
             content: The fact/memory to store (be specific and include relevant details)
-            context: Category for the memory (e.g., 'preferences', 'work', 'hobbies', 'family'). Default: 'general'
-            timestamp: ISO datetime when the event occurred (e.g., '2024-01-15T10:30:00Z'). Helps with temporal ordering.
-            document_id: Group related memories under one ID. Re-retaining with the same document_id replaces old memories (upsert).
-            entities: JSON array of entity hints. Format: '[{"text": "Alice", "type": "PERSON"}]'. Types: PERSON, ORG, CONCEPT, LOCATION.
-            metadata: JSON object with key-value pairs. Format: '{"source": "slack", "channel": "#general"}'.
-            mode: Session mode affecting Thalamus filter scoring. Values: precision (default), exploration, analogy, validation.
-                  Note: async_processing=True does not apply the mode parameter. Use async_processing=False if mode is important.
-            async_processing: If True, queue for background processing and return immediately. If False, wait for completion. Default: True
-            bank_id: Optional bank to store in (defaults to session bank). Use for cross-bank operations.
+            mode: Session mode that gates Thalamus filter scoring and MPFP retrieval.
+                  Must be one of: precision | exploration | analogy | validation.
+                  * precision: focused retrieval, strict threshold (default for facts)
+                  * exploration: broad associative retrieval, relaxed threshold
+                  * analogy: cross-domain matching via Schema Links
+                  * validation: causal/contradiction links, evidence verification
+            task_context: What the caller is doing when retaining this batch.
+                  Feeds the Thalamus task_relevance cosine against each fact's
+                  embedding and is persisted for observability filters.
+                  Minimum 3 characters. Example: "Onboarding a new user",
+                  "Debugging the retain pipeline", "Code review session".
+
+        Optional:
+            context: Freetext category label (e.g., 'preferences', 'work'). Default: 'general'
+            timestamp: ISO datetime when the event occurred (e.g., '2024-01-15T10:30:00Z').
+            document_id: Group related memories under one ID (upsert on reuse).
+            entities: JSON array of entity hints, e.g. '[{"text":"Alice","type":"PERSON"}]'.
+            metadata: JSON object with key-value pairs.
+            tags: Comma-separated user tags (merged with auto-extracted tags).
+            expectation + outcome: PAIRED — set BOTH or NEITHER. Use for experience
+                  memories with before/after structure. Feeds surprise scoring via
+                  prediction error. Setting only one half is rejected.
+            async_processing: If True, queue for background processing. Default: True.
+            bank_id: Optional bank override (defaults to session bank).
         """
         try:
             target_bank = bank_id or get_current_bank_id()
             if target_bank is None:
                 return {"status": "error", "message": "No bank_id configured"}
+
+            if bool(expectation) != bool(outcome):
+                return {
+                    "status": "error",
+                    "message": (
+                        "expectation and outcome must be set together or both "
+                        "left empty — setting only one half breaks surprise scoring."
+                    ),
+                }
+            if not task_context or len(task_context.strip()) < 3:
+                return {
+                    "status": "error",
+                    "message": "task_context is required (min 3 characters).",
+                }
 
             content_dict: dict = {"content": content, "context": context}
             if timestamp:
@@ -110,11 +143,26 @@ def create_mcp_server(memory: MemoryEngine) -> FastMCP:
                     content_dict["metadata"] = parse_json_param(metadata, "metadata")
                 except ValueError as e:
                     logger.warning(f"Ignoring metadata: {e}")
+            if expectation:
+                content_dict["expectation"] = expectation
+            if outcome:
+                content_dict["outcome"] = outcome
+            if tags:
+                content_dict["tags"] = [t.strip() for t in tags.split(",") if t.strip()]
 
             try:
                 session = session_from_mode(mode)
             except ValueError as e:
                 return {"status": "error", "message": str(e)}
+
+            # task_context is mandatory — attach it to the Session so the retain
+            # pipeline persists it on every engram_dictionary row.
+            if session is not None:
+                session = session.__class__(
+                    mode=session.mode,
+                    task_context=task_context,
+                    current_expectation=session.current_expectation,
+                )
 
             if async_processing:
                 result = await memory.submit_async_retain(

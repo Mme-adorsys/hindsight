@@ -194,15 +194,33 @@ Use this tool PROACTIVELY whenever the user shares:
 - Relationships or people mentioned
 - Work context, projects, or responsibilities
 
-Parameters:
+REQUIRED parameters:
 - content: The fact/memory to store (be specific and include relevant details)
-- context: Category for the memory (e.g., 'preferences', 'work', 'hobbies'). Default: 'general'
+- mode: **REQUIRED** Session mode that gates Thalamus filter scoring, MPFP retrieval,
+  and Session-Layer disposition. Must be one of:
+    * precision   — focused retrieval, strict Thalamus threshold (default choice for facts)
+    * exploration — broad associative retrieval, relaxed threshold (brainstorming)
+    * analogy     — cross-domain matching via Schema Links (pattern-based similarity)
+    * validation  — causal/contradiction links, evidence verification
+- task_context: **REQUIRED** What the caller is doing when retaining this batch.
+  Feeds the Thalamus task_relevance cosine against each fact's embedding and is
+  persisted on every engram for observability filters. Minimum 3 characters.
+  Example: "Onboarding a new user", "Debugging the retain pipeline", "Code review session".
+
+Optional parameters:
+- context: Freetext category label (e.g., 'preferences', 'work', 'hobbies').
 - timestamp: ISO datetime when the event occurred (e.g., '2024-01-15T10:30:00Z'). Helps with temporal ordering.
 - document_id: Group related memories under one ID. Re-retaining with the same document_id replaces old memories (upsert).
 - entities: JSON array of entity hints. Format: '[{"text": "Alice", "type": "PERSON"}]'. Types: PERSON, ORG, CONCEPT, LOCATION.
 - metadata: JSON object with key-value pairs. Format: '{"source": "slack", "channel": "#general"}'.
-- mode: Session mode affecting Thalamus filter scoring. Values: precision (default), exploration, analogy, validation.
-  Note: When using async_processing=True, the mode parameter is not applied (async operations use default precision mode)."""
+- tags: List of user-supplied tags. Merged with auto-extracted tags. No spaces, max 50 chars per tag.
+- expectation + outcome: **Paired** — set BOTH or NEITHER. Use when the memory
+  represents an experience with a before/after structure (e.g. "I expected X" /
+  "what actually happened was Y"). Feeds the Thalamus surprise scoring via
+  cos(expectation, outcome) prediction error. Setting only one half is rejected.
+
+Note: When using async_processing=True the mode still applies — it's persisted
+on the engram for later observability."""
 
 DEFAULT_MCP_RECALL_DESCRIPTION = """Search memories to provide personalized, context-aware responses.
 

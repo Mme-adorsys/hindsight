@@ -10,7 +10,7 @@ import logging
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 
@@ -421,6 +421,22 @@ class MemoryItem(BaseModel):
                 ) from e
         raise ValueError(f"timestamp must be a string or datetime, got {type(v).__name__}")
 
+    @model_validator(mode="after")
+    def _check_expectation_outcome_pair(self):
+        """Prediction-Error-Signal needs both halves — half a pair is undefined.
+
+        Bio mapping: the dopaminergic prediction-error signal is computed from
+        cos(expectation, outcome). Without both vectors the error is
+        mathematically undefined, so we reject half-pairs at the API boundary.
+        """
+        if bool(self.expectation) != bool(self.outcome):
+            raise ValueError(
+                "expectation and outcome must be set together or both left empty "
+                "— an inconsistent pair breaks the Thalamus surprise scoring "
+                "(prediction error cannot be computed from half an experience)."
+            )
+        return self
+
 
 class RetainRequest(BaseModel):
     """Request model for retain endpoint."""
@@ -447,16 +463,22 @@ class RetainRequest(BaseModel):
         alias="async",
         description="If true, process asynchronously in background. If false, wait for completion (default: false)",
     )
-    mode: str | None = Field(
-        default=None,
-        description="Session mode: precision, exploration, analogy, or validation (default: precision)",
-    )
-    task_context: str | None = Field(
-        default=None,
+    mode: Literal["precision", "exploration", "analogy", "validation"] = Field(
         description=(
-            "Optional task context snapshot at retain time. Feeds the Thalamus "
-            "task_relevance cosine formula and is persisted on the engram for "
-            "later observability filters (Phase A3)."
+            "REQUIRED. Session mode that gates Thalamus scoring, MPFP retrieval, and "
+            "Session-Layer disposition. Must be one of precision | exploration | "
+            "analogy | validation. Bio mapping: the presented PFC set under which "
+            "every encoding happens — there is no 'no-mode' memory."
+        ),
+    )
+    task_context: str = Field(
+        min_length=3,
+        description=(
+            "REQUIRED. What the caller is doing when retaining this batch. Feeds "
+            "the Thalamus task_relevance cosine formula against each fact's "
+            "embedding and is persisted on every engram for later observability "
+            "filters. Bio mapping: the goal-directed encoding bias in the "
+            "hippocampus — memories are always encoded in service of a current goal."
         ),
     )
     budget: Budget = Field(
@@ -2680,24 +2702,18 @@ def _register_routes(app: FastAPI):
                     content_dict["tags"] = item.tags
                 contents.append(content_dict)
 
-            # Build session from mode + task_context if provided (Epic 06 —
-            # Session Layer, extended Phase A3 — Observability Pass). We call
-            # _session_from_mode for the mode parsing, then attach the task
-            # context so it lands in engram_dictionary.task_context.
+            # Build session from mode + task_context. Both are now mandatory
+            # on RetainRequest (Pydantic Field without default), so we can
+            # trust they are present and build a complete Session directly.
+            # Bio mapping: every encoding event happens under a specific PFC
+            # set with a goal-directed bias — there is no "mode-less" retain.
             retain_session = _session_from_mode(request.mode)
-            if retain_session is None and request.task_context:
-                # Task context was provided without an explicit mode — build a
-                # default-precision session to carry it through the pipeline.
-                from hindsight_api.engine.response_models import RetrievalMode, Session
-
-                retain_session = Session(mode=RetrievalMode.PRECISION, task_context=request.task_context)
-            elif retain_session is not None and request.task_context:
-                # Both provided — clone the session with the task context set.
-                retain_session = retain_session.__class__(
-                    mode=retain_session.mode,
-                    task_context=request.task_context,
-                    current_expectation=retain_session.current_expectation,
-                )
+            assert retain_session is not None, "mode is mandatory on RetainRequest"
+            retain_session = retain_session.__class__(
+                mode=retain_session.mode,
+                task_context=request.task_context,
+                current_expectation=retain_session.current_expectation,
+            )
 
             if request.async_:
                 # Async processing: queue task and return immediately

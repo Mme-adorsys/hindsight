@@ -116,24 +116,50 @@ def create_local_mcp_server(bank_id: str, memory=None) -> FastMCP:
     @mcp.tool(description=retain_description)
     async def retain(
         content: str,
+        mode: str,
+        task_context: str,
         context: str = "general",
         timestamp: str | None = None,
         document_id: str | None = None,
         entities: str | None = None,
         metadata: str | None = None,
-        mode: str | None = None,
+        expectation: str | None = None,
+        outcome: str | None = None,
+        tags: str | None = None,
     ) -> dict:
         """
-        Args:
+        REQUIRED:
             content: The fact/memory to store (be specific and include relevant details)
-            context: Category for the memory (e.g., 'preferences', 'work', 'hobbies', 'family'). Default: 'general'
-            timestamp: ISO datetime when the event occurred (e.g., '2024-01-15T10:30:00Z'). Helps with temporal ordering.
-            document_id: Group related memories under one ID. Re-retaining with the same document_id replaces old memories (upsert).
-            entities: JSON array of entity hints. Format: '[{"text": "Alice", "type": "PERSON"}]'. Types: PERSON, ORG, CONCEPT, LOCATION.
-            metadata: JSON object with key-value pairs. Format: '{"source": "slack", "channel": "#general"}'.
-            mode: Session mode affecting Thalamus filter scoring. Values: precision (default), exploration, analogy, validation.
+            mode: Session mode gating Thalamus scoring. One of precision | exploration
+                  | analogy | validation.
+            task_context: What the caller is doing when retaining. Feeds Thalamus
+                  task_relevance. Minimum 3 characters.
+
+        Optional:
+            context: Freetext category (e.g., 'preferences', 'work'). Default: 'general'
+            timestamp: ISO datetime when the event occurred.
+            document_id: Group related memories (upsert on reuse).
+            entities: JSON array of entity hints.
+            metadata: JSON object with key-value pairs.
+            tags: Comma-separated user tags.
+            expectation + outcome: PAIRED — set BOTH or NEITHER. Feeds surprise
+                  scoring via prediction error.
         """
         import asyncio
+
+        if bool(expectation) != bool(outcome):
+            return {
+                "status": "error",
+                "message": (
+                    "expectation and outcome must be set together or both "
+                    "left empty — setting only one half breaks surprise scoring."
+                ),
+            }
+        if not task_context or len(task_context.strip()) < 3:
+            return {
+                "status": "error",
+                "message": "task_context is required (min 3 characters).",
+            }
 
         content_dict: dict = {"content": content, "context": context}
         if timestamp:
@@ -150,11 +176,25 @@ def create_local_mcp_server(bank_id: str, memory=None) -> FastMCP:
                 content_dict["metadata"] = parse_json_param(metadata, "metadata")
             except ValueError as e:
                 logger.warning(f"Ignoring metadata: {e}")
+        if expectation:
+            content_dict["expectation"] = expectation
+        if outcome:
+            content_dict["outcome"] = outcome
+        if tags:
+            content_dict["tags"] = [t.strip() for t in tags.split(",") if t.strip()]
 
         try:
             session = session_from_mode(mode)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
+
+        # Attach task_context to the session so it lands in engram_dictionary
+        if session is not None:
+            session = session.__class__(
+                mode=session.mode,
+                task_context=task_context,
+                current_expectation=session.current_expectation,
+            )
 
         async def _retain():
             try:
