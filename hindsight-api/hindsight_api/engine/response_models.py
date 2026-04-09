@@ -194,6 +194,19 @@ class RecallResult(BaseModel):
         ),
     )
 
+    # Observability Phase B, Item B5 — high-level pipeline trace with one
+    # TraceStep per recall phase (query_analysis, retrieval_parallel, rrf_merge,
+    # strength_pre_filter, cross_encoder_rerank, combined_scoring, construction,
+    # session_feedback). Complements the existing low-level SearchTrace in
+    # ``trace``, which stays in place for search-internal details.
+    pipeline_trace: dict[str, Any] | None = Field(
+        None,
+        description=(
+            "High-level recall PipelineTrace with per-phase timing/inputs/outputs/rationale. "
+            "Distinct from the low-level `trace` field which contains search-internal details."
+        ),
+    )
+
 
 class ReflectResult(BaseModel):
     """

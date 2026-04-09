@@ -36,6 +36,7 @@ from .response_models import (
     MemoryFact,
 )
 from .response_models import RecallResult as RecallResultModel
+from .tracer import PipelineTracer
 from .utils import Budget, _get_tiktoken_encoding, acquire_with_retry, fq_table, utcnow
 
 if TYPE_CHECKING:
@@ -200,6 +201,31 @@ class RecallOrchestrator:
         effective_budget = budget if budget is not None else Budget.MID
         thinking_budget = budget_mapping[effective_budget]
 
+        # Observability Phase B, Item B5 — high-level pipeline tracer for the
+        # whole recall. Records one step per coarse phase (retrieval, RRF,
+        # pre-filter, rerank, scoring, construction, PE) and is attached to
+        # the returned RecallResult.pipeline_trace. Distinct from the
+        # lower-level SearchTracer which captures search-internal details.
+        pipeline_tracer = PipelineTracer(pipeline="recall", bank_id=bank_id)
+        pipeline_tracer.set_metadata("query", query[:200])
+        pipeline_tracer.set_metadata("mode", retrieval_mode.value if retrieval_mode else "precision")
+        pipeline_tracer.set_metadata("budget", effective_budget.value)
+        pipeline_tracer.set_metadata("thinking_budget", thinking_budget)
+
+        # Record an initial query_analysis step covering validation + mode resolution.
+        pipeline_tracer.record_step(
+            name="query_analysis",
+            duration_ms=0.0,
+            inputs={"query_length": len(query), "fact_types": list(fact_type)},
+            outputs={
+                "mode": retrieval_mode.value if retrieval_mode else "precision",
+                "strength_pre_filter": mode_config.strength_pre_filter,
+                "weak_link_policy": mode_config.weak_link_policy,
+                "traversal_depth": mode_config.traversal_depth,
+            },
+            rationale=(f"resolved ModeConfig for mode={retrieval_mode.value if retrieval_mode else 'precision'}"),
+        )
+
         # Backpressure: limit concurrent recalls to prevent overwhelming the database
         result = None
         _top_scored: list = []
@@ -225,6 +251,7 @@ class RecallOrchestrator:
                         tags=tags,
                         mode=retrieval_mode,
                         shared_bank_id=shared_bank_id,
+                        pipeline_tracer=pipeline_tracer,
                     )
                     break  # Success - exit retry loop
                 except Exception as e:
@@ -346,6 +373,7 @@ class RecallOrchestrator:
                 # Runs after WorkingContext population so WC already reflects the current recall.
                 # Bio mapping: PFC semantic integration — retrieved fragments reconstructed into
                 # a coherent answer with inferences and gap detection.
+                _construction_start = time.time()
                 try:
                     from .constructive.pipeline import ConstructionPipeline
 
@@ -359,8 +387,22 @@ class RecallOrchestrator:
                         query=query,
                         working_context=wc,
                     )
+                    pipeline_tracer.record_step(
+                        name="construction_pipeline",
+                        duration_ms=(time.time() - _construction_start) * 1000,
+                        inputs={"num_top_scored": len(_top_scored)},
+                        outputs={"has_constructed_answer": result.constructed_answer is not None},
+                        rationale="PFC semantic integration: reconstructed answer from scored results",
+                    )
                 except Exception as _pipeline_err:
                     logger.warning("[CONSTRUCTION] Pipeline failed (non-fatal): %s", _pipeline_err)
+                    pipeline_tracer.record_step(
+                        name="construction_pipeline",
+                        duration_ms=(time.time() - _construction_start) * 1000,
+                        status="error",
+                        error=str(_pipeline_err),
+                        rationale="construction pipeline raised — returning raw results without ConstructedAnswer",
+                    )
 
                 # Prediction Error Detection (Epic 11 S3) — runs after construction when
                 # session.current_expectation is set.
@@ -370,6 +412,7 @@ class RecallOrchestrator:
                     and session.current_expectation
                     and self._ctx.reflect_llm_config is not None
                 ):
+                    _pe_start = time.time()
                     try:
                         from .constructive.prediction_error import (
                             PredictionErrorDetector,
@@ -404,8 +447,28 @@ class RecallOrchestrator:
                                 "expected_summary": _pe.expected_summary,
                                 "actual_summary": _pe.actual_summary,
                             }
+                        pipeline_tracer.record_step(
+                            name="session_feedback",
+                            duration_ms=(time.time() - _pe_start) * 1000,
+                            inputs={"expectation_set": True},
+                            outputs={
+                                "pe_detected": _pe is not None,
+                                "severity": _pe.severity if _pe is not None else None,
+                            },
+                            rationale=(
+                                f"dopaminergic PE signal: severity={_pe.severity}"
+                                if _pe is not None
+                                else "no prediction error detected — expectation matched"
+                            ),
+                        )
                     except Exception as _pe_err:
                         logger.warning("[PE] Prediction error detection failed (non-fatal): %s", _pe_err)
+                        pipeline_tracer.record_step(
+                            name="session_feedback",
+                            duration_ms=(time.time() - _pe_start) * 1000,
+                            status="error",
+                            error=str(_pe_err),
+                        )
 
         # Call post-operation hook for success
         if self._ctx.operation_validator and result is not None:
@@ -433,6 +496,15 @@ class RecallOrchestrator:
             except Exception as e:
                 logger.warning(f"Post-recall hook error (non-fatal): {e}")
 
+        # Finalize + attach the high-level pipeline trace. Transient — recall
+        # traces are never persisted, they ride along in the response payload.
+        if result is not None:
+            pipeline_tracer.set_metadata("num_results", len(result.results))
+            pipeline_tracer.set_metadata(
+                "has_constructed_answer", getattr(result, "constructed_answer", None) is not None
+            )
+            result.pipeline_trace = pipeline_tracer.finalize().to_dict()
+
         return result
 
     async def _search_with_retries(
@@ -452,6 +524,7 @@ class RecallOrchestrator:
         tags: list[str] | None = None,
         mode=None,  # RetrievalMode | None — forwarded to retrieve_parallel for MPFP pattern selection
         shared_bank_id: str | None = None,  # Optional second bank for dual-bank parallel query (S5)
+        pipeline_tracer: PipelineTracer | None = None,  # B5 high-level recall tracer
     ) -> tuple[RecallResultModel, list[ScoredResult]]:
         """
         Search implementation with modular retrieval and reranking.
@@ -485,6 +558,10 @@ class RecallOrchestrator:
         tracer = SearchTracer(query, thinking_budget, max_tokens) if enable_trace else None
         if tracer:
             tracer.start()
+
+        # Noop-tracer fallback so each call site below can unconditionally
+        # call _tr.record_step without a null-check.
+        _tr = pipeline_tracer if pipeline_tracer is not None else PipelineTracer("recall", bank_id, enabled=False)
 
         pool = await self._ctx.get_pool()
         recall_start = time.time()
@@ -601,6 +678,30 @@ class RecallOrchestrator:
             retrieval_duration = time.time() - retrieval_start
 
             step_duration = time.time() - step_start
+            _tr.record_step(
+                name="retrieval_parallel",
+                duration_ms=step_duration * 1000,
+                inputs={
+                    "mode": mode.value if mode else "precision",
+                    "thinking_budget": thinking_budget,
+                    "dual_bank": shared_bank_id is not None,
+                },
+                outputs={
+                    "semantic_count": len(semantic_results),
+                    "bm25_count": len(bm25_results),
+                    "graph_count": len(graph_results),
+                    "temporal_count": len(temporal_results) if temporal_results else 0,
+                    "semantic_ms": round(aggregated_timings.get("semantic", 0.0) * 1000, 1),
+                    "bm25_ms": round(aggregated_timings.get("bm25", 0.0) * 1000, 1),
+                    "graph_ms": round(aggregated_timings.get("graph", 0.0) * 1000, 1),
+                    "temporal_ms": round(aggregated_timings.get("temporal", 0.0) * 1000, 1),
+                },
+                rationale=(
+                    f"4-way parallel retrieval: {len(semantic_results)} semantic, "
+                    f"{len(bm25_results)} bm25, {len(graph_results)} graph, "
+                    f"{len(temporal_results) if temporal_results else 0} temporal"
+                ),
+            )
             # Format per-method timings (these are the actual parallel retrieval times)
             timing_parts = [
                 f"semantic={len(semantic_results)}({aggregated_timings['semantic']:.3f}s)",
@@ -697,6 +798,18 @@ class RecallOrchestrator:
 
             step_duration = time.time() - step_start
             log_buffer.append(f"  [3] RRF merge: {len(merged_candidates)} unique candidates in {step_duration:.3f}s")
+            _tr.record_step(
+                name="rrf_merge",
+                duration_ms=step_duration * 1000,
+                inputs={
+                    "semantic_in": len(semantic_results),
+                    "bm25_in": len(bm25_results),
+                    "graph_in": len(graph_results),
+                    "temporal_in": len(temporal_results) if temporal_results else 0,
+                },
+                outputs={"num_merged": len(merged_candidates)},
+                rationale=f"Reciprocal Rank Fusion merged {len(merged_candidates)} unique candidates",
+            )
 
             if tracer:
                 # Convert MergedCandidate to old tuple format for tracer
@@ -752,6 +865,20 @@ class RecallOrchestrator:
                         log_buffer.append(
                             f"  [3.5] Strength pre-filter: removed {filtered}/{before} below threshold={threshold}"
                         )
+                    _tr.record_step(
+                        name="strength_pre_filter",
+                        duration_ms=0.0,
+                        inputs={"num_merged": before, "threshold": threshold, "mode": mode.value},
+                        outputs={"num_kept": len(merged_candidates), "num_dropped": filtered},
+                        rationale=(f"{mode.value} mode strength threshold {threshold} dropped {filtered}/{before}"),
+                    )
+                else:
+                    _tr.record_step(
+                        name="strength_pre_filter",
+                        duration_ms=0.0,
+                        status="skipped",
+                        rationale=f"strength threshold {threshold} ≤ 0 or no candidates",
+                    )
 
             # Step 4: Rerank using cross-encoder (MergedCandidate -> ScoredResult)
             step_start = time.time()
@@ -765,6 +892,16 @@ class RecallOrchestrator:
 
             step_duration = time.time() - step_start
             log_buffer.append(f"  [4] Reranking: {len(scored_results)} candidates scored in {step_duration:.3f}s")
+            _ce_top_scores = [
+                round(sr.cross_encoder_score, 3) for sr in scored_results[:5] if sr.cross_encoder_score is not None
+            ]
+            _tr.record_step(
+                name="cross_encoder_rerank",
+                duration_ms=step_duration * 1000,
+                inputs={"num_candidates": len(merged_candidates)},
+                outputs={"num_scored": len(scored_results), "top5_ce_scores": _ce_top_scores},
+                rationale=f"cross-encoder scored {len(scored_results)} candidates against query",
+            )
 
             # Step 4.5: Combine cross-encoder score with retrieval signals
             # Extended scoring: w1×CE + w2×RRF + w3×Temporal + w4×Recency(strength-modulated)
@@ -846,6 +983,24 @@ class RecallOrchestrator:
 
                 # Re-sort by combined score
                 scored_results.sort(key=lambda x: x.weight, reverse=True)
+
+                _top_combined = [round(sr.combined_score, 3) for sr in scored_results[:5]]
+                _tr.record_step(
+                    name="combined_scoring",
+                    duration_ms=0.0,
+                    inputs={
+                        "num_to_score": len(scored_results),
+                        "weights_preset": "mode_specific" if scoring_weights is not None else "fallback_60_20_10_10",
+                        "mode_boost_dim": mode_boost_dim,
+                    },
+                    outputs={"top5_combined": _top_combined},
+                    rationale=(
+                        "6-term extended scoring: w1·CE + w2·RRF + w3·temporal + w4·recency "
+                        "+ w5·strength + w6·thalamus (mode-specific weights)"
+                        if scoring_weights is not None
+                        else "fallback Hindsight scoring 60·CE + 20·RRF + 10·temporal + 10·recency"
+                    ),
+                )
 
             # Add reranked results to tracer AFTER combined scoring (so normalized values are included)
             if tracer:
