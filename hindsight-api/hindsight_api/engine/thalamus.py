@@ -18,14 +18,14 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, Literal
 
 if TYPE_CHECKING:
     from .embeddings import Embeddings
     from .qdrant_client import QdrantEngineClient
     from .response_models import RetrievalMode, Session
 
-from .engram_types import ThalamusScores
+from .engram_types import ThalamusRationale, ThalamusScores
 
 logger = logging.getLogger(__name__)
 
@@ -165,10 +165,23 @@ class ThalamusFilter:
             outcome: Item-level outcome. No session fallback — outcomes are always item-specific.
 
         Returns:
-            ThalamusScores with all 4 dimension scores and weighted overall.
+            ThalamusScores with all 4 dimension scores, weighted overall, and a
+            ThalamusRationale capturing the inputs that drove each dimension so
+            the CP can render a human-readable "why this score" explanation.
         """
-        # Fallback hierarchy: item-level > session-level > None
-        effective_context = context or session.task_context
+        # Fallback hierarchy: item-level > session-level > None. Also track the
+        # source so the rationale can distinguish explicit item-level context
+        # from fallback session context ("where did task_relevance come from?").
+        if context:
+            effective_context = context
+            context_source: Literal["none", "item", "session"] = "item"
+        elif session.task_context:
+            effective_context = session.task_context
+            context_source = "session"
+        else:
+            effective_context = None
+            context_source = "none"
+
         effective_expectation = expectation or session.current_expectation
         effective_outcome = outcome  # no session fallback
 
@@ -194,12 +207,30 @@ class ThalamusFilter:
         expectation_embedding: list[float] | None = all_embeddings[exp_idx] if exp_idx is not None else None
         outcome_embedding: list[float] | None = all_embeddings[out_idx] if out_idx is not None else None
 
-        novelty = await self._score_novelty(content_embedding, bank_id=bank_id)
+        novelty, novelty_max_id, novelty_max_sim = await self._score_novelty_with_source(
+            content_embedding, bank_id=bank_id
+        )
         surprise = self._score_surprise(expectation_embedding, outcome_embedding)
         task_relevance = self._score_task_relevance(content_embedding, context_embedding)
         emotional_valence = self._score_emotional_valence(expectation_embedding, outcome_embedding)
 
+        # Raw prediction-error magnitude — the pre-amplification signal behind
+        # both surprise and emotional_valence. None when inputs are missing.
+        prediction_error = 0.0
+        if expectation_embedding is not None and outcome_embedding is not None:
+            sim = _cosine_similarity(expectation_embedding, outcome_embedding)
+            prediction_error = max(0.0, min(1.0, 1.0 - sim))
+
         overall = self._compute_overall(novelty, surprise, task_relevance, emotional_valence, session.mode)
+
+        rationale = ThalamusRationale(
+            novelty_max_similar_id=novelty_max_id,
+            novelty_max_similarity=novelty_max_sim,
+            surprise_expectation_provided=expectation_embedding is not None,
+            surprise_outcome_provided=outcome_embedding is not None,
+            task_relevance_context_source=context_source,
+            valence_prediction_error=prediction_error,
+        )
 
         return ThalamusScores(
             novelty=novelty,
@@ -207,6 +238,7 @@ class ThalamusFilter:
             task_relevance=task_relevance,
             emotional_valence=emotional_valence,
             overall=overall,
+            rationale=rationale,
         )
 
     @staticmethod
@@ -227,10 +259,31 @@ class ThalamusFilter:
     # ------------------------------------------------------------------
 
     async def _score_novelty(self, embedding: list[float], bank_id: str | None = None) -> float:
+        """Novelty only (backwards-compatible wrapper).
+
+        Kept for existing callers that just want the float. The main scoring
+        path now uses `_score_novelty_with_source` which also returns the
+        closest-engram id for the rationale.
+        """
+        novelty, _, _ = await self._score_novelty_with_source(embedding, bank_id=bank_id)
+        return novelty
+
+    async def _score_novelty_with_source(
+        self, embedding: list[float], bank_id: str | None = None
+    ) -> tuple[float, str | None, float]:
         """Novelty: 1.0 - max_similarity vs existing Engrams in Qdrant.
 
         High similarity to existing memories → low novelty.
         No existing memories → novelty = 1.0 (everything is new).
+
+        Returns a tuple `(novelty, max_similar_engram_id, max_similarity)`:
+        - novelty: the final score in [0, 1]
+        - max_similar_engram_id: id of the closest existing engram (None when
+          the bank is empty or the search failed)
+        - max_similarity: the raw similarity value that produced the novelty
+          score (0.0 when no results). Same number that 1 - novelty would give
+          for successful searches, but preserved here so the rationale can
+          show the unclamped pre-subtraction value.
 
         Args:
             embedding: The content embedding to compare against.
@@ -244,15 +297,20 @@ class ThalamusFilter:
             results = await self._qdrant.search_similar(embedding, limit=5, filters=filters)
         except Exception:
             logger.warning("Thalamus novelty: Qdrant search failed, defaulting to 1.0", exc_info=True)
-            return 1.0
+            return 1.0, None, 0.0
 
         if not results:
-            return 1.0
+            return 1.0, None, 0.0
 
-        max_similarity = max(r["score"] for r in results)
+        top = max(results, key=lambda r: r["score"])
+        max_similarity = float(top["score"])
+        max_id = top.get("id") or top.get("engram_id")
+        max_id_str = str(max_id) if max_id is not None else None
+
         # Qdrant cosine scores are in [0, 1] for normalized vectors.
         # Clamp to [0, 1] to guard against floating-point edge cases.
-        return float(max(0.0, min(1.0, 1.0 - max_similarity)))
+        novelty = float(max(0.0, min(1.0, 1.0 - max_similarity)))
+        return novelty, max_id_str, max_similarity
 
     def _score_surprise(
         self,

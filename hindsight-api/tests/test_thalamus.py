@@ -31,7 +31,6 @@ from hindsight_api.engine.thalamus import (
     _cosine_similarity,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -491,7 +490,10 @@ class TestGateBehaviour:
     async def test_scores_returned_for_passed_content(self):
         """Scores from ThalamusFilter should be fully populated for passed content."""
         f, _, _ = _make_filter()
-        f._score_novelty = AsyncMock(return_value=0.8)
+        # Main scoring path now calls `_score_novelty_with_source` which
+        # returns (novelty, max_similar_id, max_similarity). The
+        # backwards-compatible `_score_novelty` delegates to it.
+        f._score_novelty_with_source = AsyncMock(return_value=(0.8, "sim-engram-1", 0.2))
         f._score_surprise = MagicMock(return_value=0.5)
         f._score_task_relevance = MagicMock(return_value=0.6)
         f._score_emotional_valence = MagicMock(return_value=0.7)
@@ -505,6 +507,10 @@ class TestGateBehaviour:
         assert scores.task_relevance == pytest.approx(0.6)
         assert scores.emotional_valence == pytest.approx(0.7)
         assert 0.0 <= scores.overall <= 1.0
+        # Rationale should be attached and reflect the mocked novelty source.
+        assert scores.rationale is not None
+        assert scores.rationale.novelty_max_similar_id == "sim-engram-1"
+        assert scores.rationale.novelty_max_similarity == pytest.approx(0.2)
 
     @pytest.mark.asyncio
     async def test_mode_switch_changes_overall_score(self):
