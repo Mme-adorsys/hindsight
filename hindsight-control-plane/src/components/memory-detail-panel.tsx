@@ -204,9 +204,7 @@ export function MemoryDetailPanel({
                 )}
                 {memory.outcome && (
                   <div>
-                    <div className="text-[10px] text-muted-foreground uppercase mb-1">
-                      Outcome
-                    </div>
+                    <div className="text-[10px] text-muted-foreground uppercase mb-1">Outcome</div>
                     <div className="text-sm text-foreground italic">{memory.outcome}</div>
                   </div>
                 )}
@@ -354,11 +352,11 @@ export function MemoryDetailPanel({
                         {memory.retain_context.thalamus_rationale.novelty_max_similar_id
                           ? memory.retain_context.thalamus_rationale.novelty_max_similar_id.slice(
                               0,
-                              8,
+                              8
                             ) +
                             " @ " +
                             memory.retain_context.thalamus_rationale.novelty_max_similarity.toFixed(
-                              3,
+                              3
                             )
                           : "—"}
                       </div>
@@ -379,7 +377,7 @@ export function MemoryDetailPanel({
                       <div>
                         prediction error:{" "}
                         {memory.retain_context.thalamus_rationale.valence_prediction_error.toFixed(
-                          3,
+                          3
                         )}
                       </div>
                     </div>
