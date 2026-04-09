@@ -171,7 +171,7 @@ Phase 8:  * → 23 (Benchmarking)
 - [x] Epic 19 — CP: Engram Metadata & Session Modes
 - [x] Epic 20 — CP: Bank Profile & System Configuration
 - [x] Epic 21 — CP: Engram Lifecycle & NCR Dashboard
-- [ ] Epic 22 — CP: Schema Explorer
+- [x] Epic 22 — CP: Schema Explorer
 
 ### Phase 8 — Qualitätssicherung
 - [ ] Epic 23 — Benchmarking & Validation
