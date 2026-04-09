@@ -1,0 +1,72 @@
+# MemoryManager dev stack — runs in parallel to the existing Hindsight install.
+# All ports are shifted to avoid collisions:
+#   Postgres   5432 -> 5433
+#   Neo4j HTTP 7474 -> 7475
+#   Neo4j Bolt 7687 -> 7688
+#   Qdrant     6333 -> 6336  (existing hindsight uses 6333 AND 6334)
+#   Qdrant gRPC 6334 -> 6337
+#
+# Container-/volume-namespace: mm-* (MemoryManager) so nothing clashes with the
+# existing hindsight Docker objects.
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml up -d
+#   docker compose -f docker-compose.dev.yml down            # keep volumes
+#   docker compose -f docker-compose.dev.yml down -v         # nuke volumes
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: mm-postgres
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: hindsight
+      POSTGRES_PASSWORD: hindsight
+      POSTGRES_DB: hindsight
+    volumes:
+      - mm_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hindsight -d hindsight"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  neo4j:
+    image: neo4j:5.18-community
+    container_name: mm-neo4j
+    ports:
+      - "7475:7474"
+      - "7688:7687"
+    environment:
+      NEO4J_AUTH: neo4j/hindsightdev
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
+    volumes:
+      - mm_neo4j_data:/data
+    healthcheck:
+      test: ["CMD", "neo4j", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  qdrant:
+    image: qdrant/qdrant:v1.9.0
+    container_name: mm-qdrant
+    ports:
+      - "6336:6333"
+      - "6337:6334"
+    environment:
+      QDRANT__SERVICE__GRPC_PORT: "6334"
+    volumes:
+      - mm_qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333'"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  mm_postgres_data:
+  mm_neo4j_data:
+  mm_qdrant_data:

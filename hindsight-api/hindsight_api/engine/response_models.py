@@ -471,3 +471,18 @@ class Session(BaseModel):
     def default(cls) -> "Session":
         """Create a default Session with Precision mode and no expectation."""
         return cls(mode=RetrievalMode.PRECISION)
+
+
+# =============================================================================
+# Resolve forward references
+# =============================================================================
+# RecallResult declares two forward-refs:
+#   - `entities: dict[str, "EntityState"]` — defined later in this same module
+#   - `constructed_answer: ConstructedAnswer | None` — TYPE_CHECKING-only import
+#     (avoids circular import: constructive/models.py imports MemoryFact from here)
+# Pydantic v2 does not auto-resolve these in all import orders. We do a runtime
+# import of ConstructedAnswer here (after this module finishes loading enough to
+# break the cycle) and pass it to model_rebuild() via _types_namespace.
+from .constructive.models import ConstructedAnswer  # noqa: E402  (intentional late import)
+
+RecallResult.model_rebuild(_types_namespace={"EntityState": EntityState, "ConstructedAnswer": ConstructedAnswer})
