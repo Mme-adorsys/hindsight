@@ -243,7 +243,20 @@ def units_to_content_dicts(
     Returns:
         List of dicts ready to be used as RetainContentDicts.
     """
-    inherited_keys = ("context", "event_date", "metadata", "entities", "document_id", "tags")
+    # thalamus_scores is included so that Gate scores computed by the API-layer
+    # ThalamusFilter on the raw content propagate to every unit the content
+    # gets split into. Without this, LLM-heuristic scores from fact extraction
+    # would leak through (often with overall=0.0) and the observability views
+    # would show wrong values.
+    inherited_keys = (
+        "context",
+        "event_date",
+        "metadata",
+        "entities",
+        "document_id",
+        "tags",
+        "thalamus_scores",
+    )
     base: dict = {k: source_dict[k] for k in inherited_keys if k in source_dict}
 
     result = []
