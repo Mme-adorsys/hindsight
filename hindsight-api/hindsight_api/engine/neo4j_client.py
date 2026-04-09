@@ -334,6 +334,114 @@ class Neo4jEngineClient:
 
         return await _retry_with_backoff(_traverse)
 
+    async def list_schemas(
+        self,
+        bank_id: str,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """
+        List Schema nodes for a bank with computed member counts.
+
+        Returns list of dicts with keys: schema_id, label, member_count,
+        maturity, avg_strength, created_at, last_activated, tags.
+        Sorted by last_reinforced_at DESC.
+        """
+        driver = self._require_driver()
+
+        cypher = (
+            "MATCH (s:Schema {bank_id: $bank_id}) "
+            "OPTIONAL MATCH (e:Engram)-[:SCHEMA]->(s) "
+            "WITH s, count(e) AS member_count "
+            "RETURN s.schema_id AS schema_id, "
+            "       s.content AS label, "
+            "       member_count, "
+            "       s.strength AS avg_strength, "
+            "       s.created_at AS created_at, "
+            "       s.last_reinforced_at AS last_activated, "
+            "       s.tags AS tags "
+            "ORDER BY s.last_reinforced_at DESC "
+            "LIMIT $limit"
+        )
+
+        async def _query():
+            async with driver.session(database=self._database) as session:
+                result = await session.run(cypher, bank_id=bank_id, limit=limit)
+                records = await result.data()
+                for rec in records:
+                    strength = rec.get("avg_strength") or 0.0
+                    members = rec.get("member_count") or 0
+                    if strength >= 0.6 and members >= 5:
+                        rec["maturity"] = "dominant"
+                    elif strength >= 0.3:
+                        rec["maturity"] = "stable"
+                    else:
+                        rec["maturity"] = "emerging"
+                return records
+
+        return await _retry_with_backoff(_query)
+
+    async def get_schema_detail(
+        self,
+        bank_id: str,
+        schema_id: str,
+    ) -> dict[str, Any] | None:
+        """
+        Get a single Schema node with its member Engrams.
+
+        Returns dict with schema properties + members list, or None if not found.
+        Each member has: engram_id, text_preview, strength.
+        """
+        driver = self._require_driver()
+
+        # Fetch schema node
+        schema_cypher = (
+            "MATCH (s:Schema {schema_id: $schema_id, bank_id: $bank_id}) "
+            "RETURN s.schema_id AS schema_id, "
+            "       s.content AS label, "
+            "       s.strength AS avg_strength, "
+            "       s.created_at AS created_at, "
+            "       s.last_reinforced_at AS last_activated, "
+            "       s.tags AS tags"
+        )
+
+        # Fetch members via :SCHEMA relationship (Engram→Schema)
+        members_cypher = (
+            "MATCH (e:Engram)-[:SCHEMA]->(s:Schema {schema_id: $schema_id, bank_id: $bank_id}) "
+            "RETURN e.engram_id AS engram_id, "
+            "       substring(coalesce(e.content, ''), 0, 200) AS text_preview, "
+            "       e.strength AS strength "
+            "ORDER BY e.strength DESC"
+        )
+
+        async def _query():
+            async with driver.session(database=self._database) as session:
+                # Schema node
+                result = await session.run(schema_cypher, schema_id=schema_id, bank_id=bank_id)
+                schema_rec = await result.single()
+                if not schema_rec:
+                    return None
+
+                schema = dict(schema_rec)
+
+                # Members
+                result = await session.run(members_cypher, schema_id=schema_id, bank_id=bank_id)
+                members = await result.data()
+
+                member_count = len(members)
+                strength = schema.get("avg_strength") or 0.0
+                if strength >= 0.6 and member_count >= 5:
+                    schema["maturity"] = "dominant"
+                elif strength >= 0.3:
+                    schema["maturity"] = "stable"
+                else:
+                    schema["maturity"] = "emerging"
+
+                schema["member_count"] = member_count
+                schema["members"] = [dict(m) for m in members]
+                return schema
+
+        return await _retry_with_backoff(_query)
+
     async def run_cypher(
         self,
         query: str,

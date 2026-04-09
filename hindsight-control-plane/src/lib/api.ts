@@ -131,6 +131,31 @@ export interface NCRHistoryResponse {
   runs: NCRRunHistoryItem[];
 }
 
+export interface SchemaMember {
+  engram_id: string;
+  text_preview: string;
+  strength: number | null;
+}
+
+export interface SchemaItem {
+  schema_id: string;
+  label: string | null;
+  member_count: number;
+  maturity: "emerging" | "stable" | "dominant";
+  avg_strength: number | null;
+  created_at: string | null;
+  last_activated: string | null;
+  tags: string[] | null;
+}
+
+export interface SchemaListResponse {
+  schemas: SchemaItem[];
+}
+
+export interface SchemaDetailResponse extends SchemaItem {
+  members: SchemaMember[];
+}
+
 export class ControlPlaneClient {
   private async fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
     const response = await fetch(path, {
@@ -265,6 +290,27 @@ export class ControlPlaneClient {
     return this.fetchApi<NCRHistoryResponse>(`/api/ncr/history?${qs.toString()}`, {
       cache: "no-store" as RequestCache,
     });
+  }
+
+  /**
+   * List all schemas (Meta-Engrams) for a bank.
+   */
+  async listSchemas(bankId: string, limit?: number) {
+    const qs = new URLSearchParams({ bank_id: bankId });
+    if (limit !== undefined) qs.set("limit", String(limit));
+    return this.fetchApi<SchemaListResponse>(`/api/schemas?${qs.toString()}`, {
+      cache: "no-store" as RequestCache,
+    });
+  }
+
+  /**
+   * Get a single schema with its member Engrams.
+   */
+  async getSchemaDetail(schemaId: string, bankId: string) {
+    return this.fetchApi<SchemaDetailResponse>(
+      `/api/schemas/${encodeURIComponent(schemaId)}?bank_id=${encodeURIComponent(bankId)}`,
+      { cache: "no-store" as RequestCache }
+    );
   }
 
   /**

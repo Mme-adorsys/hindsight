@@ -1001,6 +1001,39 @@ class EngramStatsResponse(BaseModel):
     strength_distribution: dict[str, int]
 
 
+class SchemaMember(BaseModel):
+    """A member Engram of a Schema."""
+
+    engram_id: str
+    text_preview: str
+    strength: float | None = None
+
+
+class SchemaItem(BaseModel):
+    """A Schema (Meta-Engram) in the list response."""
+
+    schema_id: str
+    label: str | None = None
+    member_count: int = 0
+    maturity: str = "emerging"
+    avg_strength: float | None = None
+    created_at: str | None = None
+    last_activated: str | None = None
+    tags: list[str] | None = None
+
+
+class SchemaListResponse(BaseModel):
+    """Response model for listing schemas."""
+
+    schemas: list[SchemaItem]
+
+
+class SchemaDetailResponse(SchemaItem):
+    """Response model for a single schema with its member Engrams."""
+
+    members: list[SchemaMember] = []
+
+
 class OperationResponse(BaseModel):
     """Response model for a single async operation."""
 
@@ -1956,6 +1989,73 @@ def _register_routes(app: FastAPI):
 
             error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
             logger.error(f"Error in /v1/default/banks/{bank_id}/engrams/stats: {error_detail}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.get(
+        "/v1/default/banks/{bank_id}/schemas",
+        response_model=SchemaListResponse,
+        summary="List schemas",
+        description=(
+            "List all Schema nodes (Meta-Engrams) for a memory bank. "
+            "Schemas emerge from frequently co-activated Engrams via Game-of-Life rules "
+            "during the NCR. Sorted by last activation time descending."
+        ),
+        operation_id="list_schemas",
+        tags=["Schemas"],
+    )
+    async def api_list_schemas(
+        bank_id: str,
+        limit: int = Query(default=50, ge=1, le=200),
+        request_context: RequestContext = Depends(get_request_context),
+    ):
+        """List schemas for a memory bank."""
+        try:
+            neo4j = app.state.memory._neo4j
+            if neo4j is None:
+                return SchemaListResponse(schemas=[])
+            rows = await neo4j.list_schemas(bank_id, limit=limit)
+            return SchemaListResponse(schemas=[SchemaItem(**r) for r in rows])
+        except (AuthenticationError, HTTPException):
+            raise
+        except Exception as e:
+            import traceback
+
+            error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+            logger.error(f"Error in /v1/default/banks/{bank_id}/schemas: {error_detail}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.get(
+        "/v1/default/banks/{bank_id}/schemas/{schema_id}",
+        response_model=SchemaDetailResponse,
+        summary="Get schema detail",
+        description=(
+            "Get a single Schema node with all its member Engrams. "
+            "Members are Engrams connected via :SCHEMA relationships."
+        ),
+        operation_id="get_schema_detail",
+        tags=["Schemas"],
+    )
+    async def api_schema_detail(
+        bank_id: str,
+        schema_id: str,
+        request_context: RequestContext = Depends(get_request_context),
+    ):
+        """Get schema detail with member Engrams."""
+        try:
+            neo4j = app.state.memory._neo4j
+            if neo4j is None:
+                raise HTTPException(status_code=404, detail="Schema not found (Neo4j not configured)")
+            detail = await neo4j.get_schema_detail(bank_id, schema_id)
+            if detail is None:
+                raise HTTPException(status_code=404, detail=f"Schema {schema_id} not found")
+            return SchemaDetailResponse(**detail)
+        except (AuthenticationError, HTTPException):
+            raise
+        except Exception as e:
+            import traceback
+
+            error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+            logger.error(f"Error in /v1/default/banks/{bank_id}/schemas/{schema_id}: {error_detail}")
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.get(
