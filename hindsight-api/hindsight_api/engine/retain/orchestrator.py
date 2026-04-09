@@ -791,6 +791,8 @@ async def retain_batch(
                     if budget_profile is not None
                     else llm_registry.get_llm("retain", "observation_synthesis")
                 )
+                # Propagate the triggering session's provenance so observations
+                # inherit session_mode + task_context on their engram_dictionary row.
                 await observation_regeneration.regenerate_observations_batch(
                     conn,
                     embeddings_model,
@@ -798,6 +800,8 @@ async def retain_batch(
                     bank_id,
                     entity_links,
                     log_buffer,
+                    session_mode=session_mode_str,
+                    session_task_context=session_task_context,
                 )
                 entity_ids_for_async = []
                 tracer.record_step(

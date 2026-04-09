@@ -34,7 +34,15 @@ class MemoryFactForObservation:
 
 
 async def regenerate_observations_batch(
-    conn, embeddings_model, llm_config, bank_id: str, entity_links: list[EntityLink], log_buffer: list[str] = None
+    conn,
+    embeddings_model,
+    llm_config,
+    bank_id: str,
+    entity_links: list[EntityLink],
+    log_buffer: list[str] = None,
+    *,
+    session_mode: str | None = None,
+    session_task_context: str | None = None,
 ) -> None:
     """
     Regenerate observations for top entities in this batch.
@@ -49,6 +57,12 @@ async def regenerate_observations_batch(
         bank_id: Bank identifier
         entity_links: Entity links from this batch
         log_buffer: Optional log buffer for timing
+        session_mode: Session mode from the triggering retain. Propagated to
+            the observation's engram_dictionary row so observations inherit
+            the same provenance as the facts that triggered them.
+        session_task_context: Session.task_context from the triggering retain.
+            Same rationale — the observation's encoding happened under the
+            same PFC set + goal bias as the source facts.
     """
     config = get_config()
     TOP_N_ENTITIES = config.observation_top_entities
@@ -121,7 +135,14 @@ async def regenerate_observations_batch(
     for entity_id, entity_name in entities_with_names:
         try:
             obs_ids = await _regenerate_entity_observations(
-                conn, embeddings_model, llm_config, bank_id, entity_id, entity_name
+                conn,
+                embeddings_model,
+                llm_config,
+                bank_id,
+                entity_id,
+                entity_name,
+                session_mode=session_mode,
+                session_task_context=session_task_context,
             )
             total_observations += len(obs_ids)
         except Exception as e:
@@ -135,12 +156,25 @@ async def regenerate_observations_batch(
 
 
 async def _regenerate_entity_observations(
-    conn, embeddings_model, llm_config, bank_id: str, entity_id: str, entity_name: str
+    conn,
+    embeddings_model,
+    llm_config,
+    bank_id: str,
+    entity_id: str,
+    entity_name: str,
+    *,
+    session_mode: str | None = None,
+    session_task_context: str | None = None,
 ) -> list[str]:
     """
     Regenerate observations for a single entity.
 
     Uses the provided connection (part of retain transaction).
+
+    Observations inherit the triggering retain's session_mode and task_context
+    via the optional params. Bio mapping: an observation is a PFC-level
+    abstraction synthesized from recent episodic facts, so it carries the
+    same attentional state as the facts that triggered it.
 
     Args:
         conn: Database connection (from the retain transaction)
@@ -149,6 +183,8 @@ async def _regenerate_entity_observations(
         bank_id: Bank identifier
         entity_id: Entity UUID
         entity_name: Canonical name of the entity
+        session_mode: Session mode of the triggering retain (for provenance).
+        session_task_context: Task context of the triggering retain.
 
     Returns:
         List of created observation IDs
@@ -194,22 +230,31 @@ async def _regenerate_entity_observations(
     if not observations:
         return []
 
-    # Delete old observations for this entity
-    await conn.execute(
+    # Delete old observations for this entity. engram_dictionary has no FK
+    # cascade from memory_units, so we clean it up explicitly first. Collect
+    # the IDs once, then delete from both tables in the same transaction.
+    old_obs_rows = await conn.fetch(
         f"""
-        DELETE FROM {fq_table("memory_units")}
-        WHERE id IN (
-            SELECT mu.id
-            FROM {fq_table("memory_units")} mu
-            JOIN {fq_table("unit_entities")} ue ON mu.id = ue.unit_id
-            WHERE mu.bank_id = $1
-              AND mu.fact_type = 'observation'
-              AND ue.entity_id = $2
-        )
+        SELECT mu.id
+        FROM {fq_table("memory_units")} mu
+        JOIN {fq_table("unit_entities")} ue ON mu.id = ue.unit_id
+        WHERE mu.bank_id = $1
+          AND mu.fact_type = 'observation'
+          AND ue.entity_id = $2
         """,
         bank_id,
         entity_uuid,
     )
+    old_obs_ids = [row["id"] for row in old_obs_rows]
+    if old_obs_ids:
+        await conn.execute(
+            f"DELETE FROM {fq_table('engram_dictionary')} WHERE engram_id = ANY($1::uuid[])",
+            old_obs_ids,
+        )
+        await conn.execute(
+            f"DELETE FROM {fq_table('memory_units')} WHERE id = ANY($1::uuid[])",
+            old_obs_ids,
+        )
 
     # Generate embeddings for new observations
     embeddings = await embedding_utils.generate_embeddings_batch(embeddings_model, observations)
@@ -240,6 +285,35 @@ async def _regenerate_entity_observations(
         )
         obs_id = str(result["id"])
         created_ids.append(obs_id)
+
+        # Mirror the observation into engram_dictionary so it inherits the
+        # triggering retain's provenance (session_mode + task_context) and
+        # shows up with a strength/layer in lifecycle queries. No thalamus
+        # scores are attached because observations are LLM-synthesized
+        # abstractions, not raw inputs — there's no novelty/surprise to score.
+        # Bio mapping: an observation is a PFC consolidation summary — it
+        # carries the encoding context of its source facts but doesn't
+        # re-trigger the thalamus gate.
+        await conn.execute(
+            f"""
+            INSERT INTO {fq_table("engram_dictionary")} (
+                engram_id, bank_id, tags,
+                novelty, surprise, task_relevance, emotional_valence, thalamus_overall,
+                strength, layer, status,
+                expectation, outcome, session_mode, task_context, retain_context
+            ) VALUES ($1, $2, $3, NULL, NULL, NULL, NULL, NULL,
+                      $4, $5, 'active',
+                      NULL, NULL, $6, $7, NULL)
+            ON CONFLICT (engram_id) DO NOTHING
+            """,
+            uuid.UUID(obs_id),
+            bank_id,
+            ["observation", entity_name.lower()],
+            0.3,  # default strength — observations enter at Working-Memory layer
+            "working",
+            session_mode,
+            session_task_context,
+        )
 
         # Link observation to entity
         await conn.execute(
