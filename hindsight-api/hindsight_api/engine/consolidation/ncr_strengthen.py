@@ -151,9 +151,14 @@ class StrengthenProcessor:
             result.errors += batch_result.errors
             result.error_ids.extend(batch_result.error_ids)
 
-            # Promoted entries move to neocortex — excluded from next buffer query.
-            # Only failed entries remain at same offset.
-            offset += batch_result.errors
+            # Advance offset by the full batch size so we never revisit the
+            # same rows within this run. Promoted entries are gone from the
+            # buffer query (layer changed to neocortex), but incremented
+            # entries remain — without advancing past them we'd loop forever,
+            # re-incrementing the same 5 engrams indefinitely.
+            # (Discovered in live testing: ncr_cycles_survived ran up to 183k
+            # on 5 engrams before the process was killed.)
+            offset += len(batch) - batch_result.promoted
 
             logger.info(
                 "[NCRStrengthen] bank=%s batch=%d promoted=%d incremented=%d errors=%d",

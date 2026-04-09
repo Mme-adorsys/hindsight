@@ -641,7 +641,9 @@ export function DataView({ factType }: DataViewProps) {
                                                       ? "bg-yellow-500"
                                                       : "bg-red-500"
                                                 }`}
-                                                style={{ width: `${Math.round(row.strength * 100)}%` }}
+                                                style={{
+                                                  width: `${Math.round(row.strength * 100)}%`,
+                                                }}
                                               />
                                             </div>
                                             <span className="text-[10px] text-muted-foreground">

@@ -172,7 +172,8 @@ export default function BankPage() {
               <div>
                 <h1 className="text-3xl font-bold mb-2 text-foreground">Engram Lifecycle</h1>
                 <p className="text-muted-foreground mb-6">
-                  Layer distribution and strength health across Working Memory, Buffer, and Neocortex.
+                  Layer distribution and strength health across Working Memory, Buffer, and
+                  Neocortex.
                 </p>
                 <EngramLifecycleView />
               </div>
@@ -183,7 +184,8 @@ export default function BankPage() {
               <div>
                 <h1 className="text-3xl font-bold mb-2 text-foreground">Consolidation Dashboard</h1>
                 <p className="text-muted-foreground mb-6">
-                  Trigger the Nightly Consolidation Run, review results, and inspect the run history.
+                  Trigger the Nightly Consolidation Run, review results, and inspect the run
+                  history.
                 </p>
                 <NCRDashboardView />
               </div>

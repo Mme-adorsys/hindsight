@@ -4,15 +4,7 @@ import { useState, useEffect } from "react";
 import { client } from "@/lib/api";
 import type { SystemConfig } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Brain,
-  Layers,
-  Cpu,
-  Server,
-  CheckCircle,
-  AlertCircle,
-  Clock,
-} from "lucide-react";
+import { Brain, Layers, Cpu, Server, CheckCircle, AlertCircle, Clock } from "lucide-react";
 
 function StatusBadge({ name, status }: { name: string; status: string }) {
   const connected = status === "connected";
@@ -24,11 +16,7 @@ function StatusBadge({ name, status }: { name: string; status: string }) {
           : "bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20"
       }`}
     >
-      {connected ? (
-        <CheckCircle className="w-3 h-3" />
-      ) : (
-        <AlertCircle className="w-3 h-3" />
-      )}
+      {connected ? <CheckCircle className="w-3 h-3" /> : <AlertCircle className="w-3 h-3" />}
       {name}
     </span>
   );
@@ -93,7 +81,10 @@ export function SystemConfigSection() {
               </p>
             </div>
             <p className="text-sm font-bold text-foreground capitalize">{config.llm.provider}</p>
-            <p className="text-xs text-muted-foreground font-mono mt-0.5 truncate" title={config.llm.model}>
+            <p
+              className="text-xs text-muted-foreground font-mono mt-0.5 truncate"
+              title={config.llm.model}
+            >
               {config.llm.model}
             </p>
           </div>
@@ -132,16 +123,30 @@ export function SystemConfigSection() {
             </div>
             <div className="space-y-1.5">
               <div>
-                <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Embeddings</p>
-                <p className="text-xs font-medium text-foreground capitalize">{config.embeddings.provider}</p>
-                <p className="text-xs text-muted-foreground font-mono truncate" title={config.embeddings.model}>
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wide">
+                  Embeddings
+                </p>
+                <p className="text-xs font-medium text-foreground capitalize">
+                  {config.embeddings.provider}
+                </p>
+                <p
+                  className="text-xs text-muted-foreground font-mono truncate"
+                  title={config.embeddings.model}
+                >
                   {config.embeddings.model}
                 </p>
               </div>
               <div>
-                <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Reranker</p>
-                <p className="text-xs font-medium text-foreground capitalize">{config.reranker.provider}</p>
-                <p className="text-xs text-muted-foreground font-mono truncate" title={config.reranker.model}>
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wide">
+                  Reranker
+                </p>
+                <p className="text-xs font-medium text-foreground capitalize">
+                  {config.reranker.provider}
+                </p>
+                <p
+                  className="text-xs text-muted-foreground font-mono truncate"
+                  title={config.reranker.model}
+                >
                   {config.reranker.model}
                 </p>
               </div>

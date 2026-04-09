@@ -141,9 +141,7 @@ export function MemoryDetailPanel({
             {/* Engram Metadata */}
             {(memory.strength != null || memory.layer != null || memory.access_count != null) && (
               <div className="p-4 bg-muted/50 rounded-lg">
-                <div className="text-xs font-bold text-muted-foreground uppercase mb-3">
-                  Engram
-                </div>
+                <div className="text-xs font-bold text-muted-foreground uppercase mb-3">Engram</div>
                 <div className="grid grid-cols-3 gap-3">
                   <div>
                     <div className="text-[10px] text-muted-foreground uppercase mb-1">Layer</div>
@@ -177,7 +175,9 @@ export function MemoryDetailPanel({
                             style={{ width: `${Math.round(memory.strength * 100)}%` }}
                           />
                         </div>
-                        <span className="text-xs text-foreground">{memory.strength.toFixed(2)}</span>
+                        <span className="text-xs text-foreground">
+                          {memory.strength.toFixed(2)}
+                        </span>
                       </div>
                     ) : (
                       <span className="text-xs text-muted-foreground">N/A</span>

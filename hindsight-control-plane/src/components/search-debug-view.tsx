@@ -210,23 +210,28 @@ export function SearchDebugView() {
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium text-muted-foreground">Mode:</span>
               <div className="flex gap-1">
-                {(["precision", "exploration", "analogy", "validation"] as SessionMode[]).map((m) => (
-                  <Button
-                    key={m}
-                    variant={mode === m ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setMode(m)}
-                    className="h-8 text-xs capitalize px-3"
-                    title={
-                      m === "precision" ? "Few strong facts, conservative inferences" :
-                      m === "exploration" ? "Many facts including weak ones, bold inferences" :
-                      m === "analogy" ? "Structural similarity, patterns from other domains" :
-                      "Juxtapose contradictions, verify consistency"
-                    }
-                  >
-                    {m}
-                  </Button>
-                ))}
+                {(["precision", "exploration", "analogy", "validation"] as SessionMode[]).map(
+                  (m) => (
+                    <Button
+                      key={m}
+                      variant={mode === m ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setMode(m)}
+                      className="h-8 text-xs capitalize px-3"
+                      title={
+                        m === "precision"
+                          ? "Few strong facts, conservative inferences"
+                          : m === "exploration"
+                            ? "Many facts including weak ones, bold inferences"
+                            : m === "analogy"
+                              ? "Structural similarity, patterns from other domains"
+                              : "Juxtapose contradictions, verify consistency"
+                      }
+                    >
+                      {m}
+                    </Button>
+                  )
+                )}
               </div>
             </div>
 

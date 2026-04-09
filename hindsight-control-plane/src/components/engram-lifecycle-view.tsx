@@ -178,9 +178,7 @@ export function EngramLifecycleView() {
                   </p>
                 </div>
                 <p className="text-2xl font-bold text-foreground">{layer.count.toLocaleString()}</p>
-                <p className="text-xs text-muted-foreground mb-3">
-                  {percent} of total
-                </p>
+                <p className="text-xs text-muted-foreground mb-3">{percent} of total</p>
 
                 {/* Avg strength bar */}
                 <div className="space-y-1">

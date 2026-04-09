@@ -109,9 +109,7 @@ interface SummaryCardProps {
 
 function SummaryCard({ title, icon: Icon, accent, metrics }: SummaryCardProps) {
   return (
-    <div
-      className={`bg-gradient-to-br ${accent} border rounded-xl p-4 h-full`}
-    >
+    <div className={`bg-gradient-to-br ${accent} border rounded-xl p-4 h-full`}>
       <div className="flex items-center gap-2 mb-3">
         <div className="p-1.5 rounded-lg bg-foreground/5">
           <Icon className="w-4 h-4" />
@@ -264,8 +262,8 @@ export function NCRDashboardView() {
                 <AlertDialogTitle>Run Nightly Consolidation?</AlertDialogTitle>
                 <AlertDialogDescription>
                   This will run the full consolidation pipeline for{" "}
-                  <span className="font-mono">{currentBank}</span>. It can take several minutes
-                  and temporarily locks the bank for other NCR runs. Continue?
+                  <span className="font-mono">{currentBank}</span>. It can take several minutes and
+                  temporarily locks the bank for other NCR runs. Continue?
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>

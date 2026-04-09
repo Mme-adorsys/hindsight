@@ -29,9 +29,21 @@ import cytoscape from "cytoscape";
 // ---------------------------------------------------------------------------
 
 const MATURITY_CONFIG: Record<string, { label: string; bg: string; text: string }> = {
-  emerging: { label: "Emerging", bg: "bg-slate-100 dark:bg-slate-800", text: "text-slate-600 dark:text-slate-400" },
-  stable: { label: "Stable", bg: "bg-blue-100 dark:bg-blue-900/40", text: "text-blue-700 dark:text-blue-400" },
-  dominant: { label: "Dominant", bg: "bg-emerald-100 dark:bg-emerald-900/40", text: "text-emerald-700 dark:text-emerald-400" },
+  emerging: {
+    label: "Emerging",
+    bg: "bg-slate-100 dark:bg-slate-800",
+    text: "text-slate-600 dark:text-slate-400",
+  },
+  stable: {
+    label: "Stable",
+    bg: "bg-blue-100 dark:bg-blue-900/40",
+    text: "text-blue-700 dark:text-blue-400",
+  },
+  dominant: {
+    label: "Dominant",
+    bg: "bg-emerald-100 dark:bg-emerald-900/40",
+    text: "text-emerald-700 dark:text-emerald-400",
+  },
 };
 
 // Cytoscape node colors by maturity
@@ -90,7 +102,9 @@ function formatRelativeTime(iso: string | null): string {
 function MaturityBadge({ maturity }: { maturity: string }) {
   const cfg = MATURITY_CONFIG[maturity] || MATURITY_CONFIG.emerging;
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${cfg.bg} ${cfg.text}`}>
+    <span
+      className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${cfg.bg} ${cfg.text}`}
+    >
       {cfg.label}
     </span>
   );
@@ -121,7 +135,12 @@ function SortableHeader({
     >
       <span className="inline-flex items-center gap-1">
         {label}
-        {active && (currentDir === "asc" ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}
+        {active &&
+          (currentDir === "asc" ? (
+            <ChevronUp className="w-3 h-3" />
+          ) : (
+            <ChevronDown className="w-3 h-3" />
+          ))}
       </span>
     </TableHead>
   );
@@ -157,7 +176,8 @@ function SchemaGraph({
       ...members.map((m) => ({
         data: {
           id: m.engram_id,
-          label: (m.text_preview || "").slice(0, 40) + ((m.text_preview || "").length > 40 ? "..." : ""),
+          label:
+            (m.text_preview || "").slice(0, 40) + ((m.text_preview || "").length > 40 ? "..." : ""),
           type: "member",
           strength: m.strength || 0,
         },
@@ -246,7 +266,9 @@ function SchemaGraph({
     };
   }, [schema, members]);
 
-  return <div ref={containerRef} className="w-full h-[300px] rounded-lg border border-border bg-card" />;
+  return (
+    <div ref={containerRef} className="w-full h-[300px] rounded-lg border border-border bg-card" />
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -422,11 +444,41 @@ export function SchemaExplorerView() {
           <Table>
             <TableHeader>
               <TableRow>
-                <SortableHeader label="Label" sortKey="label" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} />
-                <SortableHeader label="Members" sortKey="member_count" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} />
-                <SortableHeader label="Maturity" sortKey="maturity" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} />
-                <SortableHeader label="Strength" sortKey="avg_strength" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} />
-                <SortableHeader label="Last Active" sortKey="last_activated" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} />
+                <SortableHeader
+                  label="Label"
+                  sortKey="label"
+                  currentKey={sortKey}
+                  currentDir={sortDir}
+                  onSort={handleSort}
+                />
+                <SortableHeader
+                  label="Members"
+                  sortKey="member_count"
+                  currentKey={sortKey}
+                  currentDir={sortDir}
+                  onSort={handleSort}
+                />
+                <SortableHeader
+                  label="Maturity"
+                  sortKey="maturity"
+                  currentKey={sortKey}
+                  currentDir={sortDir}
+                  onSort={handleSort}
+                />
+                <SortableHeader
+                  label="Strength"
+                  sortKey="avg_strength"
+                  currentKey={sortKey}
+                  currentDir={sortDir}
+                  onSort={handleSort}
+                />
+                <SortableHeader
+                  label="Last Active"
+                  sortKey="last_activated"
+                  currentKey={sortKey}
+                  currentDir={sortDir}
+                  onSort={handleSort}
+                />
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -444,7 +496,9 @@ export function SchemaExplorerView() {
                     {s.label || <span className="text-muted-foreground italic">untitled</span>}
                   </TableCell>
                   <TableCell>{s.member_count}</TableCell>
-                  <TableCell><MaturityBadge maturity={s.maturity} /></TableCell>
+                  <TableCell>
+                    <MaturityBadge maturity={s.maturity} />
+                  </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-2">
                       <div className="w-16 h-2 rounded-full bg-muted overflow-hidden">
@@ -502,7 +556,9 @@ export function SchemaExplorerView() {
                           className="p-3 rounded-lg border border-border bg-muted/30 hover:bg-muted/60 transition-colors"
                         >
                           <p className="text-sm text-foreground line-clamp-2">
-                            {m.text_preview || <span className="italic text-muted-foreground">no preview</span>}
+                            {m.text_preview || (
+                              <span className="italic text-muted-foreground">no preview</span>
+                            )}
                           </p>
                           <div className="flex items-center gap-3 mt-1.5 text-xs text-muted-foreground">
                             <span>Strength: {((m.strength || 0) * 100).toFixed(0)}%</span>
@@ -516,9 +572,7 @@ export function SchemaExplorerView() {
 
                 {/* Right: Mini-graph */}
                 <div>
-                  <h4 className="text-sm font-semibold text-muted-foreground mb-3">
-                    Schema Graph
-                  </h4>
+                  <h4 className="text-sm font-semibold text-muted-foreground mb-3">Schema Graph</h4>
                   {detail.members.length > 0 ? (
                     <SchemaGraph schema={detail} members={detail.members} />
                   ) : (
