@@ -29,11 +29,12 @@ import {
 import JsonView from "react18-json-view";
 import "react18-json-view/src/style.css";
 import { MemoryDetailPanel } from "./memory-detail-panel";
+import { PipelineTraceView } from "./pipeline-trace-view";
 import type { SessionMode } from "./session-mode-selector";
 
 type FactType = "world" | "experience" | "opinion";
 type Budget = "low" | "mid" | "high";
-type ViewMode = "results" | "trace" | "json";
+type ViewMode = "results" | "pipeline" | "trace" | "json";
 
 export function SearchDebugView() {
   const { currentBank } = useBank();
@@ -53,6 +54,7 @@ export function SearchDebugView() {
   const [entities, setEntities] = useState<any[] | null>(null);
   const [chunks, setChunks] = useState<any[] | null>(null);
   const [trace, setTrace] = useState<any | null>(null);
+  const [pipelineTrace, setPipelineTrace] = useState<any | null>(null);
   const [loading, setLoading] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("results");
   const [selectedMemory, setSelectedMemory] = useState<any | null>(null);
@@ -122,6 +124,7 @@ export function SearchDebugView() {
       setEntities(data.entities || null);
       setChunks(data.chunks || null);
       setTrace(data.trace || null);
+      setPipelineTrace(data.pipeline_trace || null);
       setViewMode("results");
     } catch (error) {
       console.error("Error running search:", error);
@@ -317,7 +320,7 @@ export function SearchDebugView() {
 
               {/* View Mode Tabs */}
               <div className="flex gap-1 bg-muted p-1 rounded-lg">
-                {(["results", "trace", "json"] as ViewMode[]).map((mode) => (
+                {(["results", "pipeline", "trace", "json"] as ViewMode[]).map((mode) => (
                   <button
                     key={mode}
                     onClick={() => setViewMode(mode)}
@@ -327,7 +330,13 @@ export function SearchDebugView() {
                         : "text-muted-foreground hover:text-foreground"
                     }`}
                   >
-                    {mode === "results" ? "Results" : mode === "trace" ? "Trace" : "JSON"}
+                    {mode === "results"
+                      ? "Results"
+                      : mode === "pipeline"
+                        ? "Pipeline"
+                        : mode === "trace"
+                          ? "Trace"
+                          : "JSON"}
                   </button>
                 ))}
               </div>
@@ -384,6 +393,23 @@ export function SearchDebugView() {
                     </Card>
                   );
                 })
+              )}
+            </div>
+          )}
+
+          {/* Pipeline View — Observability Phase B (B7) */}
+          {viewMode === "pipeline" && (
+            <div className="space-y-3">
+              {pipelineTrace ? (
+                <PipelineTraceView trace={pipelineTrace} />
+              ) : (
+                <Card>
+                  <CardContent className="flex flex-col items-center justify-center py-12">
+                    <p className="text-sm text-muted-foreground">
+                      No pipeline trace yet — run a search first.
+                    </p>
+                  </CardContent>
+                </Card>
               )}
             </div>
           )}
@@ -965,6 +991,7 @@ export function SearchDebugView() {
             memory={selectedMemory}
             onClose={() => setSelectedMemory(null)}
             inPanel
+            bankId={currentBank || undefined}
           />
         </div>
       )}

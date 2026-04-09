@@ -3,7 +3,8 @@
 import { useState, useEffect, useCallback, useMemo, Fragment, type ComponentType } from "react";
 import { useBank } from "@/lib/bank-context";
 import { client } from "@/lib/api";
-import type { NCRRunHistoryItem } from "@/lib/api";
+import type { NCRRunHistoryItem, PipelineTrace } from "@/lib/api";
+import { PipelineTraceView } from "./pipeline-trace-view";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
@@ -502,6 +503,17 @@ export function NCRDashboardView() {
                                       </li>
                                     ))}
                                   </ul>
+                                </div>
+                              )}
+                              {run.trace_data && (
+                                <div>
+                                  <p className="font-semibold text-muted-foreground uppercase tracking-wide text-[10px] mb-1">
+                                    Pipeline Trace
+                                  </p>
+                                  <PipelineTraceView
+                                    trace={run.trace_data as unknown as PipelineTrace}
+                                    compact
+                                  />
                                 </div>
                               )}
                             </div>

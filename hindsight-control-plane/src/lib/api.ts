@@ -151,10 +151,61 @@ export interface NCRRunHistoryItem {
   schema_stats: Record<string, unknown> | null;
   promotion_stats: Record<string, unknown> | null;
   errors: string[] | null;
+  // Observability Phase B (B4/B6) — per-run PipelineTrace with one step per NCR phase.
+  trace_data: Record<string, unknown> | null;
 }
 
 export interface NCRHistoryResponse {
   runs: NCRRunHistoryItem[];
+}
+
+// ---------------------------------------------------------------------------
+// Observability Phase B (B5/B6/B7) — PipelineTracer output for retain / recall / NCR.
+// One TraceStep per pipeline phase, flat schema.
+// ---------------------------------------------------------------------------
+
+export interface PipelineTraceStep {
+  name: string;
+  phase: "retain" | "recall" | "ncr";
+  started_at: string;
+  duration_ms: number;
+  status: "ok" | "error" | "skipped";
+  inputs: Record<string, unknown>;
+  outputs: Record<string, unknown>;
+  rationale: string | null;
+  error: string | null;
+}
+
+export interface PipelineTrace {
+  pipeline: "retain" | "recall" | "ncr";
+  bank_id: string;
+  started_at: string;
+  completed_at: string | null;
+  duration_ms: number;
+  steps: PipelineTraceStep[];
+  metadata: Record<string, unknown>;
+}
+
+export interface RetainTraceListItem {
+  id: string;
+  operation_id: string | null;
+  started_at: string;
+  duration_ms: number;
+  step_count: number;
+  status: "ok" | "error";
+}
+
+export interface RetainTraceListResponse {
+  traces: RetainTraceListItem[];
+}
+
+export interface RetainTraceDetail {
+  id: string;
+  bank_id: string;
+  operation_id: string | null;
+  started_at: string;
+  duration_ms: number;
+  trace_data: PipelineTrace;
 }
 
 export interface SchemaMember {
@@ -316,6 +367,28 @@ export class ControlPlaneClient {
     return this.fetchApi<NCRHistoryResponse>(`/api/ncr/history?${qs.toString()}`, {
       cache: "no-store" as RequestCache,
     });
+  }
+
+  /**
+   * List the most recent retain pipeline traces for a bank (Phase B).
+   */
+  async listRetainTraces(bankId: string, limit?: number) {
+    const qs = new URLSearchParams({ bank_id: bankId });
+    if (limit !== undefined) qs.set("limit", String(limit));
+    return this.fetchApi<RetainTraceListResponse>(`/api/retain_traces?${qs.toString()}`, {
+      cache: "no-store" as RequestCache,
+    });
+  }
+
+  /**
+   * Get a single retain trace with the full trace_data payload.
+   */
+  async getRetainTrace(bankId: string, traceId: string) {
+    const qs = new URLSearchParams({ bank_id: bankId });
+    return this.fetchApi<RetainTraceDetail>(
+      `/api/retain_traces/${encodeURIComponent(traceId)}?${qs.toString()}`,
+      { cache: "no-store" as RequestCache }
+    );
   }
 
   /**
