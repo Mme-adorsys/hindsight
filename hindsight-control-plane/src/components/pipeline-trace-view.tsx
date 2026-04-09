@@ -73,8 +73,8 @@ function TraceStepRow({ step }: { step: PipelineTraceStep }) {
               step.status === "error"
                 ? "bg-red-500/10 text-red-700 dark:text-red-300 border border-red-500/30"
                 : step.status === "skipped"
-                ? "bg-gray-500/10 text-gray-600 dark:text-gray-400 border border-gray-500/30"
-                : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30"
+                  ? "bg-gray-500/10 text-gray-600 dark:text-gray-400 border border-gray-500/30"
+                  : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30"
             }`}
           >
             {step.status}
@@ -183,7 +183,12 @@ export function PipelineTraceView({ trace, compact = false }: PipelineTraceViewP
         <div className="flex items-center justify-between mt-2 pt-2 border-t text-xs text-muted-foreground">
           <span>
             {stepCount} steps
-            {errorCount > 0 && <span className="text-red-600 dark:text-red-400"> · {errorCount} error{errorCount === 1 ? "" : "s"}</span>}
+            {errorCount > 0 && (
+              <span className="text-red-600 dark:text-red-400">
+                {" "}
+                · {errorCount} error{errorCount === 1 ? "" : "s"}
+              </span>
+            )}
           </span>
           <span className="tabular-nums">{formatDuration(totalDuration)}</span>
         </div>

@@ -5,11 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Copy, Check, X, Activity, ChevronLeft } from "lucide-react";
 import { DocumentChunkModal } from "./document-chunk-modal";
 import { PipelineTraceView } from "./pipeline-trace-view";
-import {
-  client,
-  type RetainTraceListItem,
-  type RetainTraceDetail,
-} from "@/lib/api";
+import { client, type RetainTraceListItem, type RetainTraceDetail } from "@/lib/api";
 
 interface MemoryDetailPanelProps {
   memory: any;
@@ -695,21 +691,14 @@ export function MemoryDetailPanel({
                   {selectedTrace ? "Retain Trace" : "Recent Retain Traces"}
                 </h3>
               </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 w-7 p-0"
-                onClick={closeTracesModal}
-              >
+              <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={closeTracesModal}>
                 <X className="h-4 w-4" />
               </Button>
             </div>
 
             <div className="flex-1 overflow-y-auto p-4">
               {tracesError && (
-                <div className="text-sm text-red-600 dark:text-red-400 mb-3">
-                  {tracesError}
-                </div>
+                <div className="text-sm text-red-600 dark:text-red-400 mb-3">{tracesError}</div>
               )}
 
               {tracesLoading && !selectedTrace && !traceList && (
@@ -720,9 +709,7 @@ export function MemoryDetailPanel({
 
               {selectedTrace ? (
                 <div className="space-y-3">
-                  <div className="text-xs text-muted-foreground font-mono">
-                    {selectedTrace.id}
-                  </div>
+                  <div className="text-xs text-muted-foreground font-mono">{selectedTrace.id}</div>
                   <PipelineTraceView trace={selectedTrace.trace_data} />
                 </div>
               ) : (
@@ -744,14 +731,10 @@ export function MemoryDetailPanel({
                           <div className="flex items-center gap-2">
                             <span
                               className={`w-2 h-2 rounded-full ${
-                                t.status === "error"
-                                  ? "bg-red-500"
-                                  : "bg-emerald-500"
+                                t.status === "error" ? "bg-red-500" : "bg-emerald-500"
                               }`}
                             />
-                            <span className="font-mono text-xs truncate">
-                              {t.id.slice(0, 8)}…
-                            </span>
+                            <span className="font-mono text-xs truncate">{t.id.slice(0, 8)}…</span>
                             <span className="text-[10px] text-muted-foreground">
                               {t.step_count} steps
                             </span>
