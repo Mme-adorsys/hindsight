@@ -96,7 +96,7 @@ def calculate_thalamus_weight(
         if raw is not None:
             return min(1.0, raw * 1.5)
     keys = ("novelty", "surprise", "task_relevance", "emotional_valence")
-    vals = [thalamus_scores.get(k, 0.0) for k in keys]
+    vals = [thalamus_scores.get(k) or 0.0 for k in keys]
     return sum(vals) / len(keys)
 
 
