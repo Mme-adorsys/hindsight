@@ -383,3 +383,32 @@ async def update_access(pool: asyncpg.Pool, engram_id: str) -> None:
             UUID(engram_id),
             datetime.now(timezone.utc),
         )
+
+
+async def increment_bank_op_count(pool: asyncpg.Pool, bank_id: str) -> int:
+    """Atomically increment banks.op_count and return the new value.
+
+    Called once per retain_batch + once per recall_async to track the total
+    session-cycle count for composite strength scoring (Epic 24).
+    """
+    async with acquire_with_retry(pool) as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE banks
+            SET op_count = op_count + 1
+            WHERE bank_id = $1
+            RETURNING op_count
+            """,
+            bank_id,
+        )
+        return row["op_count"] if row else 0
+
+
+async def get_bank_op_count(pool: asyncpg.Pool, bank_id: str) -> int:
+    """Read the current op_count for a bank (non-mutating)."""
+    async with acquire_with_retry(pool) as conn:
+        row = await conn.fetchrow(
+            "SELECT op_count FROM banks WHERE bank_id = $1",
+            bank_id,
+        )
+        return row["op_count"] if row else 0

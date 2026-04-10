@@ -15,7 +15,12 @@ logger = logging.getLogger(__name__)
 
 
 async def insert_facts_batch(
-    conn, bank_id: str, facts: list[ProcessedFact], document_id: str | None = None
+    conn,
+    bank_id: str,
+    facts: list[ProcessedFact],
+    document_id: str | None = None,
+    *,
+    bank_op_count: int = 0,
 ) -> list[str]:
     """
     Insert facts into the database in batch.
@@ -25,6 +30,8 @@ async def insert_facts_batch(
         bank_id: Bank identifier
         facts: List of ProcessedFact objects to insert
         document_id: Optional document ID to associate with facts
+        bank_op_count: Current bank.op_count — passed through to engram_dictionary
+            as created_at_op for composite strength scoring (Epic 24).
 
     Returns:
         List of unit IDs (UUIDs as strings) for the inserted facts
@@ -98,12 +105,19 @@ async def insert_facts_batch(
 
     # Write tags + thalamus scores to engram_dictionary (same transaction).
     # memory_units.id == engram_dictionary.engram_id — the shared Engram ID.
-    await _insert_engram_dictionary_batch(conn, bank_id, unit_ids, facts)
+    await _insert_engram_dictionary_batch(conn, bank_id, unit_ids, facts, bank_op_count=bank_op_count)
 
     return unit_ids
 
 
-async def _insert_engram_dictionary_batch(conn, bank_id: str, unit_ids: list[str], facts: list[ProcessedFact]) -> None:
+async def _insert_engram_dictionary_batch(
+    conn,
+    bank_id: str,
+    unit_ids: list[str],
+    facts: list[ProcessedFact],
+    *,
+    bank_op_count: int = 0,
+) -> None:
     """Write tags + thalamus scores + retain provenance into engram_dictionary.
 
     Called within the same DB transaction as insert_facts_batch so that
@@ -117,11 +131,16 @@ async def _insert_engram_dictionary_batch(conn, bank_id: str, unit_ids: list[str
       - task_context                      (TEXT, effective task_context)
       - retain_context                    (JSONB, Thalamus rationale dump)
 
+    Epic 24 addition:
+      - created_at_op                     (INT, snapshot of bank.op_count)
+
     Args:
         conn: Active DB connection (already inside a transaction).
         bank_id: Bank identifier.
         unit_ids: UUIDs returned from the memory_units INSERT (one per fact).
         facts: ProcessedFact list in the same order as unit_ids.
+        bank_op_count: Current bank.op_count value — stored as created_at_op
+            so composite strength can compute cycles_alive later.
     """
     for unit_id, fact in zip(unit_ids, facts):
         ts = fact.thalamus_scores
@@ -149,9 +168,10 @@ async def _insert_engram_dictionary_batch(conn, bank_id: str, unit_ids: list[str
                 engram_id, bank_id, tags,
                 novelty, surprise, task_relevance, emotional_valence, thalamus_overall,
                 strength, status,
-                expectation, outcome, session_mode, task_context, retain_context
+                expectation, outcome, session_mode, task_context, retain_context,
+                created_at_op
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                      $11, $12, $13, $14, $15::jsonb)
+                      $11, $12, $13, $14, $15::jsonb, $16)
             ON CONFLICT (engram_id) DO NOTHING
             """,
             uuid.UUID(unit_id),
@@ -169,6 +189,7 @@ async def _insert_engram_dictionary_batch(conn, bank_id: str, unit_ids: list[str
             fact.session_mode,
             fact.task_context,
             json.dumps(retain_context_dict) if retain_context_dict is not None else None,
+            bank_op_count,
         )
 
 
