@@ -1,14 +1,22 @@
 """
-Consolidation 1 — Session → Buffer.
+Consolidation 1 — Selective Working Memory → Buffer Promotion.
 
-Promotes Engrams from Working Memory (layer=NULL) to Engram Buffer (layer='buffer').
-Runs after a session ends or periodically. Idempotent: layer IS NULL is the pending filter.
+Evaluates each Working Memory Engram using the composite strength formula
+(Epic 24) and promotes only those that exceed the PROMOTE_THRESHOLD to
+the Buffer layer. Engrams below ARCHIVE_THRESHOLD_WM are archived.
+Items that fall between thresholds remain in Working Memory until the
+next NCR cycle, giving them more time to accumulate recall-hits.
 
 Biological mapping:
-  LTP Early (Pre-Engram Buffer, fragile) → LTP Late (Consolidated Engram, after NCR)
+  Sharp-Wave Ripples (SWS) selectively replay high-salience traces from
+  the hippocampus. Only replayed traces consolidate into semantic memory.
+  The composite score combines synaptic tagging (Thalamus) with
+  rehearsal-dependent capture (access frequency) — without rehearsal
+  even a strong initial tag eventually fades.
+
   Ref: concept.md ch. 12 — Consolidation Pipeline, 4-Stufen-Modell
 
-Epic 12, Story 01.
+Epic 12 (original), refactored Epic 24.
 """
 
 from __future__ import annotations
@@ -20,6 +28,11 @@ from dataclasses import dataclass, field
 import asyncpg
 
 from hindsight_api.engine import engram_dictionary as dict_repo
+from hindsight_api.engine.consolidation.scoring import (
+    ARCHIVE_THRESHOLD_WM,
+    PROMOTE_THRESHOLD,
+    compute_composite_strength,
+)
 from hindsight_api.engine.engram_storage import EngramStorageInterface
 
 logger = logging.getLogger(__name__)
@@ -30,8 +43,6 @@ logger = logging.getLogger(__name__)
 
 _BATCH_SIZE = 100
 _TIMEOUT_SECONDS = 300  # 5 minutes
-_BASE_STRENGTH = 0.1
-_BUFFER_STRENGTH_CAP = 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +56,8 @@ class ConsolidationResult:
 
     total: int = 0
     consolidated: int = 0
-    skipped: int = 0
+    skipped: int = 0  # stayed in Working Memory (below promote, above archive)
+    archived: int = 0  # fell below archive threshold
     errors: int = 0
     error_ids: list[str] = field(default_factory=list)
 
@@ -57,12 +69,15 @@ class ConsolidationResult:
 
 class Consolidation1Service:
     """
-    Promotes unconsolidated Engrams (layer=NULL) to buffer layer.
+    Selectively promotes Working Memory Engrams to the Buffer layer.
 
-    Strength is initialized from thalamus_overall:
-        strength = min(thalamus_overall * 0.5 + BASE_STRENGTH, BUFFER_STRENGTH_CAP)
+    For each unconsolidated Engram, computes:
+        composite = 0.7 × thalamus_overall + 0.3 × recount_score
+    where recount_score = log(1 + access_count) / log(2 + cycles_alive).
 
-    If thalamus_overall is absent, strength defaults to BASE_STRENGTH.
+    - composite >= PROMOTE_THRESHOLD (0.4) → layer = 'buffer'
+    - composite <  ARCHIVE_THRESHOLD_WM (0.08) → status = 'archived'
+    - otherwise → stays in Working Memory for the next cycle
 
     Args:
         pool:            asyncpg connection pool (PostgreSQL).
@@ -89,9 +104,12 @@ class Consolidation1Service:
             bank_id: The memory bank to consolidate.
 
         Returns:
-            ConsolidationResult with counts of consolidated, skipped, errors.
+            ConsolidationResult with counts.
         """
         result = ConsolidationResult()
+
+        # Read current bank.op_count once — used for cycles_alive per Engram.
+        bank_op_count = await dict_repo.get_bank_op_count(self._pool, bank_id)
 
         async def _run() -> None:
             offset = 0
@@ -106,23 +124,26 @@ class Consolidation1Service:
                     break
 
                 result.total += len(batch)
-                batch_result = await self._process_batch(batch)
+                batch_result = await self._process_batch(batch, bank_op_count)
                 result.consolidated += batch_result.consolidated
                 result.skipped += batch_result.skipped
+                result.archived += batch_result.archived
                 result.errors += batch_result.errors
                 result.error_ids.extend(batch_result.error_ids)
 
-                # Advance offset only for skipped/error entries —
-                # consolidated entries no longer appear in subsequent queries
-                # (layer IS NULL filter excludes them), so we only need to
-                # skip past entries that failed to update.
+                # Advance offset for entries that did NOT change their layer filter
+                # status. Promoted → layer='buffer' (exits IS NULL filter).
+                # Archived → status='archived' (exits status='active' filter).
+                # Skipped → stays in place, need to advance past it.
                 offset += batch_result.skipped + batch_result.errors
 
                 logger.info(
-                    "[Consolidation1] bank=%s batch_size=%d consolidated=%d errors=%d",
+                    "[Consolidation1] bank=%s batch=%d promoted=%d skipped=%d archived=%d errors=%d",
                     bank_id,
                     len(batch),
                     batch_result.consolidated,
+                    batch_result.skipped,
+                    batch_result.archived,
                     batch_result.errors,
                 )
 
@@ -132,11 +153,12 @@ class Consolidation1Service:
             logger.warning("[Consolidation1] Timeout after %ds for bank=%s", _TIMEOUT_SECONDS, bank_id)
 
         logger.info(
-            "[Consolidation1] Done. bank=%s total=%d consolidated=%d skipped=%d errors=%d",
+            "[Consolidation1] Done. bank=%s total=%d promoted=%d skipped=%d archived=%d errors=%d",
             bank_id,
             result.total,
             result.consolidated,
             result.skipped,
+            result.archived,
             result.errors,
         )
         return result
@@ -145,43 +167,47 @@ class Consolidation1Service:
     # Internals
     # -----------------------------------------------------------------------
 
-    async def _process_batch(self, batch: list[dict]) -> ConsolidationResult:
+    async def _process_batch(self, batch: list[dict], bank_op_count: int) -> ConsolidationResult:
         """Process a single batch of unconsolidated entries."""
         result = ConsolidationResult()
 
         for entry in batch:
             engram_id = str(entry["engram_id"])
             try:
-                strength = _compute_initial_strength(entry.get("thalamus_overall"))
-                # Update Dictionary + mirror layer/strength to Neo4j via StorageService
-                await self._storage.update_metadata(
-                    engram_id,
-                    {"layer": "buffer", "strength": strength},
-                )
-                result.consolidated += 1
+                thalamus = entry.get("thalamus_overall")
+                access_count = entry.get("access_count") or 0
+                created_at_op = entry.get("created_at_op") or 0
+                cycles_alive = max(0, bank_op_count - created_at_op)
+
+                strength = compute_composite_strength(thalamus, access_count, cycles_alive)
+
+                if strength >= PROMOTE_THRESHOLD:
+                    # Promote to buffer — the Engram earned its place
+                    await self._storage.update_metadata(
+                        engram_id,
+                        {"layer": "buffer", "strength": strength},
+                    )
+                    result.consolidated += 1
+                elif strength < ARCHIVE_THRESHOLD_WM:
+                    # Archive — too weak to ever consolidate
+                    await self._storage.update_metadata(
+                        engram_id,
+                        {"status": "archived", "strength": strength},
+                    )
+                    result.archived += 1
+                else:
+                    # Stay in Working Memory — not yet strong enough, but not
+                    # dead either. Update strength so the next cycle sees the
+                    # current composite score.
+                    await self._storage.update_metadata(
+                        engram_id,
+                        {"strength": strength},
+                    )
+                    result.skipped += 1
+
             except Exception as exc:
                 logger.error("[Consolidation1] Failed engram=%s: %s", engram_id, exc)
                 result.errors += 1
                 result.error_ids.append(engram_id)
 
         return result
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _compute_initial_strength(thalamus_overall: float | None) -> float:
-    """
-    Compute initial buffer strength from thalamus overall score.
-
-        strength = min(thalamus_overall * 0.5 + BASE_STRENGTH, BUFFER_STRENGTH_CAP)
-
-    Buffer Engrams never start stronger than 0.5 — they must earn neocortex
-    promotion through repeated activation during NCR.
-    """
-    if thalamus_overall is None:
-        return _BASE_STRENGTH
-    raw = thalamus_overall * 0.5 + _BASE_STRENGTH
-    return min(raw, _BUFFER_STRENGTH_CAP)
