@@ -92,6 +92,15 @@ async def retain_batch(
     if document_id is not None:
         tracer.set_metadata("document_id", document_id)
 
+    # Epic 24: increment bank.op_count and capture the new value so that
+    # every engram created in this batch gets created_at_op = current op_count.
+    from ..engram_dictionary import increment_bank_op_count as _inc_op
+
+    try:
+        _bank_op_count = await _inc_op(pool, bank_id)
+    except Exception:
+        _bank_op_count = 0
+
     # Buffer all logs
     log_buffer = []
     log_buffer.append(f"{'=' * 60}")
@@ -538,7 +547,9 @@ async def retain_batch(
             keep_facts = [f for f in facts_to_store if id(f) not in replace_set]
 
             step_start = time.time()
-            new_unit_ids = await fact_storage.insert_facts_batch(conn, bank_id, keep_facts)
+            new_unit_ids = await fact_storage.insert_facts_batch(
+                conn, bank_id, keep_facts, bank_op_count=_bank_op_count
+            )
             _r5_duration_ms = (time.time() - step_start) * 1000
             log_buffer.append(f"[5] Insert facts: {len(new_unit_ids)} units in {_r5_duration_ms / 1000:.3f}s")
             tracer.record_step(

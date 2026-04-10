@@ -152,6 +152,16 @@ class RecallOrchestrator:
         # Authenticate tenant and set schema in context (for fq_table())
         await self._ctx.authenticate_tenant(request_context)
 
+        # Epic 24: increment bank.op_count for composite strength scoring.
+        # Non-blocking — failure must not break the recall itself.
+        try:
+            from . import engram_dictionary as _dict_repo_top
+
+            _pool_for_op = await self._ctx.get_pool()
+            await _dict_repo_top.increment_bank_op_count(_pool_for_op, bank_id)
+        except Exception as _op_err:
+            logger.warning("bank.op_count increment failed (non-blocking): %s", _op_err)
+
         # Resolve ModeConfig for session-aware retrieval (Epic 06 wire-through; used in Epic 07)
         mode_config = self._ctx.resolve_session_config(session)
         retrieval_mode = session.mode if session else None
@@ -1019,6 +1029,27 @@ class RecallOrchestrator:
             # Step 5: Truncate to thinking_budget * 2 for token filtering
             rerank_limit = thinking_budget * 2
             top_scored = scored_results[:rerank_limit]
+
+            # Step 5.5 (Epic 24): Update access_count for all top-scored engrams.
+            # Bio mapping: hippocampal reactivation — each recall-hit strengthens
+            # the synaptic trace, contributing to the composite strength score.
+            from . import engram_dictionary as _dict_repo
+
+            _hit_ids = [sr.id for sr in top_scored]
+            if _hit_ids:
+                try:
+                    async with acquire_with_retry(pool) as _access_conn:
+                        await _access_conn.execute(
+                            """
+                            UPDATE engram_dictionary
+                            SET access_count = access_count + 1,
+                                last_accessed = NOW()
+                            WHERE engram_id = ANY($1::uuid[])
+                            """,
+                            [__import__("uuid").UUID(uid) for uid in _hit_ids],
+                        )
+                except Exception as _access_err:
+                    logger.warning("access_count update failed (non-blocking): %s", _access_err)
 
             # Step 6: Token budget filtering
             step_start = time.time()
