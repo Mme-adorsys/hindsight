@@ -167,11 +167,11 @@ async def _insert_engram_dictionary_batch(
             INSERT INTO engram_dictionary (
                 engram_id, bank_id, tags,
                 novelty, surprise, task_relevance, emotional_valence, thalamus_overall,
-                strength, status,
+                strength, layer, status,
                 expectation, outcome, session_mode, task_context, retain_context,
                 created_at_op
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                      $11, $12, $13, $14, $15::jsonb, $16)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                      $12, $13, $14, $15, $16::jsonb, $17)
             ON CONFLICT (engram_id) DO NOTHING
             """,
             uuid.UUID(unit_id),
@@ -183,6 +183,7 @@ async def _insert_engram_dictionary_batch(
             ts.emotional_valence if ts else None,
             ts.overall if ts else None,
             0.0,
+            "working",
             "active",
             fact.expectation,
             fact.outcome,

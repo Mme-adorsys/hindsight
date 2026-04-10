@@ -385,7 +385,7 @@ class EngramDictionary(Base):
     bank = relationship("Bank", back_populates="engram_entries")
 
     __table_args__ = (
-        CheckConstraint("layer IN ('buffer', 'neocortex')", name="engram_dictionary_layer_check"),
+        CheckConstraint("layer IN ('working', 'buffer', 'neocortex')", name="engram_dictionary_layer_check"),
         CheckConstraint("status IN ('active', 'archived', 'decayed')", name="engram_dictionary_status_check"),
         Index("idx_engram_dictionary_strength", "strength"),
         Index("idx_engram_dictionary_layer", "layer"),

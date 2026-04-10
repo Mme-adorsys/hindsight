@@ -275,10 +275,12 @@ async def list_unconsolidated(
     offset: int = 0,
 ) -> list[dict[str, Any]]:
     """
-    Return engram_dictionary entries that have not yet been assigned a layer.
+    Return engram_dictionary entries in Working Memory (candidates for Consolidation 1).
 
-    Used by Consolidation1Service to find memory_units ready for the buffer layer.
-    Filter: layer IS NULL AND status = 'active'.
+    Used by Consolidation1Service to find Engrams eligible for selective
+    promotion to the Buffer. Includes both `layer='working'` (new style,
+    Epic 24) and `layer IS NULL` (legacy entries created before the
+    default-layer fix).
 
     Args:
         pool: asyncpg connection pool.
@@ -293,7 +295,9 @@ async def list_unconsolidated(
         rows = await conn.fetch(
             """
             SELECT * FROM engram_dictionary
-            WHERE bank_id = $1 AND layer IS NULL AND status = 'active'
+            WHERE bank_id = $1
+              AND (layer IS NULL OR layer = 'working')
+              AND status = 'active'
             ORDER BY created_at ASC
             LIMIT $2 OFFSET $3
             """,
