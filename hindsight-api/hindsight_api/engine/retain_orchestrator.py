@@ -464,10 +464,21 @@ class RetainOrchestrator:
         else:
             existing_embeddings = np.vstack(embedding_arrays)
 
+        # Normalize existing embeddings for cosine similarity (dot product
+        # on normalized vectors = cosine similarity). Without normalization,
+        # models like paraphrase-multilingual-MiniLM produce norms of 3-5,
+        # making dot products >> 1.0 and always exceeding the 0.95 threshold.
+        norms = np.linalg.norm(existing_embeddings, axis=1, keepdims=True)
+        norms = np.where(norms == 0, 1, norms)  # avoid division by zero
+        existing_normalized = existing_embeddings / norms
+
         results: list[DuplicateResult] = []
         for embedding in embeddings:
-            emb_array = np.array(embedding)
-            similarities = np.dot(existing_embeddings, emb_array)
+            emb_array = np.array(embedding, dtype=np.float32)
+            emb_norm = np.linalg.norm(emb_array)
+            if emb_norm > 0:
+                emb_array = emb_array / emb_norm
+            similarities = np.dot(existing_normalized, emb_array)
             max_sim = float(np.max(similarities)) if len(similarities) > 0 else 0.0
             if max_sim > similarity_threshold:
                 best_idx = int(np.argmax(similarities))
