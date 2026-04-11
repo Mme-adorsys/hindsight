@@ -508,7 +508,14 @@ def _chunk_conversation(turns: list[dict], max_chars: int) -> list[str]:
 # Concise extraction prompt (default) - selective, high-quality facts
 CONCISE_FACT_EXTRACTION_PROMPT = """Extract SIGNIFICANT facts from text. Be SELECTIVE - only extract facts worth remembering long-term.
 
-LANGUAGE RULE (CRITICAL): Output facts in the EXACT SAME language as the input text. If input is Japanese, output Japanese. If input is Chinese, output Chinese. NEVER translate to English. Preserve original language completely.
+══════════════════════════════════════════════════════════════════════════
+LANGUAGE RULE — HIGHEST PRIORITY (MUST be followed before all other rules)
+══════════════════════════════════════════════════════════════════════════
+Output ALL facts, entity names, and descriptions in the EXACT SAME language as the input text.
+- If input is German → output German facts. Example: "PostgreSQL 17 führt MERGE ein" NOT "PostgreSQL 17 introduces MERGE"
+- If input is Japanese → output Japanese. If input is Chinese → output Chinese.
+- NEVER translate to English. NEVER summarize in English. Preserve the original language completely.
+- This applies to the "fact" field, entity names, tags, and all other text output.
 
 {fact_types_instruction}
 
@@ -630,8 +637,12 @@ Ask: "Would this be useful to recall in 6 months?" If no, skip it."""
 # Verbose extraction prompt - detailed, comprehensive facts (legacy mode)
 VERBOSE_FACT_EXTRACTION_PROMPT = """Extract facts from text into structured format with FIVE required dimensions - BE EXTREMELY DETAILED.
 
-LANGUAGE REQUIREMENT: Detect the language of the input text. All extracted facts, entity names, descriptions,
-and other output MUST be in the SAME language as the input. Do not translate to English if the input is in another language.
+══════════════════════════════════════════════════════════════════════════
+LANGUAGE RULE — HIGHEST PRIORITY
+══════════════════════════════════════════════════════════════════════════
+Output ALL facts, entity names, and descriptions in the EXACT SAME language as the input text.
+- If input is German → output German. NEVER translate to English.
+- This applies to the "fact" field, entity names, tags, and all other text output.
 
 {fact_types_instruction}
 
