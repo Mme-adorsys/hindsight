@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 
 from ...config import get_config
 from ..db_utils import acquire_with_retry
+from ..engram_types import ThalamusScores
 from ..llm_routing import LLMRegistry
 from ..tracer import PipelineTrace, PipelineTracer
 from . import bank_utils
@@ -225,20 +226,45 @@ async def retain_batch(
         ),
     )
 
-    # Apply gate ThalamusScores to every fact. Since Epic 16 the gate is
-    # the authoritative source: all four dimensions are deterministic
-    # embedding formulas computed in ThalamusFilter, not LLM heuristics.
-    # The LLM fact-extraction prompt may still produce `thalamus_scores`
-    # for legacy reasons — we intentionally ignore those and use the gate
-    # output so the ThalamusRationale (novelty_max_similar_id etc.) that
-    # was computed from the actual embedding search stays attached and
-    # lands in engram_dictionary.retain_context (Phase A3 — Apr 2026).
+    # Hybrid Thalamus scoring: merge gate (embedding-based) and LLM scores.
+    #
+    # - novelty, task_relevance: always from gate (embedding distance is more
+    #   reliable than LLM estimation for these dimensions).
+    # - surprise, emotional_valence: from gate when expectation+outcome were
+    #   provided (real prediction-error computation). When they were NOT
+    #   provided the gate falls back to static defaults (0.5 / 0.3) which
+    #   carry no signal — in that case we keep the LLM-estimated scores
+    #   from fact extraction (no extra cost, they come with the extraction
+    #   call). This lets emotionally charged content ("critical incident")
+    #   score higher than neutral content ("set timeout to 5s") even without
+    #   explicit expectation/outcome.
     for fact in extracted_facts:
         if fact.content_index < len(contents_dicts):
             content_dict = contents_dicts[fact.content_index]
             gate_scores = content_dict.get("thalamus_scores")
             if gate_scores is not None:
-                fact.thalamus_scores = gate_scores
+                llm_scores = fact.thalamus_scores
+                gate_computed_pe = (
+                    gate_scores.rationale is not None
+                    and gate_scores.rationale.surprise_expectation_provided
+                    and gate_scores.rationale.surprise_outcome_provided
+                )
+
+                if llm_scores is None or gate_computed_pe:
+                    # No LLM scores to fall back to, or gate actually computed
+                    # surprise/emotional from real embeddings → use gate entirely
+                    fact.thalamus_scores = gate_scores
+                else:
+                    # Gate used fallback defaults for surprise/emotional —
+                    # keep LLM estimates for those, use gate for the rest
+                    fact.thalamus_scores = ThalamusScores(
+                        novelty=gate_scores.novelty,
+                        task_relevance=gate_scores.task_relevance,
+                        surprise=llm_scores.surprise,
+                        emotional_valence=llm_scores.emotional_valence,
+                        overall=gate_scores.overall,
+                        rationale=gate_scores.rationale,
+                    )
             # Propagate API Enrichment fields (Epic 15)
             if fact.expectation is None and content_dict.get("expectation"):
                 fact.expectation = content_dict["expectation"]

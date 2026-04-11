@@ -1,21 +1,29 @@
 """
-Composite Strength Scoring for Selective Consolidation (Epic 24).
+Composite Strength Scoring for Selective Consolidation (Epic 24, revised).
 
-The composite strength score combines the initial Thalamus gate saliency
-with a logarithmic access-frequency metric to determine whether an
-Engram in Working Memory should be promoted to the Buffer.
+The composite strength score combines a recall-frequency metric with a
+saliency boost from emotional valence and surprise to determine whether
+a Working Memory Engram should be promoted to the Buffer.
 
 Formula:
-    recount_score = log(1 + access_count) / log(2 + cycles_alive)
-    total_score   = w_thalamus * thalamus_overall + w_recount * recount_score
+    saliency      = max(emotional_valence, surprise)
+    recall_score  = log(1 + access_count) / log(2 + cycles_alive)
+    composite     = recall_score + SALIENCY_WEIGHT * saliency
+
+Two hard gates must be passed before the score is evaluated:
+    1. access_count >= MIN_ACCESS_FOR_PROMOTE  (rehearsal required)
+    2. novelty     >= MIN_NOVELTY_FOR_PROMOTE   (only new info consolidates)
+
+The promote threshold is mode-dependent (MODE_PROMOTE_THRESHOLDS),
+keyed on the session_mode at Engram creation time.
 
 Bio mapping:
-- Thalamus component = synaptic tagging (initial plasticity marker)
-- Recount component  = rehearsal-dependent capture (repeated reactivation)
-- Logarithmic decay  = natural forgetting curve in hippocampus
-- Asymmetric recovery = a reactivation of an old memory boosts the
-  numerator (log scale) proportionally more than one additional cycle
-  erodes the denominator
+- Recall score    = rehearsal-dependent capture (repeated reactivation)
+- Saliency boost  = amygdala modulation (emotional) + noradrenaline (surprise)
+- Novelty gate    = CA1 mismatch detection — known info is not re-consolidated
+- Logarithmic decay = natural forgetting curve in hippocampus
+- Min-access gate = STC requirement: tagging alone is insufficient,
+  capture (rehearsal) must also occur
 
 Ref: concept.md ch. 12 (Consolidation Pipeline), STC model.
 """
@@ -24,12 +32,35 @@ from __future__ import annotations
 
 import math
 
-# Default weights (user-confirmed 70/30 split).
-W_THALAMUS: float = 0.7
-W_RECOUNT: float = 0.3
+# ---------------------------------------------------------------------------
+# Hard gates
+# ---------------------------------------------------------------------------
 
-# Thresholds
-PROMOTE_THRESHOLD: float = 0.4
+MIN_ACCESS_FOR_PROMOTE: int = 5  # STC: rehearsal required for consolidation
+MIN_NOVELTY_FOR_PROMOTE: float = 0.2  # CA1: only novel info consolidates
+
+# ---------------------------------------------------------------------------
+# Score parameters
+# ---------------------------------------------------------------------------
+
+SALIENCY_WEIGHT: float = 0.3  # max bonus = 0.3 (at saliency=1.0)
+
+# ---------------------------------------------------------------------------
+# Mode-dependent promote thresholds
+# ---------------------------------------------------------------------------
+
+MODE_PROMOTE_THRESHOLDS: dict[str, float] = {
+    "precision": 0.8,
+    "validation": 0.7,
+    "analogy": 0.6,
+    "exploration": 0.5,
+}
+DEFAULT_PROMOTE_THRESHOLD: float = 0.7  # fallback when mode is unknown
+
+# ---------------------------------------------------------------------------
+# Archive threshold (unchanged from Epic 24)
+# ---------------------------------------------------------------------------
+
 ARCHIVE_THRESHOLD_WM: float = 0.08
 ARCHIVE_THRESHOLD_BUFFER: float = 0.05
 
@@ -37,7 +68,7 @@ ARCHIVE_THRESHOLD_BUFFER: float = 0.05
 def compute_recount_score(access_count: int, cycles_alive: int) -> float:
     """Logarithmic access-frequency metric.
 
-    Returns a value in [0, ~1.0]:
+    Returns a value in [0, ~1.0+]:
     - 0.0 when access_count == 0 (never accessed)
     - approaches 1.0 when accesses >> cycles
     - decays logarithmically as cycles_alive grows without new accesses
@@ -58,25 +89,44 @@ def compute_recount_score(access_count: int, cycles_alive: int) -> float:
 
 
 def compute_composite_strength(
-    thalamus_overall: float | None,
+    emotional_valence: float | None,
+    surprise: float | None,
     access_count: int,
     cycles_alive: int,
     *,
-    w_thalamus: float = W_THALAMUS,
-    w_recount: float = W_RECOUNT,
+    saliency_weight: float = SALIENCY_WEIGHT,
 ) -> float:
     """Compute the composite strength score for an Engram.
 
+    The score is primarily driven by recall frequency (access_count),
+    with a saliency boost from emotional_valence and surprise.
+
     Args:
-        thalamus_overall: Initial Thalamus gate score [0, 1]. None → 0.0.
+        emotional_valence: Amygdala modulation score [0, 1]. None → 0.0.
+        surprise: Noradrenaline surprise score [0, 1]. None → 0.0.
         access_count: Number of recall hits for this Engram.
         cycles_alive: bank.op_count - engram.created_at_op (session-relative age).
-        w_thalamus: Weight for the Thalamus component (default 0.7).
-        w_recount: Weight for the recount component (default 0.3).
+        saliency_weight: Weight for the saliency boost (default 0.3).
 
     Returns:
-        Composite strength in [0, ~1.0].
+        Composite strength score (unbounded above, but typically 0–2).
     """
-    thalamus = thalamus_overall if thalamus_overall is not None else 0.0
-    recount = compute_recount_score(access_count, cycles_alive)
-    return w_thalamus * thalamus + w_recount * recount
+    ev = emotional_valence if emotional_valence is not None else 0.0
+    sur = surprise if surprise is not None else 0.0
+    saliency = max(ev, sur)
+    recall = compute_recount_score(access_count, cycles_alive)
+    return recall + saliency_weight * saliency
+
+
+def get_promote_threshold(mode: str | None) -> float:
+    """Return the promote threshold for a given session mode.
+
+    Args:
+        mode: Session mode at Engram creation time. None → DEFAULT.
+
+    Returns:
+        Threshold value the composite score must reach for promotion.
+    """
+    if mode is None:
+        return DEFAULT_PROMOTE_THRESHOLD
+    return MODE_PROMOTE_THRESHOLDS.get(mode, DEFAULT_PROMOTE_THRESHOLD)

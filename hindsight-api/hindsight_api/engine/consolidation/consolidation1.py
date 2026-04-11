@@ -1,18 +1,25 @@
 """
 Consolidation 1 — Selective Working Memory → Buffer Promotion.
 
-Evaluates each Working Memory Engram using the composite strength formula
-(Epic 24) and promotes only those that exceed the PROMOTE_THRESHOLD to
-the Buffer layer. Engrams below ARCHIVE_THRESHOLD_WM are archived.
-Items that fall between thresholds remain in Working Memory until the
-next NCR cycle, giving them more time to accumulate recall-hits.
+Evaluates each Working Memory Engram using a recall-driven composite
+score with saliency boost and two hard gates:
+
+  1. Novelty gate:  novelty < MIN_NOVELTY_FOR_PROMOTE → archive
+     (known information is not worth consolidating)
+  2. Access gate:   access_count < MIN_ACCESS_FOR_PROMOTE → stay in WM
+     (STC: rehearsal is required for capture)
+  3. Score gate:    composite >= mode-dependent threshold → promote
+     composite = recall_score + SALIENCY_WEIGHT * max(emotional_valence, surprise)
+
+The promote threshold depends on the session_mode at Engram creation:
+  precision=0.8, validation=0.7, analogy=0.6, exploration=0.5
 
 Biological mapping:
   Sharp-Wave Ripples (SWS) selectively replay high-salience traces from
-  the hippocampus. Only replayed traces consolidate into semantic memory.
-  The composite score combines synaptic tagging (Thalamus) with
-  rehearsal-dependent capture (access frequency) — without rehearsal
-  even a strong initial tag eventually fades.
+  the hippocampus. Only traces that have been reactivated (recalled)
+  sufficiently consolidate into semantic memory. Emotional significance
+  and surprise lower the consolidation bar but cannot substitute for
+  rehearsal — matching the Synaptic Tagging & Capture model.
 
   Ref: concept.md ch. 12 — Consolidation Pipeline, 4-Stufen-Modell
 
@@ -30,8 +37,10 @@ import asyncpg
 from hindsight_api.engine import engram_dictionary as dict_repo
 from hindsight_api.engine.consolidation.scoring import (
     ARCHIVE_THRESHOLD_WM,
-    PROMOTE_THRESHOLD,
+    MIN_ACCESS_FOR_PROMOTE,
+    MIN_NOVELTY_FOR_PROMOTE,
     compute_composite_strength,
+    get_promote_threshold,
 )
 from hindsight_api.engine.engram_storage import EngramStorageInterface
 
@@ -57,7 +66,7 @@ class ConsolidationResult:
     total: int = 0
     consolidated: int = 0
     skipped: int = 0  # stayed in Working Memory (below promote, above archive)
-    archived: int = 0  # fell below archive threshold
+    archived: int = 0  # fell below archive threshold or novelty gate
     errors: int = 0
     error_ids: list[str] = field(default_factory=list)
 
@@ -71,13 +80,26 @@ class Consolidation1Service:
     """
     Selectively promotes Working Memory Engrams to the Buffer layer.
 
-    For each unconsolidated Engram, computes:
-        composite = 0.7 × thalamus_overall + 0.3 × recount_score
-    where recount_score = log(1 + access_count) / log(2 + cycles_alive).
+    Decision logic per Engram (4 outcomes):
 
-    - composite >= PROMOTE_THRESHOLD (0.4) → layer = 'buffer'
-    - composite <  ARCHIVE_THRESHOLD_WM (0.08) → status = 'archived'
-    - otherwise → stays in Working Memory for the next cycle
+    1. novelty < MIN_NOVELTY (0.2)
+       → archive (known info, not worth keeping)
+
+    2. access_count < MIN_ACCESS (5)
+       → stay in WM (not yet rehearsed enough — STC capture pending)
+
+    3. composite >= mode-dependent threshold
+       → promote to buffer (earned through recall + saliency)
+
+    4. otherwise
+       → stay in WM (score too low, needs more recalls)
+
+    Composite score:
+        saliency = max(emotional_valence, surprise)
+        recall_score = log(1 + access_count) / log(2 + cycles_alive)
+        composite = recall_score + 0.3 * saliency
+
+    Mode thresholds: precision=0.8, validation=0.7, analogy=0.6, exploration=0.5
 
     Args:
         pool:            asyncpg connection pool (PostgreSQL).
@@ -174,31 +196,44 @@ class Consolidation1Service:
         for entry in batch:
             engram_id = str(entry["engram_id"])
             try:
-                thalamus = entry.get("thalamus_overall")
+                novelty = entry.get("novelty") or 0.0
+                emotional_valence = entry.get("emotional_valence") or 0.0
+                surprise = entry.get("surprise") or 0.0
                 access_count = entry.get("access_count") or 0
                 created_at_op = entry.get("created_at_op") or 0
+                session_mode = entry.get("session_mode")
                 cycles_alive = max(0, bank_op_count - created_at_op)
 
-                strength = compute_composite_strength(thalamus, access_count, cycles_alive)
+                # Gate 1: Novelty — known info is not worth consolidating
+                if novelty < MIN_NOVELTY_FOR_PROMOTE:
+                    await self._storage.update_metadata(
+                        engram_id,
+                        {"status": "archived", "strength": 0.0},
+                    )
+                    result.archived += 1
+                    continue
 
-                if strength >= PROMOTE_THRESHOLD:
-                    # Promote to buffer — the Engram earned its place
+                # Gate 2: Minimum recalls — STC capture requires rehearsal
+                if access_count < MIN_ACCESS_FOR_PROMOTE:
+                    strength = compute_composite_strength(emotional_valence, surprise, access_count, cycles_alive)
+                    await self._storage.update_metadata(
+                        engram_id,
+                        {"strength": strength},
+                    )
+                    result.skipped += 1
+                    continue
+
+                # Score + mode-dependent threshold
+                strength = compute_composite_strength(emotional_valence, surprise, access_count, cycles_alive)
+                threshold = get_promote_threshold(session_mode)
+
+                if strength >= threshold:
                     await self._storage.update_metadata(
                         engram_id,
                         {"layer": "buffer", "strength": strength},
                     )
                     result.consolidated += 1
-                elif strength < ARCHIVE_THRESHOLD_WM:
-                    # Archive — too weak to ever consolidate
-                    await self._storage.update_metadata(
-                        engram_id,
-                        {"status": "archived", "strength": strength},
-                    )
-                    result.archived += 1
                 else:
-                    # Stay in Working Memory — not yet strong enough, but not
-                    # dead either. Update strength so the next cycle sees the
-                    # current composite score.
                     await self._storage.update_metadata(
                         engram_id,
                         {"strength": strength},

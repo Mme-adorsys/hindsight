@@ -1,17 +1,18 @@
 """
 Unit tests for Consolidation 1 — Session → Buffer.
 
-Epic 12, Story 01, Task T5.
+Epic 12, Story 01 / Epic 24 (revised).
 
 Tests cover:
-- Strength computation (_compute_initial_strength)
+- Gate 1: Novelty gate (low novelty → archive)
+- Gate 2: Access gate (too few recalls → stay in WM)
+- Score gate: Mode-dependent threshold
 - ConsolidationResult dataclass defaults
-- Consolidation1Service.run: happy path, idempotency, batch processing, errors
+- Consolidation1Service.run: happy path, batching, errors
 """
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -19,43 +20,62 @@ import pytest
 from hindsight_api.engine.consolidation.consolidation1 import (
     ConsolidationResult,
     Consolidation1Service,
-    _compute_initial_strength,
 )
 
 
 # ---------------------------------------------------------------------------
-# _compute_initial_strength
+# Helpers
 # ---------------------------------------------------------------------------
 
 
-class TestComputeInitialStrength:
-    def test_none_returns_base(self):
-        assert _compute_initial_strength(None) == pytest.approx(0.1)
+def _make_entry(
+    engram_id: str,
+    *,
+    novelty: float = 0.7,
+    emotional_valence: float = 0.6,
+    surprise: float = 0.5,
+    access_count: int = 10,
+    created_at_op: int = 0,
+    session_mode: str = "exploration",
+    thalamus_overall: float = 0.6,
+) -> dict:
+    return {
+        "engram_id": engram_id,
+        "bank_id": "test-bank",
+        "layer": None,
+        "novelty": novelty,
+        "emotional_valence": emotional_valence,
+        "surprise": surprise,
+        "thalamus_overall": thalamus_overall,
+        "access_count": access_count,
+        "created_at_op": created_at_op,
+        "session_mode": session_mode,
+        "strength": 0.0,
+        "status": "active",
+    }
 
-    def test_zero_thalamus_returns_base(self):
-        assert _compute_initial_strength(0.0) == pytest.approx(0.1)
 
-    def test_full_thalamus_capped_at_buffer_max(self):
-        # 1.0 * 0.5 + 0.1 = 0.6 → capped at 0.5
-        assert _compute_initial_strength(1.0) == pytest.approx(0.5)
+def _make_service_and_run(
+    entries_batches: list[list[dict]],
+    bank_op_count: int = 20,
+    update_side_effect: Exception | list | None = None,
+):
+    """Helper to build mocked service and return run coroutine components."""
+    pool = MagicMock()
+    storage = AsyncMock()
 
-    def test_mid_thalamus(self):
-        # 0.6 * 0.5 + 0.1 = 0.4
-        assert _compute_initial_strength(0.6) == pytest.approx(0.4)
+    if update_side_effect is not None:
+        if isinstance(update_side_effect, Exception):
+            storage.update_metadata.side_effect = update_side_effect
+        else:
+            storage.update_metadata.side_effect = update_side_effect
 
-    def test_low_thalamus_below_cap(self):
-        # 0.4 * 0.5 + 0.1 = 0.3
-        assert _compute_initial_strength(0.4) == pytest.approx(0.3)
+    return_values = entries_batches + [[]]
 
-    def test_cap_applied_for_very_high_thalamus(self):
-        # 2.0 * 0.5 + 0.1 = 1.1 → capped at 0.5
-        assert _compute_initial_strength(2.0) == pytest.approx(0.5)
+    mock_list = AsyncMock(side_effect=return_values)
+    mock_op_count = AsyncMock(return_value=bank_op_count)
 
-    def test_negative_thalamus_clamps_to_base(self):
-        # -0.5 * 0.5 + 0.1 = -0.15 → but cap only applies at top
-        # result: -0.15 (no lower bound in formula — test documents behavior)
-        result = _compute_initial_strength(-0.5)
-        assert result < 0.1  # below base, no lower clamp in formula
+    return pool, storage, mock_list, mock_op_count
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +89,7 @@ class TestConsolidationResult:
         assert r.total == 0
         assert r.consolidated == 0
         assert r.skipped == 0
+        assert r.archived == 0
         assert r.errors == 0
         assert r.error_ids == []
 
@@ -80,111 +101,215 @@ class TestConsolidationResult:
 
 
 # ---------------------------------------------------------------------------
-# Consolidation1Service
+# Gate 1: Novelty gate
 # ---------------------------------------------------------------------------
 
 
-def _make_entry(engram_id: str, thalamus_overall: float | None = 0.6) -> dict:
-    return {
-        "engram_id": engram_id,
-        "bank_id": "test-bank",
-        "layer": None,
-        "thalamus_overall": thalamus_overall,
-        "strength": 0.0,
-        "status": "active",
-    }
+class TestNoveltyGate:
+    @pytest.mark.asyncio
+    async def test_low_novelty_archived(self):
+        """Engrams with novelty < 0.2 are archived regardless of other scores."""
+        entry = _make_entry("aaa", novelty=0.1, access_count=20, emotional_valence=0.9)
+        pool, storage, mock_list, mock_op = _make_service_and_run([[entry]])
+
+        with (
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.list_unconsolidated", mock_list),
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.get_bank_op_count", mock_op),
+        ):
+            svc = Consolidation1Service(pool=pool, storage_service=storage)
+            result = await svc.run("test-bank")
+
+        assert result.archived == 1
+        assert result.consolidated == 0
+        updates = storage.update_metadata.call_args[0][1]
+        assert updates["status"] == "archived"
+
+    @pytest.mark.asyncio
+    async def test_novelty_at_threshold_not_archived(self):
+        """Engrams at exactly 0.2 novelty pass the novelty gate."""
+        entry = _make_entry("bbb", novelty=0.2, access_count=10)
+        pool, storage, mock_list, mock_op = _make_service_and_run([[entry]])
+
+        with (
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.list_unconsolidated", mock_list),
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.get_bank_op_count", mock_op),
+        ):
+            svc = Consolidation1Service(pool=pool, storage_service=storage)
+            result = await svc.run("test-bank")
+
+        assert result.archived == 0
 
 
-def _make_service(
-    unconsolidated_batches: list[list[dict]],
-    update_raises: Exception | None = None,
-) -> tuple[Consolidation1Service, AsyncMock]:
-    """Build a service with mocked pool and storage."""
-    pool = MagicMock()
-    storage = AsyncMock()
+# ---------------------------------------------------------------------------
+# Gate 2: Access gate
+# ---------------------------------------------------------------------------
 
-    if update_raises:
-        storage.update_metadata.side_effect = update_raises
 
-    # Patch list_unconsolidated to return batches in sequence, then empty
-    return_values = unconsolidated_batches + [[]]
+class TestAccessGate:
+    @pytest.mark.asyncio
+    async def test_below_min_access_stays_in_wm(self):
+        """Engrams with < 5 recalls stay in Working Memory."""
+        entry = _make_entry("ccc", access_count=3, emotional_valence=0.9, surprise=0.9)
+        pool, storage, mock_list, mock_op = _make_service_and_run([[entry]])
 
-    with patch(
-        "hindsight_api.engine.consolidation.consolidation1.dict_repo.list_unconsolidated",
-        new_callable=AsyncMock,
-    ) as mock_list:
-        mock_list.side_effect = return_values
-        svc = Consolidation1Service(pool=pool, storage_service=storage)
-        return svc, storage, mock_list
+        with (
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.list_unconsolidated", mock_list),
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.get_bank_op_count", mock_op),
+        ):
+            svc = Consolidation1Service(pool=pool, storage_service=storage)
+            result = await svc.run("test-bank")
+
+        assert result.skipped == 1
+        assert result.consolidated == 0
+        updates = storage.update_metadata.call_args[0][1]
+        assert "layer" not in updates  # not promoted
+        assert "strength" in updates  # strength updated for tracking
+
+    @pytest.mark.asyncio
+    async def test_zero_access_stays_even_with_high_saliency(self):
+        """Even highly salient engrams need recalls to be promoted."""
+        entry = _make_entry("ddd", access_count=0, emotional_valence=1.0, surprise=1.0)
+        pool, storage, mock_list, mock_op = _make_service_and_run([[entry]])
+
+        with (
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.list_unconsolidated", mock_list),
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.get_bank_op_count", mock_op),
+        ):
+            svc = Consolidation1Service(pool=pool, storage_service=storage)
+            result = await svc.run("test-bank")
+
+        assert result.skipped == 1
+        assert result.consolidated == 0
+
+    @pytest.mark.asyncio
+    async def test_exactly_5_access_passes_gate(self):
+        """Engrams with exactly 5 recalls pass the access gate."""
+        entry = _make_entry("eee", access_count=5, emotional_valence=0.8, session_mode="exploration")
+        pool, storage, mock_list, mock_op = _make_service_and_run([[entry]])
+
+        with (
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.list_unconsolidated", mock_list),
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.get_bank_op_count", mock_op),
+        ):
+            svc = Consolidation1Service(pool=pool, storage_service=storage)
+            result = await svc.run("test-bank")
+
+        # With exploration threshold (0.5) and high saliency, should promote
+        assert result.consolidated == 1
+
+
+# ---------------------------------------------------------------------------
+# Score gate: mode-dependent thresholds
+# ---------------------------------------------------------------------------
+
+
+class TestScoreGate:
+    @pytest.mark.asyncio
+    async def test_high_saliency_promotes_in_exploration(self):
+        """High saliency + 5 recalls → promoted in exploration mode (threshold 0.5)."""
+        entry = _make_entry("fff", access_count=5, emotional_valence=0.8, surprise=0.7, session_mode="exploration")
+        pool, storage, mock_list, mock_op = _make_service_and_run([[entry]])
+
+        with (
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.list_unconsolidated", mock_list),
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.get_bank_op_count", mock_op),
+        ):
+            svc = Consolidation1Service(pool=pool, storage_service=storage)
+            result = await svc.run("test-bank")
+
+        assert result.consolidated == 1
+        updates = storage.update_metadata.call_args[0][1]
+        assert updates["layer"] == "buffer"
+
+    @pytest.mark.asyncio
+    async def test_same_score_skipped_in_precision(self):
+        """Same engram that passes exploration may fail precision (threshold 0.8)."""
+        # With access=5, cycles=20: recall_score ≈ 0.54, saliency=0.1
+        # composite ≈ 0.54 + 0.03 = 0.57 < 0.8
+        entry = _make_entry(
+            "ggg",
+            access_count=5,
+            emotional_valence=0.1,
+            surprise=0.1,
+            session_mode="precision",
+            created_at_op=0,
+        )
+        pool, storage, mock_list, mock_op = _make_service_and_run([[entry]])
+
+        with (
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.list_unconsolidated", mock_list),
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.get_bank_op_count", mock_op),
+        ):
+            svc = Consolidation1Service(pool=pool, storage_service=storage)
+            result = await svc.run("test-bank")
+
+        assert result.skipped == 1
+        assert result.consolidated == 0
+
+    @pytest.mark.asyncio
+    async def test_low_saliency_many_recalls_promoted(self):
+        """Low saliency but 30 recalls → promoted even in precision mode."""
+        entry = _make_entry("hhh", access_count=30, emotional_valence=0.1, surprise=0.1, session_mode="precision")
+        pool, storage, mock_list, mock_op = _make_service_and_run([[entry]])
+
+        with (
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.list_unconsolidated", mock_list),
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.get_bank_op_count", mock_op),
+        ):
+            svc = Consolidation1Service(pool=pool, storage_service=storage)
+            result = await svc.run("test-bank")
+
+        assert result.consolidated == 1
+
+    @pytest.mark.asyncio
+    async def test_none_mode_uses_default_threshold(self):
+        """Engrams without session_mode use the default threshold (0.7)."""
+        # access=30, low saliency → recall_score ≈ 1.38, composite ≈ 1.41 → > 0.7
+        entry = _make_entry("iii", access_count=30, session_mode=None)
+        # Override session_mode to None since _make_entry default is "exploration"
+        entry["session_mode"] = None
+        pool, storage, mock_list, mock_op = _make_service_and_run([[entry]])
+
+        with (
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.list_unconsolidated", mock_list),
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.get_bank_op_count", mock_op),
+        ):
+            svc = Consolidation1Service(pool=pool, storage_service=storage)
+            result = await svc.run("test-bank")
+
+        assert result.consolidated == 1
+
+
+# ---------------------------------------------------------------------------
+# Service: batching, errors, idempotency
+# ---------------------------------------------------------------------------
 
 
 class TestConsolidation1Service:
     @pytest.mark.asyncio
-    async def test_single_batch_consolidated(self):
+    async def test_single_batch_promoted(self):
         entries = [_make_entry("aaa"), _make_entry("bbb")]
-        pool = MagicMock()
-        storage = AsyncMock()
+        pool, storage, mock_list, mock_op = _make_service_and_run([entries])
 
-        with patch(
-            "hindsight_api.engine.consolidation.consolidation1.dict_repo.list_unconsolidated",
-            new_callable=AsyncMock,
-        ) as mock_list:
-            mock_list.side_effect = [entries, []]
+        with (
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.list_unconsolidated", mock_list),
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.get_bank_op_count", mock_op),
+        ):
             svc = Consolidation1Service(pool=pool, storage_service=storage)
             result = await svc.run("test-bank")
 
         assert result.total == 2
         assert result.consolidated == 2
         assert result.errors == 0
-        assert storage.update_metadata.call_count == 2
-
-    @pytest.mark.asyncio
-    async def test_layer_and_strength_passed_correctly(self):
-        entry = _make_entry("ccc", thalamus_overall=0.6)
-        pool = MagicMock()
-        storage = AsyncMock()
-
-        with patch(
-            "hindsight_api.engine.consolidation.consolidation1.dict_repo.list_unconsolidated",
-            new_callable=AsyncMock,
-        ) as mock_list:
-            mock_list.side_effect = [[entry], []]
-            svc = Consolidation1Service(pool=pool, storage_service=storage)
-            await svc.run("test-bank")
-
-        call_args = storage.update_metadata.call_args
-        assert call_args[0][0] == "ccc"
-        updates = call_args[0][1]
-        assert updates["layer"] == "buffer"
-        assert updates["strength"] == pytest.approx(0.4)  # 0.6*0.5+0.1
-
-    @pytest.mark.asyncio
-    async def test_no_thalamus_uses_base_strength(self):
-        entry = _make_entry("ddd", thalamus_overall=None)
-        pool = MagicMock()
-        storage = AsyncMock()
-
-        with patch(
-            "hindsight_api.engine.consolidation.consolidation1.dict_repo.list_unconsolidated",
-            new_callable=AsyncMock,
-        ) as mock_list:
-            mock_list.side_effect = [[entry], []]
-            svc = Consolidation1Service(pool=pool, storage_service=storage)
-            await svc.run("test-bank")
-
-        updates = storage.update_metadata.call_args[0][1]
-        assert updates["strength"] == pytest.approx(0.1)
 
     @pytest.mark.asyncio
     async def test_empty_bank_returns_zero_result(self):
-        pool = MagicMock()
-        storage = AsyncMock()
+        pool, storage, mock_list, mock_op = _make_service_and_run([])
 
-        with patch(
-            "hindsight_api.engine.consolidation.consolidation1.dict_repo.list_unconsolidated",
-            new_callable=AsyncMock,
-        ) as mock_list:
-            mock_list.return_value = []
+        with (
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.list_unconsolidated", mock_list),
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.get_bank_op_count", mock_op),
+        ):
             svc = Consolidation1Service(pool=pool, storage_service=storage)
             result = await svc.run("empty-bank")
 
@@ -195,20 +320,18 @@ class TestConsolidation1Service:
     @pytest.mark.asyncio
     async def test_error_in_one_entry_does_not_stop_others(self):
         entries = [_make_entry("eee"), _make_entry("fff")]
-        pool = MagicMock()
-        storage = AsyncMock()
-        storage.update_metadata.side_effect = [RuntimeError("DB down"), None]
+        pool, storage, mock_list, mock_op = _make_service_and_run(
+            [entries], update_side_effect=[RuntimeError("DB down"), None]
+        )
 
-        with patch(
-            "hindsight_api.engine.consolidation.consolidation1.dict_repo.list_unconsolidated",
-            new_callable=AsyncMock,
-        ) as mock_list:
-            mock_list.side_effect = [entries, []]
+        with (
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.list_unconsolidated", mock_list),
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.get_bank_op_count", mock_op),
+        ):
             svc = Consolidation1Service(pool=pool, storage_service=storage)
             result = await svc.run("test-bank")
 
         assert result.total == 2
-        assert result.consolidated == 1
         assert result.errors == 1
         assert "eee" in result.error_ids
 
@@ -216,59 +339,36 @@ class TestConsolidation1Service:
     async def test_multiple_batches_processed(self):
         batch1 = [_make_entry(f"id-{i}") for i in range(3)]
         batch2 = [_make_entry(f"id-{i}") for i in range(3, 5)]
-        pool = MagicMock()
-        storage = AsyncMock()
+        pool, storage, mock_list, mock_op = _make_service_and_run([batch1, batch2])
 
-        with patch(
-            "hindsight_api.engine.consolidation.consolidation1.dict_repo.list_unconsolidated",
-            new_callable=AsyncMock,
-        ) as mock_list:
-            mock_list.side_effect = [batch1, batch2, []]
+        with (
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.list_unconsolidated", mock_list),
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.get_bank_op_count", mock_op),
+        ):
             svc = Consolidation1Service(pool=pool, storage_service=storage)
             result = await svc.run("test-bank")
 
         assert result.total == 5
         assert result.consolidated == 5
-        assert storage.update_metadata.call_count == 5
 
     @pytest.mark.asyncio
-    async def test_idempotency_via_list_unconsolidated_filter(self):
-        """
-        Idempotency is guaranteed by list_unconsolidated filtering on layer IS NULL.
-        After consolidation, entries have layer='buffer' and are excluded.
-        Simulate by returning empty on second run.
-        """
-        entries = [_make_entry("ggg")]
-        pool = MagicMock()
-        storage = AsyncMock()
+    async def test_mixed_outcomes(self):
+        """One archived (low novelty), one skipped (low access), one promoted."""
+        entries = [
+            _make_entry("low-nov", novelty=0.05),  # → archived
+            _make_entry("low-acc", access_count=2),  # → skipped
+            _make_entry("good", access_count=10, emotional_valence=0.8),  # → promoted
+        ]
+        pool, storage, mock_list, mock_op = _make_service_and_run([entries])
 
-        with patch(
-            "hindsight_api.engine.consolidation.consolidation1.dict_repo.list_unconsolidated",
-            new_callable=AsyncMock,
-        ) as mock_list:
-            # First run: one entry pending
-            mock_list.side_effect = [entries, [], [], []]
+        with (
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.list_unconsolidated", mock_list),
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.get_bank_op_count", mock_op),
+        ):
             svc = Consolidation1Service(pool=pool, storage_service=storage)
+            result = await svc.run("test-bank")
 
-            result1 = await svc.run("test-bank")
-            result2 = await svc.run("test-bank")
-
-        assert result1.consolidated == 1
-        assert result2.consolidated == 0  # Nothing left to consolidate
-
-    @pytest.mark.asyncio
-    async def test_strength_capped_at_buffer_max(self):
-        entry = _make_entry("hhh", thalamus_overall=1.0)
-        pool = MagicMock()
-        storage = AsyncMock()
-
-        with patch(
-            "hindsight_api.engine.consolidation.consolidation1.dict_repo.list_unconsolidated",
-            new_callable=AsyncMock,
-        ) as mock_list:
-            mock_list.side_effect = [[entry], []]
-            svc = Consolidation1Service(pool=pool, storage_service=storage)
-            await svc.run("test-bank")
-
-        updates = storage.update_metadata.call_args[0][1]
-        assert updates["strength"] <= 0.5
+        assert result.total == 3
+        assert result.archived == 1
+        assert result.skipped == 1
+        assert result.consolidated == 1

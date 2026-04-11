@@ -1030,11 +1030,23 @@ class RecallOrchestrator:
             rerank_limit = thinking_budget * 2
             top_scored = scored_results[:rerank_limit]
 
-            # Step 5.5 (Epic 24): Update access_count for all top-scored engrams.
-            # Bio mapping: hippocampal reactivation — each recall-hit strengthens
-            # the synaptic trace, contributing to the composite strength score.
-            from . import engram_dictionary as _dict_repo
+            # Step 6: Token budget filtering
+            step_start = time.time()
 
+            # Convert to dict for token filtering (backward compatibility)
+            top_dicts = [sr.to_dict() for sr in top_scored]
+            filtered_dicts, total_tokens = self._filter_by_token_budget(top_dicts, max_tokens)
+
+            # Convert back to list of IDs and filter scored_results
+            filtered_ids = {d["id"] for d in filtered_dicts}
+            top_scored = [sr for sr in top_scored if sr.id in filtered_ids]
+
+            # Step 6.5 (Epic 24): Update access_count only for engrams that
+            # are actually returned in the response. Only delivered results
+            # count as a genuine "recall hit" — candidates that were scored
+            # but filtered out by the token budget were not truly reactivated.
+            # Bio mapping: hippocampal reactivation requires conscious retrieval,
+            # not mere subthreshold activation.
             _hit_ids = [sr.id for sr in top_scored]
             if _hit_ids:
                 try:
@@ -1050,17 +1062,6 @@ class RecallOrchestrator:
                         )
                 except Exception as _access_err:
                     logger.warning("access_count update failed (non-blocking): %s", _access_err)
-
-            # Step 6: Token budget filtering
-            step_start = time.time()
-
-            # Convert to dict for token filtering (backward compatibility)
-            top_dicts = [sr.to_dict() for sr in top_scored]
-            filtered_dicts, total_tokens = self._filter_by_token_budget(top_dicts, max_tokens)
-
-            # Convert back to list of IDs and filter scored_results
-            filtered_ids = {d["id"] for d in filtered_dicts}
-            top_scored = [sr for sr in top_scored if sr.id in filtered_ids]
 
             step_duration = time.time() - step_start
             log_buffer.append(
@@ -1094,10 +1095,10 @@ class RecallOrchestrator:
                         final_weight=sr.weight,
                     )
 
-            # Step 8: Queue access count updates for visited nodes
-            visited_ids = list(set([sr.id for sr in scored_results[:50]]))  # Top 50
-            if visited_ids:
-                await self._ctx.task_backend.submit_task({"type": "access_count_update", "node_ids": visited_ids})
+            # Step 8: Queue access count update for memory_units (mirrors Step 6.5).
+            # Uses the same filtered IDs — only delivered results count.
+            if _hit_ids:
+                await self._ctx.task_backend.submit_task({"type": "access_count_update", "node_ids": _hit_ids})
 
             # Log fact_type distribution in results
             fact_type_counts = {}
@@ -1390,27 +1391,9 @@ class RecallOrchestrator:
             )
             logger.info("\n" + "\n".join(log_buffer))
 
-            # MIN-3: Batch update last_accessed for returned Engrams (best-effort).
-            # Bio mapping: LTP-Late — accessing a consolidated Engram resets its decay clock.
-            # This keeps last_accessed current so NCR Decay computes correct forgetting-curve values.
-            if top_scored:
-                try:
-                    from hindsight_api.engine.utils import fq_table as _fq_table
-
-                    async with acquire_with_retry(pool) as _access_conn:
-                        engram_ids_for_access = [sr.id for sr in top_scored if sr.id]
-                        if engram_ids_for_access:
-                            await _access_conn.execute(
-                                f"""
-                                UPDATE {_fq_table("engram_dictionary")}
-                                SET access_count = access_count + 1,
-                                    last_accessed = NOW()
-                                WHERE engram_id = ANY($1::uuid[])
-                                """,
-                                engram_ids_for_access,
-                            )
-                except Exception as _access_err:
-                    logger.debug("[RECALL] update_access batch failed (non-fatal): %s", _access_err)
+            # MIN-3 removed: access_count + last_accessed are now updated in
+            # Step 6.5 (after token-budget filter) — single canonical update
+            # point for delivered results only.
 
             return (
                 RecallResultModel(results=memory_facts, trace=trace_dict, entities=entities_dict, chunks=chunks_dict),
