@@ -50,10 +50,10 @@ VALENCE_AMPLIFICATION: Final[float] = float(os.getenv(ENV_VALENCE_AMPLIFICATION,
 # Exploration: low threshold → let more through (maximise novelty capture)
 # Precision:   high threshold → only highly relevant episodes
 # ---------------------------------------------------------------------------
-DEFAULT_THRESHOLD_PRECISION: Final[float] = 0.4
-DEFAULT_THRESHOLD_EXPLORATION: Final[float] = 0.2
-DEFAULT_THRESHOLD_VALIDATION: Final[float] = 0.3
-DEFAULT_THRESHOLD_ANALOGY: Final[float] = 0.3
+DEFAULT_THRESHOLD_PRECISION: Final[float] = 0.25
+DEFAULT_THRESHOLD_EXPLORATION: Final[float] = 0.15
+DEFAULT_THRESHOLD_VALIDATION: Final[float] = 0.20
+DEFAULT_THRESHOLD_ANALOGY: Final[float] = 0.20
 
 # ---------------------------------------------------------------------------
 # Mode-dependent score weights (T6)
@@ -73,9 +73,9 @@ MODE_WEIGHTS: Final[dict[str, dict[str, float]]] = {
         "emotional_valence": 0.2,
     },
     _RetrievalMode.PRECISION: {
-        "novelty": 0.1,
+        "novelty": 0.15,
         "surprise": 0.2,
-        "task_relevance": 0.5,
+        "task_relevance": 0.45,
         "emotional_valence": 0.2,
     },
     _RetrievalMode.VALIDATION: {

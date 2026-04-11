@@ -197,9 +197,14 @@ class RetainOrchestrator:
                 if scores.overall < threshold:
                     dropped += 1
                     logger.info(
-                        "Thalamus: dropped content (score=%.3f, threshold=%.3f, bank=%s)",
+                        "Thalamus: dropped content (overall=%.3f, threshold=%.3f, "
+                        "nov=%.3f, sur=%.3f, task=%.3f, emo=%.3f, bank=%s)",
                         scores.overall,
                         threshold,
+                        scores.novelty,
+                        scores.surprise,
+                        scores.task_relevance,
+                        scores.emotional_valence,
                         bank_id,
                     )
                 else:
