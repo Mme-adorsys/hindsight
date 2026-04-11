@@ -25,6 +25,9 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+if TYPE_CHECKING:
+    from .consolidation.ncr_orchestrator import NCROrchestrator
+
 import asyncpg
 
 from ..config import get_config
@@ -255,6 +258,7 @@ class MemoryEngine(MemoryEngineInterface):
         self._reflect = ReflectOrchestrator(self._ctx, recall=self._recall, retain=self._retain)
         self._admin = AdminOperations(self._ctx)
         self._entity = EntityOperations(self._ctx)
+        self._ncr_orchestrator: NCROrchestrator | None = None  # set by http.py if NCR is enabled
 
         self._initialized = False
 
@@ -420,6 +424,15 @@ class MemoryEngine(MemoryEngineInterface):
                 await self._retain._handle_batch_retain(task_dict)
             elif task_type == "regenerate_observations":
                 await self._entity._handle_regenerate_observations(task_dict)
+            elif task_type == "consolidation_c1":
+                if hasattr(self, "_ncr_orchestrator") and self._ncr_orchestrator is not None:
+                    await self._ncr_orchestrator.run(
+                        bank_id=task_dict["bank_id"],
+                        trigger="session_end",
+                        phases={"c1"},
+                    )
+                else:
+                    logger.debug("consolidation_c1 task skipped — NCR not enabled")
             else:
                 logger.error(f"Unknown task type: {task_type}")
                 if operation_id:
@@ -584,7 +597,23 @@ class MemoryEngine(MemoryEngineInterface):
                 len(wm.active_engrams.focus),
             )
 
-        return await sm.end_session(session_id)
+        flush_items = await sm.end_session(session_id)
+
+        # Trigger C1 consolidation (Working→Buffer) after session ends.
+        # Bio mapping: Sharp-Wave Ripples during quiet wakefulness — post-session
+        # replay selectively promotes high-salience, well-rehearsed engrams.
+        try:
+            await self._ctx.task_backend.submit_task(
+                {
+                    "type": "consolidation_c1",
+                    "bank_id": bank_id,
+                }
+            )
+            logger.debug("end_session_async: queued C1 consolidation for bank=%s", bank_id)
+        except Exception as exc:
+            logger.warning("end_session_async: failed to queue C1 for bank=%s: %s", bank_id, exc)
+
+        return flush_items
 
     async def flush_session_async(
         self,

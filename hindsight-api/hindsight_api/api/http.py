@@ -1374,15 +1374,21 @@ def create_app(
                     llm=_promotion_llm,
                 )
                 app.state.ncr_orchestrator = _orchestrator
+                memory._ncr_orchestrator = _orchestrator  # for C1 session-end trigger
                 ncr_scheduler = NCRScheduler(
                     orchestrator=_orchestrator,
                     bank_ids=[],  # populated per-request; scheduler runs on-demand via trigger
-                    interval_hours=_config.ncr_interval_hours,
+                    c2_interval_hours=_config.ncr_interval_hours,
+                    c3_interval_hours=_config.ncr_interval_hours * 7,  # weekly
                     enabled=True,
                 )
                 app.state.ncr_scheduler = ncr_scheduler
                 ncr_scheduler.start()
-                logging.info("NCR Scheduler started (interval=%.1fh)", _config.ncr_interval_hours)
+                logging.info(
+                    "NCR Scheduler started (C2 every %.1fh, C3 every %.1fh)",
+                    _config.ncr_interval_hours,
+                    _config.ncr_interval_hours * 7,
+                )
 
         # Call HTTP extension startup hook
         if http_extension:
@@ -2798,23 +2804,27 @@ def _register_routes(app: FastAPI):
     # NCR Manual Trigger (Epic 12, Story 05, T5)
     # ---------------------------------------------------------------------------
 
-    # In-process rate-limit: last trigger timestamp per bank
-    _ncr_last_trigger: dict[str, datetime] = {}
-    _NCR_TRIGGER_COOLDOWN_SECONDS = 3600  # 1 hour
+    # In-process rate-limit: last trigger timestamp per bank per phase
+    _ncr_last_trigger: dict[str, datetime] = {}  # key = "bank_id:phase"
+    _NCR_PHASE_COOLDOWNS: dict[str, int] = {
+        "c1": 0,  # no cooldown — runs at every session end
+        "c2": 3600,  # 1 hour
+        "c3": 21600,  # 6 hours
+        "shared": 3600,
+        "all": 3600,  # full NCR: 1 hour
+    }
 
     @app.post(
         "/v1/default/banks/{bank_id}/ncr/trigger",
         summary="Manually trigger NCR for a bank",
         description=(
-            "Runs the Nightly Consolidation Run (NCR) pipeline immediately for the given bank.\n\n"
-            "The NCR executes four sequential phases:\n"
-            "1. **Consolidation 1** — Session → Buffer layer upgrade\n"
-            "2. **Decay** — Strength decay + archival of weak Engrams\n"
-            "3. **Strengthen** — Buffer → Neocortex promotion for strong Engrams\n"
-            "4. **Shared Bank Promotion** — Neocortex → Shared Bank (B3/B5); "
-            "requires `HINDSIGHT_API_NCR_SHARED_BANK_ID` to be set. "
-            "Includes B2 Write Conflict Resolution (contradiction-link creation).\n\n"
-            "**Rate-limited:** at most one manual trigger per bank per hour.\n\n"
+            "Runs NCR phases for the given bank. Use the `phase` query parameter to "
+            "run individual phases:\n\n"
+            "- **c1** — Working Memory → Buffer (no cooldown)\n"
+            "- **c2** — Decay + Strengthen, Buffer → Neocortex (1h cooldown)\n"
+            "- **c3** — Schema Compression in Neocortex (6h cooldown)\n"
+            "- **shared** — Shared Bank Promotion (1h cooldown)\n"
+            "- *omit* — all phases (1h cooldown)\n\n"
             "Returns `503` if NCR is not enabled, `429` if triggered too recently, "
             "`409` if another NCR run is already in progress (advisory lock held)."
         ),
@@ -2822,8 +2832,8 @@ def _register_routes(app: FastAPI):
         tags=["Consolidation"],
         status_code=200,
     )
-    async def api_ncr_trigger(bank_id: str):
-        """Manually trigger the NCR pipeline for a bank."""
+    async def api_ncr_trigger(bank_id: str, phase: str | None = None):
+        """Manually trigger NCR phases for a bank."""
         # Check NCR is enabled
         if not hasattr(app.state, "ncr_orchestrator"):
             raise HTTPException(
@@ -2831,24 +2841,41 @@ def _register_routes(app: FastAPI):
                 detail="NCR is not enabled. Set HINDSIGHT_API_NCR_ENABLED=true to enable.",
             )
 
-        # Rate-limit: 1 trigger per bank per hour
-        now = datetime.now(timezone.utc)
-        last = _ncr_last_trigger.get(bank_id)
-        if last is not None:
-            elapsed = (now - last).total_seconds()
-            if elapsed < _NCR_TRIGGER_COOLDOWN_SECONDS:
-                retry_after = int(_NCR_TRIGGER_COOLDOWN_SECONDS - elapsed)
+        # Validate phase parameter
+        phases: set[str] | None = None
+        cooldown_key = "all"
+        if phase is not None:
+            if phase not in _NCR_PHASE_COOLDOWNS:
                 raise HTTPException(
-                    status_code=429,
-                    detail=f"NCR triggered too recently for bank={bank_id}. Retry after {retry_after}s.",
-                    headers={"Retry-After": str(retry_after)},
+                    status_code=400,
+                    detail=f"Invalid phase '{phase}'. Valid values: c1, c2, c3, shared",
                 )
+            phases = {phase}
+            cooldown_key = phase
 
-        _ncr_last_trigger[bank_id] = now
+        # Per-phase rate-limit
+        cooldown = _NCR_PHASE_COOLDOWNS[cooldown_key]
+        if cooldown > 0:
+            now = datetime.now(timezone.utc)
+            rate_key = f"{bank_id}:{cooldown_key}"
+            last = _ncr_last_trigger.get(rate_key)
+            if last is not None:
+                elapsed = (now - last).total_seconds()
+                if elapsed < cooldown:
+                    retry_after = int(cooldown - elapsed)
+                    raise HTTPException(
+                        status_code=429,
+                        detail=f"NCR phase={cooldown_key} triggered too recently for bank={bank_id}. Retry after {retry_after}s.",
+                        headers={"Retry-After": str(retry_after)},
+                    )
+            _ncr_last_trigger[rate_key] = now
+        else:
+            _ncr_last_trigger[f"{bank_id}:{cooldown_key}"] = datetime.now(timezone.utc)
+
         orchestrator: NCROrchestrator = app.state.ncr_orchestrator
 
         try:
-            report = await orchestrator.run(bank_id, trigger="manual")
+            report = await orchestrator.run(bank_id, trigger="manual", phases=phases)
         except Exception as e:
             import traceback
 
