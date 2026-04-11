@@ -109,13 +109,14 @@ def compute_composite_strength(
         saliency_weight: Weight for the saliency boost (default 0.3).
 
     Returns:
-        Composite strength score (unbounded above, but typically 0–2).
+        Composite strength score clamped to [0.0, 10.0].
     """
     ev = emotional_valence if emotional_valence is not None else 0.0
     sur = surprise if surprise is not None else 0.0
     saliency = max(ev, sur)
     recall = compute_recount_score(access_count, cycles_alive)
-    return recall + saliency_weight * saliency
+    raw = recall + saliency_weight * saliency
+    return min(10.0, raw)  # clamp to prevent inf/overflow in edge cases
 
 
 def get_promote_threshold(mode: str | None) -> float:
