@@ -56,11 +56,11 @@ class RecallOrchestrator:
     # Mode-dependent recall parameters: controls retrieval precision.
     # Bio mapping: PFC attention modulates hippocampal retrieval breadth.
     # Precision = narrow spotlight, Exploration = broad diffuse attention.
-    RECALL_MODE_CONFIG: dict[str, dict[str, float]] = {
-        "precision": {"similarity_threshold": 0.7, "max_tokens": 1024, "ce_min_score": 0.3},
-        "validation": {"similarity_threshold": 0.6, "max_tokens": 2048, "ce_min_score": 0.2},
-        "analogy": {"similarity_threshold": 0.5, "max_tokens": 2048, "ce_min_score": 0.1},
-        "exploration": {"similarity_threshold": 0.5, "max_tokens": 4096, "ce_min_score": 0.0},
+    RECALL_MODE_CONFIG: dict[str, dict[str, float | int]] = {
+        "precision": {"similarity_threshold": 0.7, "max_tokens": 1024, "ce_min_score": 0.3, "max_results": 3},
+        "validation": {"similarity_threshold": 0.6, "max_tokens": 2048, "ce_min_score": 0.2, "max_results": 5},
+        "analogy": {"similarity_threshold": 0.5, "max_tokens": 2048, "ce_min_score": 0.1, "max_results": 5},
+        "exploration": {"similarity_threshold": 0.5, "max_tokens": 2048, "ce_min_score": 0.05, "max_results": 10},
     }
 
     def __init__(self, ctx: "EngineContext") -> None:
@@ -586,12 +586,13 @@ class RecallOrchestrator:
         pool = await self._ctx.get_pool()
         recall_start = time.time()
 
-        # Apply mode-dependent recall config (similarity threshold, token budget, CE minimum)
+        # Apply mode-dependent recall config (similarity threshold, token budget, CE minimum, max results)
         mode_key = mode if mode and mode in self.RECALL_MODE_CONFIG else "exploration"
         mode_config = self.RECALL_MODE_CONFIG[mode_key]
-        similarity_threshold = mode_config["similarity_threshold"]
-        max_tokens = int(mode_config["max_tokens"])  # override caller's default
-        ce_min_score = mode_config["ce_min_score"]
+        similarity_threshold = float(mode_config["similarity_threshold"])
+        max_tokens = int(mode_config["max_tokens"])
+        ce_min_score = float(mode_config["ce_min_score"])
+        max_results = int(mode_config["max_results"])
 
         # Buffer logs for clean output in concurrent scenarios
         recall_id = f"{bank_id[:8]}-{int(time.time() * 1000) % 100000}"
@@ -1077,6 +1078,13 @@ class RecallOrchestrator:
             # Convert back to list of IDs and filter scored_results
             filtered_ids = {d["id"] for d in filtered_dicts}
             top_scored = [sr for sr in top_scored if sr.id in filtered_ids]
+
+            # Step 6.1: Hard cap on max results (mode-dependent)
+            # Bio mapping: conscious retrieval bandwidth is limited — the PFC
+            # can only hold a few items in working memory simultaneously.
+            if len(top_scored) > max_results:
+                log_buffer.append(f"  [6.1] Max results cap: {len(top_scored)} → {max_results} (mode={mode_key})")
+                top_scored = top_scored[:max_results]
 
             # Step 6.5 (Epic 24): Update access_count only for engrams that
             # are actually returned in the response. Only delivered results
