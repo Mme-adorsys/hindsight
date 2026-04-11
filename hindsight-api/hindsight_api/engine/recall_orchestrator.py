@@ -53,6 +53,16 @@ class RecallOrchestrator:
     # Maximum retry attempts for transient connection errors during search
     MAX_SEARCH_RETRIES = 3
 
+    # Mode-dependent recall parameters: controls retrieval precision.
+    # Bio mapping: PFC attention modulates hippocampal retrieval breadth.
+    # Precision = narrow spotlight, Exploration = broad diffuse attention.
+    RECALL_MODE_CONFIG: dict[str, dict[str, float]] = {
+        "precision": {"similarity_threshold": 0.7, "max_tokens": 1024, "ce_min_score": 0.3},
+        "validation": {"similarity_threshold": 0.6, "max_tokens": 2048, "ce_min_score": 0.2},
+        "analogy": {"similarity_threshold": 0.5, "max_tokens": 2048, "ce_min_score": 0.1},
+        "exploration": {"similarity_threshold": 0.5, "max_tokens": 4096, "ce_min_score": 0.0},
+    }
+
     def __init__(self, ctx: "EngineContext") -> None:
         self._ctx = ctx
 
@@ -576,11 +586,19 @@ class RecallOrchestrator:
         pool = await self._ctx.get_pool()
         recall_start = time.time()
 
+        # Apply mode-dependent recall config (similarity threshold, token budget, CE minimum)
+        mode_key = mode if mode and mode in self.RECALL_MODE_CONFIG else "exploration"
+        mode_config = self.RECALL_MODE_CONFIG[mode_key]
+        similarity_threshold = mode_config["similarity_threshold"]
+        max_tokens = int(mode_config["max_tokens"])  # override caller's default
+        ce_min_score = mode_config["ce_min_score"]
+
         # Buffer logs for clean output in concurrent scenarios
         recall_id = f"{bank_id[:8]}-{int(time.time() * 1000) % 100000}"
         log_buffer = []
         log_buffer.append(
-            f"[RECALL {recall_id}] Query: '{query[:50]}...' (budget={thinking_budget}, max_tokens={max_tokens})"
+            f"[RECALL {recall_id}] Query: '{query[:50]}...' (budget={thinking_budget}, max_tokens={max_tokens}, "
+            f"mode={mode_key}, sim_threshold={similarity_threshold})"
         )
 
         try:
@@ -631,6 +649,7 @@ class RecallOrchestrator:
                         temporal_constraint=temporal_constraint,
                         tags=tags,
                         mode=mode,
+                        similarity_threshold=similarity_threshold,
                     ),
                     retrieve_parallel(
                         pool,
@@ -643,6 +662,7 @@ class RecallOrchestrator:
                         temporal_constraint=temporal_constraint,
                         tags=tags,
                         mode=mode,
+                        similarity_threshold=similarity_threshold,
                     ),
                 )
                 rr = merge_parallel_results(agent_rr, shared_rr, mode)
@@ -658,6 +678,7 @@ class RecallOrchestrator:
                     temporal_constraint=temporal_constraint,
                     tags=tags,
                     mode=mode,
+                    similarity_threshold=similarity_threshold,
                 )
             parallel_duration = time.time() - parallel_start
 
@@ -1029,6 +1050,22 @@ class RecallOrchestrator:
             # Step 5: Truncate to thinking_budget * 2 for token filtering
             rerank_limit = thinking_budget * 2
             top_scored = scored_results[:rerank_limit]
+
+            # Step 5.5: Cross-encoder score minimum filter (mode-dependent)
+            # Bio mapping: PFC relevance gate — only sufficiently relevant
+            # reactivations pass through to conscious retrieval.
+            if ce_min_score > 0:
+                pre_ce_count = len(top_scored)
+                top_scored = [
+                    sr
+                    for sr in top_scored
+                    if sr.cross_encoder_score is not None and sr.cross_encoder_score >= ce_min_score
+                ]
+                ce_filtered = pre_ce_count - len(top_scored)
+                if ce_filtered > 0:
+                    log_buffer.append(
+                        f"  [5.5] CE filter: removed {ce_filtered} below {ce_min_score} ({len(top_scored)} remaining)"
+                    )
 
             # Step 6: Token budget filtering
             step_start = time.time()

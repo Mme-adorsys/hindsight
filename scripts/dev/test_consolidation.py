@@ -398,7 +398,7 @@ def run_test(bank_id: str, base_url: str, skip_reset: bool = False) -> int:
     print("=" * 72)
     try:
         ncr_resp = _post_json(
-            f"{base}/v1/default/banks/{bank_id}/ncr/trigger",
+            f"{base}/v1/default/banks/{bank_id}/ncr/trigger?phase=c1",
             {"bank_id": bank_id},
             timeout=600.0,
         )

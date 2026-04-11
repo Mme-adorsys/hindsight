@@ -66,7 +66,12 @@ def set_default_graph_retriever(retriever: GraphRetriever) -> None:
 
 
 async def retrieve_semantic(
-    conn, query_emb_str: str, bank_id: str, limit: int, tags: list[str] | None = None
+    conn,
+    query_emb_str: str,
+    bank_id: str,
+    limit: int,
+    tags: list[str] | None = None,
+    similarity_threshold: float = 0.5,
 ) -> list[RetrievalResult]:
     """
     Semantic retrieval via vector similarity.
@@ -77,6 +82,7 @@ async def retrieve_semantic(
         bank_id: bank ID
         limit: Maximum results to return
         tags: Optional tag filter — only return Engrams whose tags contain all given values.
+        similarity_threshold: Minimum cosine similarity to include (mode-dependent).
 
     Returns:
         List of RetrievalResult objects
@@ -100,7 +106,7 @@ async def retrieve_semantic(
         WHERE mu.bank_id = $2
           AND mu.embedding IS NOT NULL
           {tag_filter}
-          AND (1 - (mu.embedding <=> $1::vector)) >= 0.3
+          AND (1 - (mu.embedding <=> $1::vector)) >= {similarity_threshold}
         ORDER BY mu.embedding <=> $1::vector
         LIMIT ${len(params)}
         """,
@@ -405,6 +411,7 @@ async def retrieve_parallel(
     tags: list[str] | None = None,
     mode=None,  # RetrievalMode | None — forwarded to graph retriever for mode-aware patterns
     registry: "RetrieverRegistry | None" = None,  # Bank-aware retriever registry (T6)
+    similarity_threshold: float = 0.5,  # Mode-dependent minimum cosine similarity
 ) -> ParallelRetrievalResult:
     """
     Run 3-way or 4-way parallel retrieval (adds temporal if detected).
@@ -452,6 +459,7 @@ async def retrieve_parallel(
             retriever,
             tags=tags,
             mode=mode,
+            similarity_threshold=similarity_threshold,
         )
     else:
         return await _retrieve_parallel_bfs(
@@ -464,6 +472,7 @@ async def retrieve_parallel(
             retriever,
             tags=tags,
             mode=mode,
+            similarity_threshold=similarity_threshold,
         )
 
 
@@ -485,6 +494,7 @@ async def _retrieve_parallel_mpfp(
     retriever: GraphRetriever,
     tags: list[str] | None = None,
     mode=None,  # RetrievalMode | None
+    similarity_threshold: float = 0.5,
 ) -> ParallelRetrievalResult:
     """
     MPFP retrieval with true parallelization.
@@ -503,7 +513,14 @@ async def _retrieve_parallel_mpfp(
         """Independent semantic retrieval."""
         start = time.time()
         async with acquire_with_retry(pool) as conn:
-            results = await retrieve_semantic(conn, query_embedding_str, bank_id, limit=thinking_budget, tags=tags)
+            results = await retrieve_semantic(
+                conn,
+                query_embedding_str,
+                bank_id,
+                limit=thinking_budget,
+                tags=tags,
+                similarity_threshold=similarity_threshold,
+            )
         return _TimedResult(results, time.time() - start)
 
     async def run_bm25() -> _TimedResult:
@@ -697,6 +714,7 @@ async def _retrieve_parallel_bfs(
     retriever: GraphRetriever,
     tags: list[str] | None = None,
     mode=None,  # RetrievalMode | None — forwarded to retriever (no-op for BFS)
+    similarity_threshold: float = 0.5,
 ) -> ParallelRetrievalResult:
     """BFS retrieval: all methods run in parallel (original behavior)."""
     import time
@@ -704,7 +722,14 @@ async def _retrieve_parallel_bfs(
     async def run_semantic() -> _TimedResult:
         start = time.time()
         async with acquire_with_retry(pool) as conn:
-            results = await retrieve_semantic(conn, query_embedding_str, bank_id, limit=thinking_budget, tags=tags)
+            results = await retrieve_semantic(
+                conn,
+                query_embedding_str,
+                bank_id,
+                limit=thinking_budget,
+                tags=tags,
+                similarity_threshold=similarity_threshold,
+            )
         return _TimedResult(results, time.time() - start)
 
     async def run_bm25() -> _TimedResult:
