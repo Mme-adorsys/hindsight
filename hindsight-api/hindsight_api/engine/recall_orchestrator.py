@@ -587,7 +587,8 @@ class RecallOrchestrator:
         recall_start = time.time()
 
         # Apply mode-dependent recall config (similarity threshold, token budget, CE minimum, max results)
-        mode_key = mode if mode and mode in self.RECALL_MODE_CONFIG else "exploration"
+        mode_str = mode.value if hasattr(mode, "value") else mode
+        mode_key = mode_str if mode_str and mode_str in self.RECALL_MODE_CONFIG else "exploration"
         mode_config = self.RECALL_MODE_CONFIG[mode_key]
         similarity_threshold = float(mode_config["similarity_threshold"])
         max_tokens = int(mode_config["max_tokens"])
