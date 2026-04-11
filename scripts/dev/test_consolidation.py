@@ -293,19 +293,37 @@ def run_test(bank_id: str, base_url: str, skip_reset: bool = False) -> int:
     base = base_url.rstrip("/")
     engrams = build_test_engrams()
 
-    # ── Step 1: Reset ──────────────────────────────────────────────
+    # ── Step 1: Reset (all 3 stores: PG + Qdrant + Neo4j) ──────────
     if not skip_reset:
         print("=" * 72)
-        print("STEP 1: RESET")
+        print("STEP 1: RESET (Postgres + Qdrant + Neo4j)")
         print("=" * 72)
         try:
-            _delete(f"{base}/v1/default/banks/{bank_id}")
-            print(f"  Bank '{bank_id}' deleted (full reset)")
+            # Use reset_bank.py functions for full 3-store cleanup.
+            # The HTTP DELETE only removes PG data — Qdrant vectors with old
+            # embedding model stay behind and cause false dedup matches.
+            import sys
+            from pathlib import Path
+
+            scripts_dir = Path(__file__).resolve().parent
+            sys.path.insert(0, str(scripts_dir))
+            from reset_bank import _load_env, reset_neo4j, reset_postgres, reset_qdrant
+
+            _load_env()
+            pg = reset_postgres(bank_id)
+            pg_total = sum(v for v in pg.values() if v > 0)
+            qd = reset_qdrant(bank_id)
+            neo = reset_neo4j(bank_id)
+            print(f"  Postgres: {pg_total} rows deleted")
+            print(f"  Qdrant:   {qd} points deleted")
+            print(f"  Neo4j:    {neo.get('engrams', 0)} engrams, {neo.get('schemas', 0)} schemas deleted")
         except Exception as exc:
-            if "404" in str(exc) or "not found" in str(exc).lower():
+            print(f"  Warning: 3-store reset failed ({exc}), falling back to API delete")
+            try:
+                _delete(f"{base}/v1/default/banks/{bank_id}")
+                print(f"  Bank '{bank_id}' deleted via API (PG only)")
+            except Exception:
                 print(f"  Bank '{bank_id}' did not exist — clean start")
-            else:
-                print(f"  Warning during reset: {exc}")
         print()
     else:
         print("STEP 1: RESET — skipped (--skip-reset)")
