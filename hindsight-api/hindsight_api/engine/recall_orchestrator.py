@@ -162,15 +162,12 @@ class RecallOrchestrator:
         # Authenticate tenant and set schema in context (for fq_table())
         await self._ctx.authenticate_tenant(request_context)
 
-        # Epic 24: increment bank.op_count for composite strength scoring.
-        # Non-blocking — failure must not break the recall itself.
-        try:
-            from . import engram_dictionary as _dict_repo_top
-
-            _pool_for_op = await self._ctx.get_pool()
-            await _dict_repo_top.increment_bank_op_count(_pool_for_op, bank_id)
-        except Exception as _op_err:
-            logger.warning("bank.op_count increment failed (non-blocking): %s", _op_err)
+        # Epic 24 note: bank.op_count is only incremented on retain (encoding
+        # event), NOT on recall. Recalls already update access_count on hit
+        # engrams — that's the "rehearsal" signal. Counting recalls in op_count
+        # would inflate cycles_alive for unrelated engrams and dampen their
+        # composite_strength unfairly. Only retains and NCR cycles count as
+        # "operational events" that age all engrams.
 
         # Resolve ModeConfig for session-aware retrieval (Epic 06 wire-through; used in Epic 07)
         mode_config = self._ctx.resolve_session_config(session)
