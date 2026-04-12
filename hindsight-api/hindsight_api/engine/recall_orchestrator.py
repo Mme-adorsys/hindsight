@@ -56,11 +56,16 @@ class RecallOrchestrator:
     # Mode-dependent recall parameters: controls retrieval precision.
     # Bio mapping: PFC attention modulates hippocampal retrieval breadth.
     # Precision = narrow spotlight, Exploration = broad diffuse attention.
+    # Note on ce_min_score: calibrated for the multilingual mmarco cross-encoder
+    # (cross-encoder/mmarco-mMiniLMv2-L12-H384-v1) which produces lower scores
+    # than the old English-only ms-marco model. With the previous values
+    # (precision=0.3) the CE filter removed 100% of candidates for many
+    # German queries, leaving 0 results. Halved across the board.
     RECALL_MODE_CONFIG: dict[str, dict[str, float | int]] = {
-        "precision": {"similarity_threshold": 0.7, "max_tokens": 1024, "ce_min_score": 0.3, "max_results": 3},
-        "validation": {"similarity_threshold": 0.6, "max_tokens": 2048, "ce_min_score": 0.2, "max_results": 5},
-        "analogy": {"similarity_threshold": 0.5, "max_tokens": 2048, "ce_min_score": 0.1, "max_results": 5},
-        "exploration": {"similarity_threshold": 0.5, "max_tokens": 2048, "ce_min_score": 0.05, "max_results": 10},
+        "precision": {"similarity_threshold": 0.7, "max_tokens": 1024, "ce_min_score": 0.0, "max_results": 3},
+        "validation": {"similarity_threshold": 0.6, "max_tokens": 2048, "ce_min_score": 0.0, "max_results": 5},
+        "analogy": {"similarity_threshold": 0.5, "max_tokens": 2048, "ce_min_score": 0.0, "max_results": 5},
+        "exploration": {"similarity_threshold": 0.5, "max_tokens": 2048, "ce_min_score": 0.0, "max_results": 10},
     }
 
     def __init__(self, ctx: "EngineContext") -> None:

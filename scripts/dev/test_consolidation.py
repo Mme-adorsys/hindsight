@@ -689,18 +689,32 @@ def run_test(bank_id: str, base_url: str, skip_reset: bool = False) -> int:
         if e.recall_count == 0:
             print(f"  {e.tag} — 0 recalls (skipped)")
             continue
-        print(f"  {e.tag} — {e.recall_count}x recalls ...", end="", flush=True)
+        # Track which tags came back across all recalls for this query
+        hit_tag_counts: dict[str, int] = {}
+        target_hits = 0
         for i in range(e.recall_count):
             try:
-                _post_json(
+                resp = _post_json(
                     f"{base}/v1/default/banks/{bank_id}/memories/recall",
                     {"query": e.recall_query, "mode": e.mode},
                 )
                 done_recalls += 1
+                # Inspect returned results
+                for r in resp.get("results", []):
+                    tags = r.get("tags") or []
+                    if e.tag in tags:
+                        target_hits += 1
+                    for t in tags:
+                        if t.startswith("ct-"):
+                            hit_tag_counts[t] = hit_tag_counts.get(t, 0) + 1
             except Exception as exc:
-                print(f" FAILED at iteration {i + 1}: {exc}")
+                print(f"  {e.tag} FAILED at iteration {i + 1}: {exc}")
                 break
-        print(" done")
+        # Show top-3 tags returned and target hit count
+        top_returned = sorted(hit_tag_counts.items(), key=lambda x: -x[1])[:3]
+        top_str = ", ".join(f"{t}={c}" for t, c in top_returned) if top_returned else "none"
+        marker = "✓" if target_hits > 0 else "✗"
+        print(f"  {marker} {e.tag} — {e.recall_count}x recalls, target hits={target_hits}, top: {top_str}")
     print(f"\n  Total recalls executed: {done_recalls}/{total_recalls}")
     print()
 
