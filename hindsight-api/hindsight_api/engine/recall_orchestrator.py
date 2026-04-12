@@ -56,16 +56,19 @@ class RecallOrchestrator:
     # Mode-dependent recall parameters: controls retrieval precision.
     # Bio mapping: PFC attention modulates hippocampal retrieval breadth.
     # Precision = narrow spotlight, Exploration = broad diffuse attention.
-    # Note on ce_min_score: calibrated for the multilingual mmarco cross-encoder
-    # (cross-encoder/mmarco-mMiniLMv2-L12-H384-v1) which produces lower scores
-    # than the old English-only ms-marco model. With the previous values
-    # (precision=0.3) the CE filter removed 100% of candidates for many
-    # German queries, leaving 0 results. Halved across the board.
+    # Note on ce_min_score: the multilingual mmarco cross-encoder
+    # (cross-encoder/mmarco-mMiniLMv2-L12-H384-v1) produces lower absolute
+    # scores than the old English-only ms-marco model — observed range
+    # 0.0–0.5 for relevant matches. The old precision=0.3 threshold
+    # removed 100% of candidates. Setting it to 0.0 lets too much noise
+    # through. Sweet spot calibrated empirically: precision=0.05 still
+    # filters cross-topic noise (CE ≈ 0.0) but lets borderline-relevant
+    # German matches through (CE ≈ 0.05–0.15).
     RECALL_MODE_CONFIG: dict[str, dict[str, float | int]] = {
-        "precision": {"similarity_threshold": 0.7, "max_tokens": 1024, "ce_min_score": 0.0, "max_results": 3},
-        "validation": {"similarity_threshold": 0.6, "max_tokens": 2048, "ce_min_score": 0.0, "max_results": 5},
-        "analogy": {"similarity_threshold": 0.5, "max_tokens": 2048, "ce_min_score": 0.0, "max_results": 5},
-        "exploration": {"similarity_threshold": 0.5, "max_tokens": 2048, "ce_min_score": 0.0, "max_results": 10},
+        "precision": {"similarity_threshold": 0.7, "max_tokens": 1024, "ce_min_score": 0.05, "max_results": 3},
+        "validation": {"similarity_threshold": 0.6, "max_tokens": 2048, "ce_min_score": 0.03, "max_results": 5},
+        "analogy": {"similarity_threshold": 0.5, "max_tokens": 2048, "ce_min_score": 0.02, "max_results": 5},
+        "exploration": {"similarity_threshold": 0.5, "max_tokens": 2048, "ce_min_score": 0.01, "max_results": 10},
     }
 
     def __init__(self, ctx: "EngineContext") -> None:
