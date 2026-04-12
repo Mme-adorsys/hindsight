@@ -534,12 +534,28 @@ def _resolve_layer(row: dict) -> str:
 
 
 def _find_engram_by_tag(table_rows: list[dict], tag: str) -> dict | None:
-    """Find an engram in the graph response by its unique tag."""
-    for row in table_rows:
-        tags = row.get("tags") or []
-        if tag in tags:
-            return row
-    return None
+    """Find the best-representative engram for a tag.
+
+    Each retain produces multiple engrams (fact extraction splits content
+    into 3-8 facts, all sharing the same tag). We pick the "best" one as
+    the highest-layer engram with the highest strength — that represents
+    the actual consolidation outcome of the retain.
+
+    Layer rank: neocortex (3) > buffer (2) > working (1) > archived (0)
+    """
+    layer_rank = {"neocortex": 3, "buffer": 2, "working": 1, "archived": 0, None: 1}
+    matches = [r for r in table_rows if tag in (r.get("tags") or [])]
+    if not matches:
+        return None
+
+    def sort_key(row: dict):
+        layer = row.get("layer")
+        rank = layer_rank.get(layer, 1)
+        strength = row.get("strength") or 0.0
+        access = row.get("access_count") or 0
+        return (rank, strength, access)
+
+    return max(matches, key=sort_key)
 
 
 @dataclass
@@ -738,23 +754,20 @@ def run_test(bank_id: str, base_url: str, skip_reset: bool = False) -> int:
             r.access_count = row.get("access_count") or 0
             r.strength = row.get("strength")
 
-            # Determine actual layer.
-            # The /graph endpoint does not return engram_dictionary.status,
-            # so we detect archived engrams by their signature: strength=0.0
-            # and layer still 'working' (C1 sets status='archived' + strength=0
-            # but does not change layer).
+            # Determine actual layer from the layer field.
+            # Note: strength=0.0 alone is NOT a reliable archive signal —
+            # fresh engrams (no recalls yet) legitimately have strength=0.0
+            # in working memory. We only mark as archived if the engram
+            # appears in the /graph response with layer='archived'.
             layer = row.get("layer")
-            strength_val = row.get("strength")
-
-            if strength_val is not None and strength_val == 0.0 and (layer is None or layer == "working"):
-                # Archived by C1 (novelty gate sets strength=0.0, status=archived)
-                r.layer = "archived"
-            elif layer is None or layer == "working":
+            if layer is None or layer == "working":
                 r.layer = "working"
             elif layer == "buffer":
                 r.layer = "buffer"
             elif layer == "neocortex":
                 r.layer = "neocortex"
+            elif layer == "archived":
+                r.layer = "archived"
             else:
                 r.layer = layer
 
