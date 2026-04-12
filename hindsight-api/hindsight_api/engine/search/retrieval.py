@@ -161,12 +161,12 @@ async def retrieve_bm25(
         f"""
         SELECT mu.id, mu.text, mu.context, mu.event_date, mu.occurred_start, mu.occurred_end,
                mu.mentioned_at, mu.access_count, mu.embedding, mu.fact_type, mu.document_id, mu.chunk_id,
-               ts_rank_cd(mu.search_vector, to_tsquery('english', $1)) AS bm25_score
+               ts_rank_cd(mu.search_vector, to_tsquery('simple', $1)) AS bm25_score
         FROM {fq_table("memory_units")} mu
         {join_clause}
         WHERE mu.bank_id = $2
           {tag_filter}
-          AND mu.search_vector @@ to_tsquery('english', $1)
+          AND mu.search_vector @@ to_tsquery('simple', $1)
         ORDER BY bm25_score DESC
         LIMIT ${len(params)}
         """,
