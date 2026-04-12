@@ -20,8 +20,13 @@ if TYPE_CHECKING:
 
 from .engram_types import ThalamusScores
 
-# Valid fact types for recall operations (excludes 'observation' which is internal)
-VALID_RECALL_FACT_TYPES = frozenset(["world", "experience", "opinion"])
+# Valid fact types for recall operations.
+# 'observation' is included so the synthesized entity-level summaries
+# (created by observation_regeneration during retain) appear alongside
+# raw facts in recall results. Bio mapping: observations are PFC-
+# consolidated abstractions — the brain often recalls the synthesis,
+# not the raw episodic facts.
+VALID_RECALL_FACT_TYPES = frozenset(["world", "experience", "opinion", "observation"])
 
 
 class TokenUsage(BaseModel):

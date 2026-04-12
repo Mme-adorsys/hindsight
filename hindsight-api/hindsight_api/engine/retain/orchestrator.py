@@ -830,6 +830,15 @@ async def retain_batch(
                 )
                 # Propagate the triggering session's provenance so observations
                 # inherit session_mode + task_context on their engram_dictionary row.
+                # Also collect all unique parent tags from the facts so observations
+                # are discoverable via the same tags as their source facts.
+                _parent_tags: list[str] = []
+                _seen_tags: set[str] = set()
+                for _pf in processed_facts:
+                    for _tag in _pf.tags or []:
+                        if _tag not in _seen_tags:
+                            _seen_tags.add(_tag)
+                            _parent_tags.append(_tag)
                 await observation_regeneration.regenerate_observations_batch(
                     conn,
                     embeddings_model,
@@ -839,6 +848,7 @@ async def retain_batch(
                     log_buffer,
                     session_mode=session_mode_str,
                     session_task_context=session_task_context,
+                    parent_tags=_parent_tags,
                 )
                 entity_ids_for_async = []
                 tracer.record_step(

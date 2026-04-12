@@ -56,6 +56,15 @@ def build_observation_prompt(
     """Build the observation extraction prompt for the LLM."""
     return f"""Based on the following facts about "{entity_name}", generate a list of key observations.
 
+══════════════════════════════════════════════════════════════════════════
+LANGUAGE RULE — HIGHEST PRIORITY
+══════════════════════════════════════════════════════════════════════════
+Output ALL observations in the EXACT SAME language as the input facts.
+- If facts are in German → output German observations.
+- If facts are in Japanese → output Japanese. Same for any other language.
+- NEVER translate to English. NEVER summarize in English.
+- The entity_name itself stays in its original form.
+
 FACTS ABOUT {entity_name.upper()}:
 {facts_text}
 
@@ -70,11 +79,13 @@ GUIDELINES:
 6. Write in third person (e.g., "John is..." not "I think John is...")
 7. If there are conflicting facts, note the most recent or most supported one
 
-EXAMPLES of good observations:
+EXAMPLES of good observations (English input):
 - "John works at Google as a software engineer"
 - "John is detail-oriented and methodical in his approach"
-- "John collaborates frequently with Sarah on the AI project"
-- "John joined the company in 2023"
+
+EXAMPLES of good observations (German input):
+- "PostgreSQL 17 fuehrt einen MERGE-Befehl ein"
+- "Der Connection Pool sollte 20 Verbindungen pro Worker haben"
 
 EXAMPLES of bad observations (avoid these):
 - "John seems like a good person" (opinion/judgment)

@@ -43,6 +43,7 @@ async def regenerate_observations_batch(
     *,
     session_mode: str | None = None,
     session_task_context: str | None = None,
+    parent_tags: list[str] | None = None,
 ) -> None:
     """
     Regenerate observations for top entities in this batch.
@@ -63,6 +64,11 @@ async def regenerate_observations_batch(
         session_task_context: Session.task_context from the triggering retain.
             Same rationale — the observation's encoding happened under the
             same PFC set + goal bias as the source facts.
+        parent_tags: User-provided tags from the triggering retain. Merged
+            into the observation's tag list so observations are discoverable
+            via the same tags as their source facts. Bio mapping: the
+            observation inherits the encoding context (tags = retrieval cues)
+            of its source facts.
     """
     config = get_config()
     TOP_N_ENTITIES = config.observation_top_entities
@@ -143,6 +149,7 @@ async def regenerate_observations_batch(
                 entity_name,
                 session_mode=session_mode,
                 session_task_context=session_task_context,
+                parent_tags=parent_tags,
             )
             total_observations += len(obs_ids)
         except Exception as e:
@@ -165,6 +172,7 @@ async def _regenerate_entity_observations(
     *,
     session_mode: str | None = None,
     session_task_context: str | None = None,
+    parent_tags: list[str] | None = None,
 ) -> list[str]:
     """
     Regenerate observations for a single entity.
@@ -263,6 +271,15 @@ async def _regenerate_entity_observations(
     current_time = utcnow()
     created_ids = []
 
+    # Merge parent tags with the auto-generated observation tags so the
+    # observation is discoverable via the same retrieval cues as its
+    # source facts. Deduplicate to avoid storing the same tag twice.
+    base_tags = ["observation", entity_name.lower()]
+    if parent_tags:
+        merged_tags = list(dict.fromkeys(base_tags + list(parent_tags)))
+    else:
+        merged_tags = base_tags
+
     for obs_text, embedding in zip(observations, embeddings):
         result = await conn.fetchrow(
             f"""
@@ -308,7 +325,7 @@ async def _regenerate_entity_observations(
             """,
             uuid.UUID(obs_id),
             bank_id,
-            ["observation", entity_name.lower()],
+            merged_tags,
             0.3,  # default strength — observations enter at Working-Memory layer
             "working",
             session_mode,
