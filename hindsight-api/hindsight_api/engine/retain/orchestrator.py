@@ -849,6 +849,7 @@ async def retain_batch(
                     session_mode=session_mode_str,
                     session_task_context=session_task_context,
                     parent_tags=_parent_tags,
+                    bank_op_count=_bank_op_count,
                 )
                 entity_ids_for_async = []
                 tracer.record_step(

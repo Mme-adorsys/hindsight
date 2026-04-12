@@ -44,6 +44,7 @@ async def regenerate_observations_batch(
     session_mode: str | None = None,
     session_task_context: str | None = None,
     parent_tags: list[str] | None = None,
+    bank_op_count: int = 0,
 ) -> None:
     """
     Regenerate observations for top entities in this batch.
@@ -150,6 +151,7 @@ async def regenerate_observations_batch(
                 session_mode=session_mode,
                 session_task_context=session_task_context,
                 parent_tags=parent_tags,
+                bank_op_count=bank_op_count,
             )
             total_observations += len(obs_ids)
         except Exception as e:
@@ -173,6 +175,7 @@ async def _regenerate_entity_observations(
     session_mode: str | None = None,
     session_task_context: str | None = None,
     parent_tags: list[str] | None = None,
+    bank_op_count: int = 0,
 ) -> list[str]:
     """
     Regenerate observations for a single entity.
@@ -317,10 +320,12 @@ async def _regenerate_entity_observations(
                 engram_id, bank_id, tags,
                 novelty, surprise, task_relevance, emotional_valence, thalamus_overall,
                 strength, layer, status,
-                expectation, outcome, session_mode, task_context, retain_context
+                expectation, outcome, session_mode, task_context, retain_context,
+                created_at_op
             ) VALUES ($1, $2, $3, NULL, NULL, NULL, NULL, NULL,
                       $4, $5, 'active',
-                      NULL, NULL, $6, $7, NULL)
+                      NULL, NULL, $6, $7, NULL,
+                      $8)
             ON CONFLICT (engram_id) DO NOTHING
             """,
             uuid.UUID(obs_id),
@@ -330,6 +335,7 @@ async def _regenerate_entity_observations(
             "working",
             session_mode,
             session_task_context,
+            bank_op_count,
         )
 
         # Link observation to entity

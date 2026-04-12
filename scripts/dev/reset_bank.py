@@ -78,6 +78,8 @@ def reset_postgres(bank_id: str) -> dict[str, int]:
                     "memory_units",
                     "chunks",
                     "documents",
+                    "entities",
+                    "banks",  # also drops banks.op_count so cycles_alive resets
                 ]
                 for tbl in tables:
                     try:
