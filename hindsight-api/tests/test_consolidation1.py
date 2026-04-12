@@ -18,10 +18,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from hindsight_api.engine.consolidation.consolidation1 import (
-    ConsolidationResult,
     Consolidation1Service,
+    ConsolidationResult,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -123,6 +122,29 @@ class TestNoveltyGate:
         assert result.consolidated == 0
         updates = storage.update_metadata.call_args[0][1]
         assert updates["status"] == "archived"
+
+    @pytest.mark.asyncio
+    async def test_novelty_null_skips_gate(self):
+        """Engrams with NULL novelty (observations) skip the novelty gate.
+
+        Synthesized engrams from observation_regeneration have no thalamus
+        scores — they're abstractions, not raw input. NULL novelty must be
+        treated as "passes the gate", not as 0.0 (which would archive them).
+        """
+        entry = _make_entry("ccc", novelty=None, access_count=10, surprise=0.8)
+        # Override _make_entry default to actually have None
+        entry["novelty"] = None
+        pool, storage, mock_list, mock_op = _make_service_and_run([[entry]])
+
+        with (
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.list_unconsolidated", mock_list),
+            patch("hindsight_api.engine.consolidation.consolidation1.dict_repo.get_bank_op_count", mock_op),
+        ):
+            svc = Consolidation1Service(pool=pool, storage_service=storage)
+            result = await svc.run("test-bank")
+
+        # Must NOT be archived (NULL novelty bypasses gate)
+        assert result.archived == 0
 
     @pytest.mark.asyncio
     async def test_novelty_at_threshold_not_archived(self):

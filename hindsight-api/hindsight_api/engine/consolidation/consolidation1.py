@@ -196,7 +196,15 @@ class Consolidation1Service:
         for entry in batch:
             engram_id = str(entry["engram_id"])
             try:
-                novelty = entry.get("novelty") or 0.0
+                # Note: novelty can legitimately be NULL for synthesized engrams
+                # (observations from observation_regeneration). NULL means
+                # "not applicable" — these are abstractions, not raw input that
+                # would need a novelty check. We skip the novelty gate for them
+                # by treating NULL as "passes the gate" (using a sentinel above
+                # the threshold).
+                raw_novelty = entry.get("novelty")
+                novelty_is_null = raw_novelty is None
+                novelty = raw_novelty if raw_novelty is not None else 1.0
                 emotional_valence = entry.get("emotional_valence") or 0.0
                 surprise = entry.get("surprise") or 0.0
                 access_count = entry.get("access_count") or 0
@@ -204,8 +212,10 @@ class Consolidation1Service:
                 session_mode = entry.get("session_mode")
                 cycles_alive = max(0, bank_op_count - created_at_op)
 
-                # Gate 1: Novelty — known info is not worth consolidating
-                if novelty < MIN_NOVELTY_FOR_PROMOTE:
+                # Gate 1: Novelty — known info is not worth consolidating.
+                # Skipped for synthesized engrams (NULL novelty) — they have
+                # no novelty score because they're abstractions, not raw input.
+                if not novelty_is_null and novelty < MIN_NOVELTY_FOR_PROMOTE:
                     await self._storage.update_metadata(
                         engram_id,
                         {"status": "archived", "strength": 0.0},
