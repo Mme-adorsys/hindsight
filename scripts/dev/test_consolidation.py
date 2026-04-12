@@ -637,7 +637,7 @@ def run_test(bank_id: str, base_url: str, skip_reset: bool = False) -> int:
     print("=" * 72)
     print("STEP 3: SNAPSHOT (after seed, before recalls)")
     print("=" * 72)
-    graph = _get_json(f"{base}/v1/default/banks/{bank_id}/graph?limit=100")
+    graph = _get_json(f"{base}/v1/default/banks/{bank_id}/graph?limit=500")
     table_rows = graph.get("table_rows", [])
     print(f"  Total engrams in bank: {graph.get('total_units', 0)}")
     print()
@@ -714,7 +714,7 @@ def run_test(bank_id: str, base_url: str, skip_reset: bool = False) -> int:
     print("STEP 6: VERIFICATION REPORT")
     print("=" * 72)
 
-    graph_after = _get_json(f"{base}/v1/default/banks/{bank_id}/graph?limit=100")
+    graph_after = _get_json(f"{base}/v1/default/banks/{bank_id}/graph?limit=500")
     rows_after = graph_after.get("table_rows", [])
 
     results: list[EngramResult] = []
