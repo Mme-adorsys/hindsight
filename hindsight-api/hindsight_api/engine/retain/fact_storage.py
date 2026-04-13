@@ -8,6 +8,7 @@ import json
 import logging
 import uuid
 
+from ..consolidation.scoring import SALIENCY_WEIGHT
 from ..memory_engine import fq_table
 from .types import ProcessedFact
 
@@ -145,6 +146,19 @@ async def _insert_engram_dictionary_batch(
     for unit_id, fact in zip(unit_ids, facts):
         ts = fact.thalamus_scores
 
+        # Initial strength inherits the saliency boost from the thalamus scores.
+        # This mirrors `compute_composite_strength` at access_count=0:
+        #     strength = 0.0 (recall_score) + SALIENCY_WEIGHT * max(emo, surprise)
+        # Without this boost, fresh facts enter with strength=0.0 and get dropped
+        # by the recall strength_pre_filter (precision=0.05, validation=0.1, etc.)
+        # before the cross-encoder ever sees them — leaving recalls dominated by
+        # observations (which already enter with strength=0.3).
+        if ts is not None:
+            saliency = max(ts.emotional_valence or 0.0, ts.surprise or 0.0)
+            initial_strength = SALIENCY_WEIGHT * saliency
+        else:
+            initial_strength = 0.0
+
         # Flatten the ThalamusRationale into a JSON-serialisable dict for
         # retain_context. None-values are kept so the UI can tell "no info"
         # apart from "zero value".
@@ -182,7 +196,7 @@ async def _insert_engram_dictionary_batch(
             ts.task_relevance if ts else None,
             ts.emotional_valence if ts else None,
             ts.overall if ts else None,
-            0.0,
+            initial_strength,
             "working",
             "active",
             fact.expectation,

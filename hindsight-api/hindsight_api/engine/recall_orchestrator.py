@@ -1093,12 +1093,31 @@ class RecallOrchestrator:
                 top_scored = top_scored[:max_results]
 
             # Step 6.5 (Epic 24): Update access_count only for engrams that
-            # are actually returned in the response. Only delivered results
-            # count as a genuine "recall hit" — candidates that were scored
-            # but filtered out by the token budget were not truly reactivated.
-            # Bio mapping: hippocampal reactivation requires conscious retrieval,
-            # not mere subthreshold activation.
-            _hit_ids = [sr.id for sr in top_scored]
+            # are actually returned in the response — AND only for those whose
+            # combined_score is "strong" relative to the top hit. A delivered
+            # engram with a score far below the top is just "Beifang" — it
+            # surfaced because the token budget had room, not because it was a
+            # genuine match. Letting every delivered engram bump access leaks
+            # access_count across clusters: a query for ct-known-02 returns
+            # ct-arch-04 in the long tail, ct-arch-04's access grows, the
+            # engram_dictionary strength grows, and the next query is biased
+            # toward the same noise.
+            #
+            # Bio mapping: STC says only strong reactivations promote LTP-late.
+            # Subthreshold reactivations refresh the recall but don't strengthen
+            # the trace.
+            _ACCESS_BUMP_MIN_SCORE = 0.4  # absolute floor
+            _ACCESS_BUMP_RATIO = 0.7  # must be ≥ 70% of the top score
+            _top_score = max((sr.combined_score or 0.0) for sr in top_scored) if top_scored else 0.0
+            _bump_threshold = max(_ACCESS_BUMP_MIN_SCORE, _top_score * _ACCESS_BUMP_RATIO)
+            _hit_ids = [sr.id for sr in top_scored if (sr.combined_score or 0.0) >= _bump_threshold]
+            _skipped_bumps = len(top_scored) - len(_hit_ids)
+            if _skipped_bumps > 0:
+                log_buffer.append(
+                    f"  [6.5] Access bump quality gate: {len(_hit_ids)}/{len(top_scored)} "
+                    f"(threshold={_bump_threshold:.3f}, top={_top_score:.3f}) — "
+                    f"{_skipped_bumps} weak hits not bumped"
+                )
             if _hit_ids:
                 try:
                     async with acquire_with_retry(pool) as _access_conn:

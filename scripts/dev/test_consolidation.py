@@ -111,19 +111,19 @@ def build_test_engrams() -> list[TestEngram]:
         TestEngram(
             tag="ct-db-02",
             cluster="db",
-            label="Connection Pool Optimierung",
+            label="Autovacuum Tuning",
             mode="precision",
             content=(
-                "Der optimale Connection-Pool-Size fuer unseren PostgreSQL-Server "
-                "liegt bei 20 Verbindungen pro Worker-Prozess. Bei mehr als 25 "
-                "treten Lock-Contention-Probleme auf die sich in P99-Latenzen "
-                "ueber 500ms aeussern."
+                "Fuer Tabellen mit hoher Update-Frequenz wurde autovacuum_vacuum_scale_factor "
+                "von 0.2 auf 0.05 gesenkt und autovacuum_vacuum_cost_limit auf 2000 erhoeht. "
+                "Damit laeuft der Autovacuum-Worker oefter und schneller, was das Bloat-Problem "
+                "auf der orders-Tabelle eliminiert hat."
             ),
             task_context="Database tuning",
-            recall_count=5,
-            recall_query="Connection Pool Size 20 Verbindungen Worker Lock Contention",
+            recall_count=1,
+            recall_query="Autovacuum scale factor cost limit Bloat orders Tabelle Update",
             expected_layer="working",
-            expected_reason="Low saliency + precision threshold 0.8 → not enough",
+            expected_reason="1 recall × 3 results = 3 access < MIN_ACCESS_FOR_PROMOTE (5)",
         ),
         TestEngram(
             tag="ct-db-03",
@@ -685,6 +685,8 @@ def run_test(bank_id: str, base_url: str, skip_reset: bool = False) -> int:
     print("=" * 72)
     total_recalls = sum(e.recall_count for e in engrams)
     done_recalls = 0
+    # Diagnose recall pipeline for zero-hit queries: store first response per tag
+    zero_hit_diagnostics: dict[str, dict] = {}
     for e in engrams:
         if e.recall_count == 0:
             print(f"  {e.tag} — 0 recalls (skipped)")
@@ -692,13 +694,16 @@ def run_test(bank_id: str, base_url: str, skip_reset: bool = False) -> int:
         # Track which tags came back across all recalls for this query
         hit_tag_counts: dict[str, int] = {}
         target_hits = 0
+        first_resp: dict | None = None
         for i in range(e.recall_count):
             try:
                 resp = _post_json(
                     f"{base}/v1/default/banks/{bank_id}/memories/recall",
-                    {"query": e.recall_query, "mode": e.mode},
+                    {"query": e.recall_query, "mode": e.mode, "trace": True},
                 )
                 done_recalls += 1
+                if first_resp is None:
+                    first_resp = resp
                 # Inspect returned results
                 for r in resp.get("results", []):
                     tags = r.get("tags") or []
@@ -715,8 +720,68 @@ def run_test(bank_id: str, base_url: str, skip_reset: bool = False) -> int:
         top_str = ", ".join(f"{t}={c}" for t, c in top_returned) if top_returned else "none"
         marker = "✓" if target_hits > 0 else "✗"
         print(f"  {marker} {e.tag} — {e.recall_count}x recalls, target hits={target_hits}, top: {top_str}")
+        # Capture first response for zero-hit queries for later diagnosis
+        if target_hits == 0 and first_resp is not None:
+            zero_hit_diagnostics[e.tag] = {
+                "engram": e,
+                "response": first_resp,
+            }
     print(f"\n  Total recalls executed: {done_recalls}/{total_recalls}")
     print()
+
+    # ── Step 4.5: Recall Diagnostics for zero-hit queries ──────────
+    if zero_hit_diagnostics:
+        print("=" * 72)
+        print("STEP 4.5: RECALL DIAGNOSTICS (zero-hit queries)")
+        print("=" * 72)
+        for tag, diag in zero_hit_diagnostics.items():
+            e: TestEngram = diag["engram"]
+            resp: dict = diag["response"]
+            print(f"\n  ── {tag} (mode={e.mode}) ──")
+            print(f"  Query: {e.recall_query[:100]}")
+            results = resp.get("results", []) or []
+            print(f"  Returned {len(results)} results, top 5:")
+            for idx, r in enumerate(results[:5], 1):
+                rtags = [t for t in (r.get("tags") or []) if t.startswith("ct-")] or ["(no ct-tag)"]
+                rtype = r.get("type", "?")
+                rid = (r.get("id") or "")[:8]
+                rtext = (r.get("text") or "").replace("\n", " ")[:80]
+                print(f"    {idx}. id={rid} type={rtype} tags={','.join(rtags)} | {rtext}")
+            # Pipeline trace summary
+            pt = resp.get("pipeline_trace") or {}
+            steps = pt.get("steps") or []
+            if steps:
+                print(f"  Pipeline trace ({len(steps)} steps):")
+                for step in steps:
+                    name = step.get("name", "?")
+                    dur = step.get("duration_ms", 0)
+                    outputs = step.get("outputs") or {}
+                    rationale = step.get("rationale") or ""
+                    # Show key counts from outputs
+                    summary_keys = [
+                        k
+                        for k in (
+                            "candidates",
+                            "results_kept",
+                            "results_filtered",
+                            "results_selected",
+                            "kept",
+                            "removed",
+                            "tokens_used",
+                            "scored_count",
+                            "merged_count",
+                            "candidates_in",
+                            "candidates_out",
+                            "filtered",
+                        )
+                        if k in outputs
+                    ]
+                    summary = ", ".join(f"{k}={outputs[k]}" for k in summary_keys)
+                    extra = f" — {rationale}" if rationale else ""
+                    print(f"    [{dur:6.1f}ms] {name}: {summary}{extra}")
+            else:
+                print("  Pipeline trace: <empty>")
+        print()
 
     # ── Step 5: NCR Trigger ────────────────────────────────────────
     print("=" * 72)
