@@ -787,9 +787,15 @@ class AdminOperations:
         """
         Aggregated Engram lifecycle statistics for a bank.
 
-        Counts active Engrams grouped by layer (working_memory = layer IS NULL,
-        buffer, neocortex) with avg strength per layer, plus a global
-        strength distribution (weak < 0.3, moderate 0.3–0.7, strong > 0.7).
+        Counts active Engrams grouped by layer with avg strength per layer,
+        plus a global strength distribution (weak < 0.3, moderate 0.3–0.7,
+        strong > 0.7).
+
+        Layer normalization: both ``layer IS NULL`` (legacy) and
+        ``layer = 'working'`` (Epic 24 naming, written by the retain pipeline
+        in ``fact_storage.py`` and ``observation_regeneration.py``) count as
+        ``working_memory`` — matching the Working-Memory filter used by
+        Consolidation 1 (see ``engram_dictionary.list_unconsolidated``).
 
         Reads from ``engram_dictionary`` (the canonical hippocampal pointer index,
         Epic 01 ch. 3) via SQL GROUP BY — the existing indices
@@ -807,12 +813,19 @@ class AdminOperations:
             layer_rows = await conn.fetch(
                 f"""
                 SELECT
-                    COALESCE(layer, 'working_memory') AS layer_name,
+                    CASE
+                        WHEN layer IS NULL OR layer = 'working' THEN 'working_memory'
+                        ELSE layer
+                    END AS layer_name,
                     COUNT(*) AS count,
                     AVG(strength) AS avg_strength
                 FROM {fq_table("engram_dictionary")}
                 WHERE bank_id = $1 AND status = 'active'
-                GROUP BY COALESCE(layer, 'working_memory')
+                GROUP BY
+                    CASE
+                        WHEN layer IS NULL OR layer = 'working' THEN 'working_memory'
+                        ELSE layer
+                    END
                 """,
                 bank_id,
             )
