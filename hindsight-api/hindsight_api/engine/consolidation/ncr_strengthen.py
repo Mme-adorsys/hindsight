@@ -33,6 +33,7 @@ import asyncpg
 from hindsight_api.engine import engram_dictionary as dict_repo
 from hindsight_api.engine.consolidation.scoring import (
     get_promote_threshold_for_tags,
+    log_lifecycle_transition,
     passes_hard_gates,
 )
 from hindsight_api.engine.engram_storage import EngramStorageInterface
@@ -78,6 +79,9 @@ class StrengthenResult:
     incremented: int = 0
     errors: int = 0
     error_ids: list[str] = field(default_factory=list)
+    # Epic 24 Story 05: buffer→working downgrades for engrams whose composite
+    # fell below their tag-based promote threshold after a karenz period.
+    downgraded: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -161,31 +165,35 @@ class StrengthenProcessor:
             result.incremented += batch_result.incremented
             result.errors += batch_result.errors
             result.error_ids.extend(batch_result.error_ids)
+            result.downgraded += batch_result.downgraded
 
-            # Advance offset by the full batch size so we never revisit the
-            # same rows within this run. Promoted entries are gone from the
-            # buffer query (layer changed to neocortex), but incremented
-            # entries remain — without advancing past them we'd loop forever,
-            # re-incrementing the same 5 engrams indefinitely.
+            # Advance offset by the rows that stay in the ``layer='buffer'``
+            # filter. Promoted entries move to neocortex and downgraded
+            # entries (Story 05) move back to working, so both drop out of
+            # subsequent fetches. Incremented and errored entries stay in
+            # place — without advancing past them we'd loop forever,
+            # re-incrementing the same rows.
             # (Discovered in live testing: ncr_cycles_survived ran up to 183k
             # on 5 engrams before the process was killed.)
-            offset += len(batch) - batch_result.promoted
+            offset += len(batch) - batch_result.promoted - batch_result.downgraded
 
             logger.info(
-                "[NCRStrengthen] bank=%s batch=%d promoted=%d incremented=%d errors=%d",
+                "[NCRStrengthen] bank=%s batch=%d promoted=%d incremented=%d downgraded=%d errors=%d",
                 bank_id,
                 len(batch),
                 batch_result.promoted,
                 batch_result.incremented,
+                batch_result.downgraded,
                 batch_result.errors,
             )
 
         logger.info(
-            "[NCRStrengthen] Done. bank=%s total=%d promoted=%d incremented=%d errors=%d",
+            "[NCRStrengthen] Done. bank=%s total=%d promoted=%d incremented=%d downgraded=%d errors=%d",
             bank_id,
             result.total,
             result.promoted,
             result.incremented,
+            result.downgraded,
             result.errors,
         )
         return result
@@ -200,8 +208,34 @@ class StrengthenProcessor:
         for entry in batch:
             engram_id = str(entry["engram_id"])
             try:
+                # Neocortex guard — these should never appear in the buffer
+                # query, but the bidirectional lifecycle could theoretically
+                # route an odd row here. Skip defensively.
+                if entry.get("layer") == "neocortex":
+                    continue
+
+                # Epic 24 Story 05: Buffer → Working downgrade. A buffer
+                # Engram whose composite fell below the tag-based promote
+                # threshold despite sitting in the buffer for at least
+                # ``promotion_ncr_cycles`` cycles is demoted back to working
+                # memory. Fresh promotions (within the karenz window) are
+                # left alone so one bad cycle doesn't immediately bounce them.
+                if self._should_downgrade(entry):
+                    composite = float(entry.get("strength") or 0.0)
+                    await self._downgrade(engram_id, composite)
+                    result.downgraded += 1
+                    continue
+
                 if self._meets_promotion_criteria(entry, bank_size):
-                    await self._promote(engram_id, float(entry.get("strength") or 0.0))
+                    composite = float(entry.get("strength") or 0.0)
+                    await self._promote(engram_id, composite)
+                    log_lifecycle_transition(
+                        engram_id,
+                        from_layer="buffer",
+                        to_layer="neocortex",
+                        composite=composite,
+                        trigger="promote",
+                    )
                     result.promoted += 1
                 else:
                     await dict_repo.increment_ncr_cycles(self._pool, engram_id)
@@ -228,6 +262,22 @@ class StrengthenProcessor:
         threshold = get_promote_threshold_for_tags(tags)
         return composite >= threshold
 
+    def _should_downgrade(self, entry: dict) -> bool:
+        """Return True if a buffer Engram should drop back to working memory.
+
+        Applied only after the karenz period has passed (``ncr_cycles_survived
+        ≥ promotion_ncr_cycles``) so freshly buffered Engrams get a protected
+        observation window before any bounces. Neocortex is already guarded
+        by the caller.
+        """
+        ncr_cycles = int(entry.get("ncr_cycles_survived") or 0)
+        if ncr_cycles < self._config.promotion_ncr_cycles:
+            return False
+        composite = float(entry.get("strength") or 0.0)
+        tags = entry.get("tags") or None
+        threshold = get_promote_threshold_for_tags(tags)
+        return composite < threshold
+
     async def _promote(self, engram_id: str, current_strength: float) -> None:
         """Promote a buffer Engram to neocortex layer (no strength boost)."""
         await self._storage.update_metadata(
@@ -237,4 +287,18 @@ class StrengthenProcessor:
                 "strength": current_strength,
                 "promoted_at": datetime.now(timezone.utc),
             },
+        )
+
+    async def _downgrade(self, engram_id: str, current_strength: float) -> None:
+        """Demote a buffer Engram back to the working layer (Story 05)."""
+        await self._storage.update_metadata(
+            engram_id,
+            {"layer": "working", "strength": current_strength},
+        )
+        log_lifecycle_transition(
+            engram_id,
+            from_layer="buffer",
+            to_layer="working",
+            composite=current_strength,
+            trigger="downgrade",
         )

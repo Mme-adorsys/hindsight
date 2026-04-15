@@ -39,12 +39,56 @@ engram-lifecycle-scoring.md ch. 3.
 
 from __future__ import annotations
 
+import logging
 import math
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from ..engram_types import ThalamusScores
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Epic 24 Story 05 — Lifecycle transition logging
+# ---------------------------------------------------------------------------
+
+LifecycleTrigger = Literal["promote", "archive", "reactivate", "downgrade"]
+
+
+def log_lifecycle_transition(
+    engram_id: str,
+    *,
+    from_layer: str | None,
+    to_layer: str | None,
+    composite: float,
+    trigger: LifecycleTrigger,
+) -> None:
+    """Log a single bidirectional lifecycle transition (Epic 24 Story 05).
+
+    Each NCR phase calls this whenever an Engram changes its ``layer`` (or
+    its ``status`` between active/archived). The log line is structured so
+    the Control Plane NCR Dashboard (Epic 21) can parse it later — schema
+    persistence to a dedicated ``lifecycle_events`` table is out of scope
+    for Story 05 and will land with the dashboard story.
+
+    Args:
+        engram_id: UUID of the Engram that transitioned.
+        from_layer: Layer before the transition. ``None`` for archive→active
+            paths where the pre-transition layer was the archived tombstone.
+        to_layer: Layer after the transition. ``None`` for active→archive.
+        composite: Composite score that drove the decision.
+        trigger: Which phase / decision caused the transition.
+    """
+    logger.info(
+        "[Lifecycle] engram=%s from=%s to=%s composite=%.3f trigger=%s",
+        engram_id,
+        from_layer or "-",
+        to_layer or "-",
+        composite,
+        trigger,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Hard gates

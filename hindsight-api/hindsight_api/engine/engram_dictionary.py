@@ -268,6 +268,47 @@ async def list_active_for_decay(
     return [dict(row) for row in rows]
 
 
+async def list_archived_for_reactivation(
+    pool: asyncpg.Pool,
+    bank_id: str,
+    batch_size: int = 200,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """Return archived Engrams for Epic 24 Story 05 reactivation scan.
+
+    Used by ``DecayProcessor`` after the active-engram decay pass: every
+    archived Engram gets its composite recomputed, and those whose composite
+    climbs back above the archive threshold are restored to the active pool.
+    Ordered by strength DESC so the most promising candidates are processed
+    first — relevant if batch budget runs out.
+
+    Args:
+        pool: asyncpg connection pool.
+        bank_id: Required — all queries are bank-scoped.
+        batch_size: Maximum number of entries per call.
+        offset: Pagination offset for batch processing.
+
+    Returns:
+        List of dicts with every engram_dictionary column. Only rows with
+        ``status='archived'`` are returned; neocortex-tagged rows are never
+        reached because they never get archived in the first place.
+    """
+    async with acquire_with_retry(pool) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT * FROM engram_dictionary
+            WHERE bank_id = $1
+              AND status = 'archived'
+            ORDER BY strength DESC
+            LIMIT $2 OFFSET $3
+            """,
+            bank_id,
+            batch_size,
+            offset,
+        )
+    return [dict(row) for row in rows]
+
+
 async def list_unconsolidated(
     pool: asyncpg.Pool,
     bank_id: str,

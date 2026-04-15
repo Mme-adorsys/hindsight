@@ -71,10 +71,18 @@ def _engram_row(
     }
 
 
-async def _run_service_with_batches(svc, batches: list[list[dict]], patch_targets: dict) -> object:
+async def _run_service_with_batches(
+    svc,
+    batches: list[list[dict]],
+    patch_targets: dict,
+    archived_batches: list[list[dict]] | None = None,
+) -> object:
     """Patch ``dict_repo`` entry points and run the service once."""
     return_values = batches + [[]]
     mock_list = AsyncMock(side_effect=return_values)
+
+    archived_return = (archived_batches or []) + [[]]
+    mock_archived = AsyncMock(side_effect=archived_return)
 
     mocks = {
         "hindsight_api.engine.consolidation.consolidation1.dict_repo.get_bank_session_count": AsyncMock(
@@ -91,6 +99,7 @@ async def _run_service_with_batches(svc, batches: list[list[dict]], patch_target
             return_value=patch_targets.get("engram_count", 1000)
         ),
         "hindsight_api.engine.consolidation.ncr_decay.dict_repo.list_active_for_decay": mock_list,
+        "hindsight_api.engine.consolidation.ncr_decay.dict_repo.list_archived_for_reactivation": mock_archived,
         "hindsight_api.engine.consolidation.ncr_strengthen.dict_repo.get_bank_engram_count": AsyncMock(
             return_value=patch_targets.get("engram_count", 1000)
         ),
@@ -322,6 +331,7 @@ class TestStrengthenDispatch:
 
     @pytest.mark.asyncio
     async def test_fact_tag_needs_higher_composite(self) -> None:
+        """Fact in buffer below 0.7 past karenz → downgraded to working (Story 05)."""
         storage = AsyncMock()
         entry = _engram_row(
             "e10",
@@ -330,14 +340,17 @@ class TestStrengthenDispatch:
             tags=["fact"],
             access_count=10,
             novelty=0.8,
-            ncr_cycles_survived=3,
+            ncr_cycles_survived=3,  # past karenz → eligible for downgrade
         )
         svc = StrengthenProcessor(pool=MagicMock(), storage_service=storage)
 
         result = await _run_service_with_batches(svc, [[entry]], {"engram_count": 1000})
 
         assert result.promoted == 0
-        assert result.incremented == 1
+        assert result.downgraded == 1
+        args, _ = storage.update_metadata.await_args
+        assert args[0] == "e10"
+        assert args[1]["layer"] == "working"
 
     @pytest.mark.asyncio
     async def test_hard_gate_blocks_promotion(self) -> None:
@@ -358,3 +371,165 @@ class TestStrengthenDispatch:
 
         assert result.promoted == 0
         assert result.incremented == 1
+
+
+# ---------------------------------------------------------------------------
+# Bidirectional Lifecycle (Story 05)
+# ---------------------------------------------------------------------------
+
+
+class TestReactivation:
+    @pytest.mark.asyncio
+    async def test_archived_engram_with_recovered_composite_reactivates_to_working(self) -> None:
+        storage = AsyncMock()
+        qdrant = AsyncMock()
+        # Archived engram, high thalamus, a few new recalls since archival.
+        # At sessions_alive=0 (created_at_session==session_count) decay=1.0 →
+        # composite = 0.5 → above ARCHIVE_THRESHOLD_WM (0.08), below fact
+        # threshold (0.7) → should reactivate to working memory.
+        archived = _engram_row(
+            "e12",
+            layer="archived",
+            strength=0.01,
+            thalamus_overall=0.5,
+            access_count=3,
+            created_at_session=10,
+            tags=["fact"],
+        )
+        svc = DecayProcessor(pool=MagicMock(), storage_service=storage, qdrant=qdrant)
+
+        result = await _run_service_with_batches(
+            svc,
+            [[]],  # no active engrams
+            {"session_count": 10, "engram_count": 1000},
+            archived_batches=[[archived]],
+        )
+
+        assert result.reactivated_to_working == 1
+        assert result.reactivated_to_buffer == 0
+        assert result.reactivated_count == 1
+        # update_metadata should restore status='active' + layer='working'
+        calls = [c for c in storage.update_metadata.await_args_list if c.args[0] == "e12"]
+        assert len(calls) == 1
+        assert calls[0].args[1] == {"layer": "working", "status": "active", "strength": pytest.approx(0.5)}
+
+    @pytest.mark.asyncio
+    async def test_archived_engram_with_strong_recovery_goes_to_buffer(self) -> None:
+        storage = AsyncMock()
+        qdrant = AsyncMock()
+        # High thalamus + enough accesses to clear hard gates → straight to buffer.
+        archived = _engram_row(
+            "e13",
+            layer="archived",
+            strength=0.0,
+            thalamus_overall=0.9,
+            access_count=8,  # >= min_access(1000)=5
+            novelty=0.8,
+            created_at_session=10,
+            tags=["experience"],  # threshold 0.4
+        )
+        svc = DecayProcessor(pool=MagicMock(), storage_service=storage, qdrant=qdrant)
+
+        result = await _run_service_with_batches(
+            svc,
+            [[]],
+            {"session_count": 10, "engram_count": 1000},
+            archived_batches=[[archived]],
+        )
+
+        assert result.reactivated_to_buffer == 1
+        assert result.reactivated_to_working == 0
+        calls = [c for c in storage.update_metadata.await_args_list if c.args[0] == "e13"]
+        assert calls[0].args[1]["layer"] == "buffer"
+        assert calls[0].args[1]["status"] == "active"
+
+    @pytest.mark.asyncio
+    async def test_archived_engram_still_too_weak_stays_archived(self) -> None:
+        storage = AsyncMock()
+        qdrant = AsyncMock()
+        # Unused, long-archived → composite ~ 0 → stays below floor.
+        archived = _engram_row(
+            "e14",
+            layer="archived",
+            strength=0.0,
+            thalamus_overall=0.05,
+            access_count=0,
+            created_at_session=0,
+        )
+        svc = DecayProcessor(pool=MagicMock(), storage_service=storage, qdrant=qdrant)
+
+        result = await _run_service_with_batches(
+            svc,
+            [[]],
+            {"session_count": 100, "engram_count": 1000},
+            archived_batches=[[archived]],
+        )
+
+        assert result.reactivated_count == 0
+        # update_metadata should never be called on the archived row
+        touched = [c for c in storage.update_metadata.await_args_list if c.args[0] == "e14"]
+        assert touched == []
+
+
+class TestDowngrade:
+    @pytest.mark.asyncio
+    async def test_buffer_engram_past_karenz_with_weak_composite_is_downgraded(self) -> None:
+        storage = AsyncMock()
+        entry = _engram_row(
+            "e15",
+            layer="buffer",
+            strength=0.3,  # below experience threshold (0.4)
+            tags=["experience"],
+            access_count=10,
+            novelty=0.8,
+            ncr_cycles_survived=3,  # past karenz
+        )
+        svc = StrengthenProcessor(pool=MagicMock(), storage_service=storage)
+
+        result = await _run_service_with_batches(svc, [[entry]], {"engram_count": 1000})
+
+        assert result.downgraded == 1
+        assert result.promoted == 0
+        args, _ = storage.update_metadata.await_args
+        assert args[0] == "e15"
+        assert args[1]["layer"] == "working"
+
+    @pytest.mark.asyncio
+    async def test_buffer_engram_within_karenz_is_not_downgraded(self) -> None:
+        storage = AsyncMock()
+        entry = _engram_row(
+            "e16",
+            layer="buffer",
+            strength=0.1,  # very weak
+            tags=["experience"],
+            access_count=2,
+            novelty=0.5,
+            ncr_cycles_survived=1,  # within karenz — protected
+        )
+        svc = StrengthenProcessor(pool=MagicMock(), storage_service=storage)
+
+        result = await _run_service_with_batches(svc, [[entry]], {"engram_count": 1000})
+
+        assert result.downgraded == 0
+        assert result.promoted == 0
+        assert result.incremented == 1
+        # Only the ncr_cycles increment was touched, nothing persisted via storage
+        storage.update_metadata.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_neocortex_is_never_touched_by_downgrade(self) -> None:
+        storage = AsyncMock()
+        entry = _engram_row(
+            "e17",
+            layer="neocortex",  # defensive path — should not even be in buffer list
+            strength=0.1,
+            tags=["fact"],
+            ncr_cycles_survived=10,
+        )
+        svc = StrengthenProcessor(pool=MagicMock(), storage_service=storage)
+
+        result = await _run_service_with_batches(svc, [[entry]], {"engram_count": 1000})
+
+        assert result.downgraded == 0
+        assert result.promoted == 0
+        storage.update_metadata.assert_not_awaited()

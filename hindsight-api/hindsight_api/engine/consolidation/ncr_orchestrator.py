@@ -331,15 +331,19 @@ class NCROrchestrator:
                     # top level so the NCR dashboard can render it without
                     # reaching into phase1 internals.
                     report.composite_distribution = dict(report.phase1.composite_distribution)
+                    # Epic 24 Story 05: expose reactivation totals on the report.
+                    report.reactivated_count = report.phase1.reactivated_count
                     _s.set_output(asdict(report.phase1))
                     _s.set_rationale(
                         f"{report.phase1.decayed} engrams recomputed (composite = thalamus × decay), "
-                        f"{report.phase1.archived} archived below threshold"
+                        f"{report.phase1.archived} archived below threshold, "
+                        f"{report.phase1.reactivated_count} reactivated from archive"
                     )
                     logger.info(
-                        "[NCR] C2/Decay done: archived=%d decayed=%d",
+                        "[NCR] C2/Decay done: archived=%d decayed=%d reactivated=%d",
                         report.phase1.archived,
                         report.phase1.decayed,
+                        report.phase1.reactivated_count,
                     )
             except Exception as exc:
                 msg = f"C2/Decay failed: {exc}"
@@ -350,12 +354,19 @@ class NCROrchestrator:
             try:
                 with _tracer.step("c2_strengthen") as _s:
                     report.phase2 = await self._strengthen.process(bank_id)
+                    # Epic 24 Story 05: expose downgrade totals on the report.
+                    report.downgraded_count = report.phase2.downgraded
                     _s.set_output(asdict(report.phase2))
                     _s.set_rationale(
-                        f"{report.phase2.promoted} engrams met neocortex promotion criteria "
-                        f"(strength >= 0.4, access_count >= 3, ncr_cycles_survived >= 2)"
+                        f"{report.phase2.promoted} engrams promoted to neocortex "
+                        f"(composite ≥ tag threshold, hard gates, karenz), "
+                        f"{report.phase2.downgraded} downgraded buffer → working"
                     )
-                    logger.info("[NCR] C2/Strengthen done: promoted=%d", report.phase2.promoted)
+                    logger.info(
+                        "[NCR] C2/Strengthen done: promoted=%d downgraded=%d",
+                        report.phase2.promoted,
+                        report.phase2.downgraded,
+                    )
             except Exception as exc:
                 msg = f"C2/Strengthen failed: {exc}"
                 logger.error("[NCR] %s", msg)
