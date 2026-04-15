@@ -87,6 +87,35 @@ class DecayResult:
     unchanged: int = 0
     errors: int = 0
     error_ids: list[str] = field(default_factory=list)
+    # Epic 24 Story 06: histogram of composite scores observed during the
+    # decay pass. Populated inline as each Engram is scored so we don't need
+    # a second query. Buckets: "<0.1", "0.1-0.3", "0.3-0.5", "0.5-0.7",
+    # "0.7-1.0", ">1.0". Surfaced via NCRReport.composite_distribution.
+    composite_distribution: dict[str, int] = field(
+        default_factory=lambda: {
+            "<0.1": 0,
+            "0.1-0.3": 0,
+            "0.3-0.5": 0,
+            "0.5-0.7": 0,
+            "0.7-1.0": 0,
+            ">1.0": 0,
+        }
+    )
+
+
+def _bucket_composite(value: float) -> str:
+    """Return the histogram bucket for a composite score."""
+    if value < 0.1:
+        return "<0.1"
+    if value < 0.3:
+        return "0.1-0.3"
+    if value < 0.5:
+        return "0.3-0.5"
+    if value < 0.7:
+        return "0.5-0.7"
+    if value <= 1.0:
+        return "0.7-1.0"
+    return ">1.0"
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +201,8 @@ class DecayProcessor:
             result.unchanged += batch_result.unchanged
             result.errors += batch_result.errors
             result.error_ids.extend(batch_result.error_ids)
+            for bucket, count in batch_result.composite_distribution.items():
+                result.composite_distribution[bucket] += count
 
             # Archived entries are removed from subsequent queries (status filter).
             # Error/unchanged entries remain — advance offset past them.
@@ -241,6 +272,11 @@ class DecayProcessor:
                     sa,
                     r,
                 )
+
+                # Epic 24 Story 06: feed the histogram — every scored Engram
+                # gets one bucket increment regardless of outcome (archive /
+                # unchanged / decayed).
+                result.composite_distribution[_bucket_composite(new_strength)] += 1
 
                 archive_threshold = (
                     self._config.archive_threshold_buffer if layer == "buffer" else self._config.archive_threshold_wm

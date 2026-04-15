@@ -80,6 +80,15 @@ class NCRReport:
         phase2:       Result from C2/Strengthen (Buffer → Neocortex).
         phase3:       Result from C3/Schema Compression.
         errors:       Phase-level error messages (phase failures, lock conflicts).
+        reactivated_count: Engrams brought back from archive to an active
+            layer during this run. Epic 24 Story 06 surfaces the field;
+            Story 05 is the one that actually fills it.
+        downgraded_count: Buffer Engrams demoted back to Working Memory
+            during this run. Same story: surfaced in 06, populated in 05.
+        composite_distribution: Histogram of composite scores observed during
+            the Decay phase. Six buckets (``<0.1``, ``0.1-0.3``, ``0.3-0.5``,
+            ``0.5-0.7``, ``0.7-1.0``, ``>1.0``). Copied from
+            ``DecayResult.composite_distribution`` after phase1 runs.
     """
 
     bank_id: str
@@ -92,6 +101,10 @@ class NCRReport:
     phase3: SchemaResult | None = None
     promotion: PromotionResult | None = None  # Phase 4: Shared Bank Promotion (Epic 14 B5)
     errors: list[str] = field(default_factory=list)
+    # Epic 24 Story 06 additions — Story 05 wires up reactivate/downgrade.
+    reactivated_count: int = 0
+    downgraded_count: int = 0
+    composite_distribution: dict[str, int] = field(default_factory=dict)
 
     @property
     def duration_seconds(self) -> float | None:
@@ -314,9 +327,13 @@ class NCROrchestrator:
             try:
                 with _tracer.step("c2_decay") as _s:
                     report.phase1 = await self._decay.process(bank_id)
+                    # Epic 24 Story 06: surface the composite histogram at the
+                    # top level so the NCR dashboard can render it without
+                    # reaching into phase1 internals.
+                    report.composite_distribution = dict(report.phase1.composite_distribution)
                     _s.set_output(asdict(report.phase1))
                     _s.set_rationale(
-                        f"{report.phase1.decayed} engrams decayed via strength * decay_rate, "
+                        f"{report.phase1.decayed} engrams recomputed (composite = thalamus × decay), "
                         f"{report.phase1.archived} archived below threshold"
                     )
                     logger.info(
