@@ -315,6 +315,10 @@ class Bank(Base):
     # Epic 24: total retain+recall operations for this bank. Used to compute
     # cycles_alive = op_count - engram.created_at_op for composite strength scoring.
     op_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    # Epic 24 Story 01: total completed sessions for this bank. Replaces op_count
+    # as the aging metric — incremented once per session close (not per operation).
+    # Used to compute sessions_alive = session_count - engram.created_at_session.
+    session_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 
@@ -371,6 +375,10 @@ class EngramDictionary(Base):
     # Epic 24: snapshot of bank.op_count at engram creation time. Together with
     # bank.op_count this gives cycles_alive = op_count - created_at_op.
     created_at_op: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    # Epic 24 Story 01: snapshot of bank.session_count at engram creation time.
+    # Replaces created_at_op as the aging anchor — together with bank.session_count
+    # this yields sessions_alive = session_count - created_at_session.
+    created_at_session: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
 
     # Lifecycle status
     status: Mapped[str] = mapped_column(Text, server_default="active")
