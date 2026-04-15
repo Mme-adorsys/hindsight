@@ -243,9 +243,7 @@ class DecayProcessor:
                 )
 
                 archive_threshold = (
-                    self._config.archive_threshold_buffer
-                    if layer == "buffer"
-                    else self._config.archive_threshold_wm
+                    self._config.archive_threshold_buffer if layer == "buffer" else self._config.archive_threshold_wm
                 )
 
                 if new_strength < archive_threshold:
