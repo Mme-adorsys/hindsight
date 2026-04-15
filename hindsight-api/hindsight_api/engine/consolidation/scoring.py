@@ -31,6 +31,11 @@ Ref: concept.md ch. 12 (Consolidation Pipeline), STC model.
 from __future__ import annotations
 
 import math
+import os
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..engram_types import ThalamusScores
 
 # ---------------------------------------------------------------------------
 # Hard gates
@@ -63,6 +68,49 @@ DEFAULT_PROMOTE_THRESHOLD: float = 0.7  # fallback when mode is unknown
 
 ARCHIVE_THRESHOLD_WM: float = 0.08
 ARCHIVE_THRESHOLD_BUFFER: float = 0.05
+
+# ---------------------------------------------------------------------------
+# Epic 24 Story 02 — Equilibrium Rate r (individual per-Engram)
+# ---------------------------------------------------------------------------
+#
+# r = r_base(mode) × demand / protection × bank_factor
+#
+#   demand      = 1 + DEMAND_ALPHA × task_relevance           (strictness)
+#   protection  = 1 + PROTECTION_BETA × mean(novelty,
+#                                              surprise,
+#                                              emotional_valence)  (leniency)
+#   bank_factor = log(1 + REFERENCE_BANK_SIZE) / log(1 + bank_size)
+#
+# r is the per-Engram expectation "how many recalls per session until I am
+# stable?". Task-relevant Engrams demand higher activation, novel / surprising
+# / emotional Engrams get more protection, and tiny banks are compensated for
+# their inflated per-Engram recall probability. Values stay > 0 by construction
+# — the explicit max(0.001, r) guard protects against pathological inputs.
+#
+# Concept reference: concept.md ch. 5.3, engram-lifecycle-scoring.md ch. 3.
+
+ENV_R_BASE_PRECISION = "HINDSIGHT_API_R_BASE_PRECISION"
+ENV_R_BASE_VALIDATION = "HINDSIGHT_API_R_BASE_VALIDATION"
+ENV_R_BASE_ANALOGY = "HINDSIGHT_API_R_BASE_ANALOGY"
+ENV_R_BASE_EXPLORATION = "HINDSIGHT_API_R_BASE_EXPLORATION"
+
+DEFAULT_R_BASE_PRECISION: float = 0.8
+DEFAULT_R_BASE_VALIDATION: float = 0.6
+DEFAULT_R_BASE_ANALOGY: float = 0.4
+DEFAULT_R_BASE_EXPLORATION: float = 0.3
+DEFAULT_R_BASE: float = 0.5  # fallback for unknown modes
+
+MODE_R_BASE: dict[str, float] = {
+    "precision": float(os.getenv(ENV_R_BASE_PRECISION, str(DEFAULT_R_BASE_PRECISION))),
+    "validation": float(os.getenv(ENV_R_BASE_VALIDATION, str(DEFAULT_R_BASE_VALIDATION))),
+    "analogy": float(os.getenv(ENV_R_BASE_ANALOGY, str(DEFAULT_R_BASE_ANALOGY))),
+    "exploration": float(os.getenv(ENV_R_BASE_EXPLORATION, str(DEFAULT_R_BASE_EXPLORATION))),
+}
+
+DEMAND_ALPHA: float = 0.5
+PROTECTION_BETA: float = 0.5
+REFERENCE_BANK_SIZE: int = 1000
+MIN_EQUILIBRIUM_RATE: float = 0.001  # lower guard against pathological input
 
 
 def sessions_alive(bank_session_count: int, engram_created_at_session: int) -> int:
@@ -150,3 +198,67 @@ def get_promote_threshold(mode: str | None) -> float:
     if mode is None:
         return DEFAULT_PROMOTE_THRESHOLD
     return MODE_PROMOTE_THRESHOLDS.get(mode, DEFAULT_PROMOTE_THRESHOLD)
+
+
+def compute_bank_factor(bank_size: int, reference_size: int = REFERENCE_BANK_SIZE) -> float:
+    """Normalize per-Engram recall probability across banks of different sizes.
+
+    Small banks (bank_size << reference_size) have inflated access_counts
+    because every Engram is recalled more often on average. Large banks have
+    deflated access_counts due to competition. This factor shifts the
+    equilibrium rate to keep the lifecycle fair regardless of bank size.
+
+    Formula: ``log(1 + reference_size) / log(1 + bank_size)``.
+
+    Args:
+        bank_size: Current Engram count for the bank.
+        reference_size: Neutral anchor where bank_factor == 1.0.
+            Defaults to ``REFERENCE_BANK_SIZE``.
+
+    Returns:
+        A strictly positive multiplier. An empty / size=0 bank yields 2.0
+        (maximum compensation) rather than a division by zero.
+    """
+    if bank_size < 1:
+        return 2.0
+    return math.log(1 + reference_size) / math.log(1 + bank_size)
+
+
+def compute_equilibrium_rate(
+    thalamus_scores: ThalamusScores,
+    mode: str | None,
+    bank_size: int,
+) -> float:
+    """Per-Engram equilibrium rate driving the decay formula (Epic 24 Story 02).
+
+    The rate is "how many recalls per session do we expect for this Engram to
+    stay stable?". Task-relevant Engrams demand more (stricter), novel /
+    surprising / emotionally charged Engrams get more protection (more lenient),
+    and bank size is normalized to avoid rewarding tiny banks unfairly.
+
+    Formula:
+        ``r_base × demand / protection × bank_factor``
+
+    with:
+        ``demand     = 1 + DEMAND_ALPHA × task_relevance``
+        ``protection = 1 + PROTECTION_BETA × mean(novelty, surprise, valence)``
+        ``bank_factor = compute_bank_factor(bank_size)``
+
+    Args:
+        thalamus_scores: Birth-value scores recorded by the Thalamus Filter.
+            Only the four dimension fields are read.
+        mode: Session mode the Engram was created in. ``None`` or an unknown
+            value falls back to ``DEFAULT_R_BASE``.
+        bank_size: Current Engram count in the bank (for normalization).
+
+    Returns:
+        A strictly positive rate, clamped to ``MIN_EQUILIBRIUM_RATE`` (0.001)
+        so downstream decay formulas never divide by zero.
+    """
+    r_base = MODE_R_BASE.get(mode, DEFAULT_R_BASE) if mode is not None else DEFAULT_R_BASE
+    demand = 1.0 + DEMAND_ALPHA * thalamus_scores.task_relevance
+    avg_protective = (thalamus_scores.novelty + thalamus_scores.surprise + thalamus_scores.emotional_valence) / 3.0
+    protection = 1.0 + PROTECTION_BETA * avg_protective
+    bank_factor = compute_bank_factor(bank_size)
+    r = r_base * demand / protection * bank_factor
+    return max(MIN_EQUILIBRIUM_RATE, r)
