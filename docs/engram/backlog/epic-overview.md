@@ -92,11 +92,19 @@ Stories enthalten eingebettete Tasks als Checkliste.
 | 21 | **CP: Engram Lifecycle & NCR Dashboard** | Neue Views: Engram Lifecycle (Layer-Verteilung, Strength-Distribution, Flow-Visualisierung) + NCR Dashboard (manueller Trigger, Run History, Ergebnis-Übersicht). NCR History Persistence in DB. 2 neue Sidebar-Items. | Epic 12, Epic 02, Epic 19 |
 | 22 | **CP: Schema Explorer** | Neues View: Schema-Liste mit Maturity-Badges, Schema-Detail mit Member-Engrams, Mini-Graph (Cytoscape). Neue Dataplane Endpoints für Schema List/Detail. 1 neues Sidebar-Item. | Epic 13, Epic 21 |
 
-### Phase 8 — Qualitätssicherung → **Milestone 8: "System Validated"**
+### Phase 8 — Lifecycle Scoring Overhaul → **Milestone 8: "Memory Evolves"**
+
+> Neues biologisch inspiriertes Scoring-System: Geburtswert × Decay mit individueller Equilibrium Rate, sessions-basiertem Aging und bidirektionalem Lifecycle.
 
 | # | Epic | Beschreibung | Abhängigkeiten |
 |---|------|-------------|----------------|
-| 23 | **Benchmarking & Validation** | 4 Dimensionen: Storage Validation, Retrieval Validation, Knowledge Evolution, Construction Quality. 3 Ansätze: A) Scripted Scenarios, B) Simulated Agent Life, C) Golden Dataset. Konkrete Auswahl noch offen. | Alle vorherigen Epics |
+| 24 | **Lifecycle Scoring Overhaul** | Neuer Composite Score (`thalamus_overall × decay`), Equilibrium Rate r (demand/protection × bank_factor), sessions_alive als Taktgeber, tag-abhängige Promote-Thresholds, bankgrößen-normalisierte Hard Gates, bidirektionaler Lifecycle (Archive-Reactivation, Buffer-Aging). Ersetzt altes Scoring in `scoring.py`, `ncr_decay.py`, `ncr_strengthen.py`. | Epic 04, Epic 06, Epic 12 |
+
+### Phase 9 — Qualitätssicherung → **Milestone 9: "System Validated"**
+
+| # | Epic | Beschreibung | Abhängigkeiten |
+|---|------|-------------|----------------|
+| 23 | **Benchmarking & Validation** _(geparkt)_ | 4 Dimensionen: Storage Validation, Retrieval Validation, Knowledge Evolution, Construction Quality. 3 Ansätze: A) Scripted Scenarios, B) Simulated Agent Life, C) Golden Dataset. Konkrete Auswahl noch offen. | Alle vorherigen Epics |
 
 ---
 
@@ -130,7 +138,9 @@ Phase 7:  02 + 04 + 06 → 19 (CP Metadata & Modes)
           12 + 02 + 19 → 21 (CP Lifecycle & NCR)
           13 + 21 → 22 (CP Schema Explorer)
 
-Phase 8:  * → 23 (Benchmarking)
+Phase 8:  04 + 06 + 12 → 24 (Lifecycle Scoring Overhaul)
+
+Phase 9:  * → 23 (Benchmarking) [geparkt]
 ```
 
 ---
@@ -173,7 +183,10 @@ Phase 8:  * → 23 (Benchmarking)
 - [x] Epic 21 — CP: Engram Lifecycle & NCR Dashboard
 - [x] Epic 22 — CP: Schema Explorer
 
-### Phase 8 — Qualitätssicherung
+### Phase 8 — Lifecycle Scoring Overhaul
+- [ ] Epic 24 — Lifecycle Scoring Overhaul
+
+### Phase 9 — Qualitätssicherung _(geparkt)_
 - [ ] Epic 23 — Benchmarking & Validation
 
 ---
@@ -191,10 +204,11 @@ Detailliert in [milestones.md](milestones.md) — hier die Kurzübersicht:
 | M5 | Memory Matures | 5 (E12-14) | NCR Consolidation, Schema Emergence, Multi-Bank mit Shared Memory |
 | M6 | System Evolved | 6 (E15-18) | Reichhaltige API, objektiver Thalamus, konfigurierbares LLM Routing, persistentes Working Memory |
 | M7 | System Visible | 7 (E19-22) | Control Plane zeigt Engram-Metadaten, Lifecycle, NCR, Schemas |
-| M8 | System Validated | 8 (E23) | Golden Dataset Benchmark, alle Dimensionen ≥ Mindest-Score |
+| M8 | Memory Evolves | 8 (E24) | Neues Lifecycle Scoring mit Decay, Equilibrium Rate, bidirektionalem Lifecycle |
+| M9 | System Validated | 9 (E23) | Golden Dataset Benchmark, alle Dimensionen ≥ Mindest-Score |
 
 ```
-M1 → M2 → M3 → M4 → M5 → M6 → M7 → M8
+M1 → M2 → M3 → M4 → M5 → M6 → M7 → M8 → M9
 ```
 
 ---
