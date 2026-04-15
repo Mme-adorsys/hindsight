@@ -265,11 +265,15 @@ def units_to_content_dicts(
 
         if unit.unit_type == UnitType.ACTION_EFFECT and unit.outcome:
             pair_id = id(unit)
+            # Structured action/effect units are deterministically experiences —
+            # override the LLM fact_type so they land as ``fact_type='experience'``
+            # in memory_units regardless of how the extractor classifies the text.
             action_dict = {
                 **base,
                 "content": unit.content,
                 "_action_pair_key": pair_id,
                 "_confidence": unit.confidence,
+                "_fact_type_override": "experience",
             }
             if ctx:
                 action_dict["context"] = ctx
@@ -278,6 +282,7 @@ def units_to_content_dicts(
                 "content": unit.outcome,
                 "_effect_pair_key": pair_id,
                 "_confidence": unit.confidence,
+                "_fact_type_override": "experience",
             }
             if ctx:
                 effect_dict["context"] = ctx
@@ -286,13 +291,16 @@ def units_to_content_dicts(
 
         elif unit.unit_type == UnitType.EXPERIENCE and unit.expectation and unit.outcome:
             pair_id = id(unit)
-            # Inherit tags and add "experience" tag to outcome-engram
+            # Inherit tags and add "experience" tag to outcome-engram.
+            # Both halves are deterministically experiences — override fact_type
+            # so the LLM extractor cannot downgrade them to 'world'.
             base_tags: list = list(base.get("tags") or [])
             expectation_dict = {
                 **base,
                 "content": unit.expectation,
                 "_experience_pair_key": pair_id,
                 "_confidence": unit.confidence,
+                "_fact_type_override": "experience",
             }
             if ctx:
                 expectation_dict["context"] = ctx
@@ -304,6 +312,7 @@ def units_to_content_dicts(
                 "outcome": unit.outcome,
                 "_experience_pair_key": pair_id,
                 "_confidence": unit.confidence,
+                "_fact_type_override": "experience",
             }
             if ctx:
                 outcome_dict["context"] = ctx

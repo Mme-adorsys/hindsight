@@ -215,7 +215,9 @@ class ExtractedFact(BaseModel):
     fact_kind: str = Field(default="conversation", description="'event' or 'conversation'")
     occurred_start: str | None = Field(default=None, description="ISO timestamp for events")
     occurred_end: str | None = Field(default=None, description="ISO timestamp for event end")
-    fact_type: Literal["world", "assistant"] = Field(description="'world' or 'assistant'")
+    fact_type: Literal["world", "experience", "opinion"] = Field(
+        description="'world' = external facts/events, 'experience' = personal/assistant interactions or lived episodes, 'opinion' = subjective stance or preference"
+    )
     entities: list[Entity] | None = Field(default=None, description="People, places, concepts")
     causal_relations: list[FactCausalRelation] | None = Field(
         default=None, description="Links to previous facts (target_index < this fact's index)"
@@ -304,9 +306,10 @@ class ExtractedFactVerbose(BaseModel):
         description="WHY it matters - ALL emotional, contextual, and motivational details. "
         "Include EVERYTHING: feelings, preferences, motivations, observations, context, background, significance. "
         "BE VERBOSE - capture all the nuance and meaning. "
-        "FOR ASSISTANT FACTS: MUST include what the user asked/requested that led to this interaction! "
+        "FOR EXPERIENCE FACTS: MUST include what the user asked/requested that led to this interaction! "
         "Example (world): 'The user felt thrilled and inspired, has always dreamed of an outdoor ceremony, mentioned wanting a similar garden venue, was particularly moved by the intimate atmosphere and personal vows' "
-        "Example (assistant): 'User asked how to fix slow API performance with 1000+ concurrent users, expected 70-80% reduction in database load' "
+        "Example (experience): 'User asked how to fix slow API performance with 1000+ concurrent users, expected 70-80% reduction in database load' "
+        "Example (opinion): 'User thinks PostgreSQL is more reliable than MySQL for transactional workloads' "
         "NOT: 'User liked it' or 'To help user'"
     )
 
@@ -324,8 +327,10 @@ class ExtractedFactVerbose(BaseModel):
         description="WHEN the event ended (ISO timestamp). Only for events with duration. Leave null for conversations.",
     )
 
-    fact_type: Literal["world", "assistant"] = Field(
-        description="'world' = about the user/others (background, experiences). 'assistant' = experience with the assistant."
+    fact_type: Literal["world", "experience", "opinion"] = Field(
+        description="'world' = external facts, events, knowledge about others; "
+        "'experience' = lived/personal episodes, assistant interactions, moments with expectation/outcome; "
+        "'opinion' = subjective stance, preference, evaluation expressed by the speaker."
     )
 
     entities: list[Entity] | None = Field(
@@ -382,8 +387,8 @@ class ExtractedFactNoCausal(BaseModel):
     )
     occurred_start: str | None = Field(default=None, description="WHEN the event happened (ISO timestamp).")
     occurred_end: str | None = Field(default=None, description="WHEN the event ended (ISO timestamp).")
-    fact_type: Literal["world", "assistant"] = Field(
-        description="'world' = about the user/others. 'assistant' = experience with assistant."
+    fact_type: Literal["world", "experience", "opinion"] = Field(
+        description="'world' = external facts/events; 'experience' = personal/assistant episodes; 'opinion' = subjective stance or preference."
     )
     entities: list[Entity] | None = Field(
         default=None,
@@ -570,8 +575,9 @@ fact_kind:
 - "conversation": Ongoing state, preference, trait (no dates)
 
 fact_type:
-- "world": About user's life, other people, external events
-- "assistant": Interactions with assistant (requests, recommendations)
+- "world": External facts, events, knowledge about the user or others (would exist without this conversation)
+- "experience": Lived/personal episodes — interactions with the assistant, moments with expectation/outcome structure, first-person experiences
+- "opinion": Subjective stance, preference, evaluation, or belief expressed by the speaker
 
 ══════════════════════════════════════════════════════════════════════════
 TEMPORAL HANDLING
@@ -732,10 +738,11 @@ For CONVERSATIONS (fact_kind="conversation"):
 FACT TYPE
 ══════════════════════════════════════════════════════════════════════════
 
-- **world**: User's life, other people, events (would exist without this conversation)
-- **assistant**: Interactions with assistant (requests, recommendations, help)
-  ⚠️ CRITICAL for assistant facts: ALWAYS capture the user's request/question in the fact!
-  Include: what the user asked, what problem they wanted solved, what context they provided
+- **world**: External facts, events, knowledge about the user or others (would exist without this conversation)
+- **experience**: Lived/personal episodes — interactions with the assistant, moments with expectation/outcome structure, first-person experiences
+  ⚠️ CRITICAL for experience facts: ALWAYS capture the user's request/question/expectation and the outcome!
+  Include: what the user asked, what problem they wanted solved, what context they provided, how it turned out
+- **opinion**: Subjective stance, preference, evaluation, or belief expressed by the speaker ("I think X", "I prefer Y over Z", "X is better than Y")
 
 ══════════════════════════════════════════════════════════════════════════
 ENTITIES - EXTRACT EVERYTHING
@@ -786,14 +793,21 @@ async def _extract_facts_from_chunk(
     """
     memory_bank_context = f"\n- Your name: {agent_name}" if agent_name and extract_opinions else ""
 
-    # Determine which fact types to extract based on the flag
-    # Note: We use "assistant" in the prompt but convert to "bank" for storage
+    # Determine which fact types to extract based on the flag.
+    # Normal retain path: extract world / experience / opinion (all three).
+    # Opinion-only path: caller explicitly requested opinion extraction via
+    # fact_type_override='opinion' (e.g. reflect pipeline pulling structured
+    # opinions out of a passage).
     if extract_opinions:
-        # Opinion extraction uses a separate prompt (not this one)
-        fact_types_instruction = "Extract ONLY 'opinion' type facts (formed opinions, beliefs, and perspectives). DO NOT extract 'world' or 'assistant' facts."
+        fact_types_instruction = (
+            "Extract ONLY 'opinion' type facts — formed opinions, beliefs, preferences, "
+            "and subjective evaluations the speaker expresses. DO NOT extract 'world' or 'experience' facts."
+        )
     else:
         fact_types_instruction = (
-            "Extract ONLY 'world' and 'assistant' type facts. DO NOT extract opinions - those are extracted separately."
+            "Extract 'world', 'experience', and 'opinion' facts. "
+            "Classify each fact into exactly one of these three categories based on its nature "
+            "(external knowledge vs. lived episode vs. subjective stance)."
         )
 
     # Check config for extraction mode and causal link extraction
@@ -920,16 +934,16 @@ Text:
                     continue
 
                 # Critical field: fact_type
-                # LLM uses "assistant" but we convert to "experience" for storage
+                # Prompt asks the LLM for "world" / "experience" / "opinion" directly.
+                # Keep a defensive alias for the legacy "assistant" value so that
+                # cached or older LLM responses still land in the right bucket.
                 fact_type = llm_fact.get("fact_type")
-
-                # Convert "assistant" → "experience" for storage
                 if fact_type == "assistant":
                     fact_type = "experience"
 
-                # Validate fact_type (after conversion)
+                # Validate fact_type
                 if fact_type not in ["world", "experience", "opinion"]:
-                    # Try to fix common mistakes - check if they swapped fact_type and fact_kind
+                    # Try to fix common mistakes — check if LLM swapped fact_type and fact_kind
                     fact_kind = llm_fact.get("fact_kind")
                     if fact_kind == "assistant":
                         fact_type = "experience"

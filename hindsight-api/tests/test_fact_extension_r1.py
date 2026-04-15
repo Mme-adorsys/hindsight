@@ -22,7 +22,6 @@ from hindsight_api.engine.engram_types import ThalamusScores
 from hindsight_api.engine.retain.fact_storage import _insert_engram_dictionary_batch
 from hindsight_api.engine.retain.types import ExtractedFact, ProcessedFact
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -220,4 +219,8 @@ class TestInsertEngramDictionaryBatch:
         await _insert_engram_dictionary_batch(conn, "bank-1", unit_ids, facts)
 
         _, *args = conn.execute.call_args[0]
-        assert args[9] == "active"
+        # Positional args follow the INSERT column order:
+        # ... strength ($9), layer ($10), status ($11), ...
+        # args[8]=strength, args[9]=layer ('working'), args[10]=status ('active').
+        assert args[9] == "working"
+        assert args[10] == "active"

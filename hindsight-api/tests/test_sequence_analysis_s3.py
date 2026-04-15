@@ -24,7 +24,6 @@ from hindsight_api.engine.retain.sequence_analysis import (
 )
 from hindsight_api.engine.utils import Budget
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -252,6 +251,16 @@ class TestUnitsToContentDicts:
         assert result[0]["metadata"] == {"src": "slack"}
 
     def test_experience_fields_propagated(self):
+        """A complete EXPERIENCE unit splits into two dicts (expectation + outcome).
+
+        Introduced by Epic 15 Story 04 — the outcome dict carries the full
+        expectation/outcome pair plus the 'experience' tag; the expectation
+        dict holds the expectation text as its content so both halves can be
+        retained, linked (PREDICTION_ERROR), and retrieved independently.
+        Both halves now also carry the ``_fact_type_override='experience'``
+        key so the retain orchestrator stamps them with ``fact_type='experience'``
+        regardless of how the LLM extractor classifies the text.
+        """
         units = [
             StructuredUnit(
                 content="Project deployed",
@@ -262,8 +271,18 @@ class TestUnitsToContentDicts:
         ]
         source = {"content": "original"}
         result = units_to_content_dicts(units, source)
-        assert result[0]["expectation"] == "fast delivery"
-        assert result[0]["outcome"] == "delayed"
+
+        assert len(result) == 2
+        expectation_dict, outcome_dict = result
+
+        assert expectation_dict["content"] == "fast delivery"
+        assert expectation_dict["_fact_type_override"] == "experience"
+
+        assert outcome_dict["content"] == "delayed"
+        assert outcome_dict["expectation"] == "fast delivery"
+        assert outcome_dict["outcome"] == "delayed"
+        assert "experience" in outcome_dict["tags"]
+        assert outcome_dict["_fact_type_override"] == "experience"
 
     def test_no_expectation_outcome_not_added(self):
         units = [StructuredUnit(content="simple fact", unit_type=UnitType.FACT)]
@@ -271,6 +290,9 @@ class TestUnitsToContentDicts:
         result = units_to_content_dicts(units, source)
         assert "expectation" not in result[0]
         assert "outcome" not in result[0]
+        # Plain FACT units must NOT carry the experience override — only
+        # structured EXPERIENCE/ACTION_EFFECT units do.
+        assert "_fact_type_override" not in result[0]
 
     def test_source_metadata_inherited(self):
         units = [StructuredUnit(content="fact", unit_type=UnitType.FACT)]
@@ -287,8 +309,39 @@ class TestUnitsToContentDicts:
         ]
         source = {"content": "orig", "context": "base"}
         result = units_to_content_dicts(units, source)
-        assert len(result) == 3
-        assert result[2]["expectation"] == "x"
+        # 2 FACT + 2-way split EXPERIENCE = 4 dicts
+        assert len(result) == 4
+        assert result[0]["content"] == "fact 1"
+        assert result[1]["content"] == "fact 2"
+        # Neither FACT unit should carry the experience override
+        assert "_fact_type_override" not in result[0]
+        assert "_fact_type_override" not in result[1]
+        # Experience split — expectation half then outcome half
+        assert result[2]["content"] == "x"
+        assert result[2]["_fact_type_override"] == "experience"
+        assert result[3]["content"] == "y"
+        assert result[3]["expectation"] == "x"
+        assert result[3]["outcome"] == "y"
+        assert result[3]["_fact_type_override"] == "experience"
+
+    def test_action_effect_sets_experience_override(self):
+        """ACTION_EFFECT units also count as experiences and must override fact_type."""
+        units = [
+            StructuredUnit(
+                content="ran migration",
+                unit_type=UnitType.ACTION_EFFECT,
+                outcome="schema updated in 3s",
+            )
+        ]
+        source = {"content": "original", "context": "ops"}
+        result = units_to_content_dicts(units, source)
+
+        assert len(result) == 2
+        action_dict, effect_dict = result
+        assert action_dict["content"] == "ran migration"
+        assert action_dict["_fact_type_override"] == "experience"
+        assert effect_dict["content"] == "schema updated in 3s"
+        assert effect_dict["_fact_type_override"] == "experience"
 
 
 # ---------------------------------------------------------------------------

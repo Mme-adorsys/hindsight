@@ -273,6 +273,14 @@ async def retain_batch(
             if not fact.user_tags and content_dict.get("tags"):
                 fact.user_tags = content_dict["tags"]
 
+            # Per-content-dict fact_type override (Sequence Analysis, Epic 15 S04):
+            # Structured units (EXPERIENCE/ACTION_EFFECT) deterministically carry
+            # fact_type='experience', regardless of how the LLM classified the
+            # text. See units_to_content_dicts for where the override is set.
+            per_dict_override = content_dict.get("_fact_type_override")
+            if per_dict_override:
+                fact.fact_type = per_dict_override
+
     if not extracted_facts:
         # Still need to create document if document_id was provided
         async with acquire_with_retry(pool) as conn:
