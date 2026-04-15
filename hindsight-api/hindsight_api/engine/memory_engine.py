@@ -599,6 +599,22 @@ class MemoryEngine(MemoryEngineInterface):
 
         flush_items = await sm.end_session(session_id)
 
+        # Epic 24 Story 01 — Sessions-Alive Taktgeber: increment the bank's
+        # session_count exactly once per successful session close. Runs after
+        # sm.end_session() so a double-close raises KeyError above this line
+        # and the counter is never bumped twice for the same session.
+        try:
+            from .engram_dictionary import increment_bank_session_count
+
+            pool = await self._ctx.get_pool()
+            await increment_bank_session_count(pool, bank_id)
+        except Exception as exc:
+            logger.warning(
+                "end_session_async: failed to increment session_count for bank=%s: %s",
+                bank_id,
+                exc,
+            )
+
         # Trigger C1 consolidation (Working→Buffer) after session ends.
         # Bio mapping: Sharp-Wave Ripples during quiet wakefulness — post-session
         # replay selectively promotes high-salience, well-rehearsed engrams.

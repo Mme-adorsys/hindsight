@@ -65,6 +65,25 @@ ARCHIVE_THRESHOLD_WM: float = 0.08
 ARCHIVE_THRESHOLD_BUFFER: float = 0.05
 
 
+def sessions_alive(bank_session_count: int, engram_created_at_session: int) -> int:
+    """Return the number of sessions a given Engram has been alive for.
+
+    Epic 24 Story 01 — new aging metric that replaces cycles_alive. A session is
+    the natural unit of work; an Engram proves its value by being recalled across
+    multiple sessions, not by the raw retain/recall op count.
+
+    Args:
+        bank_session_count: Current ``banks.session_count`` value.
+        engram_created_at_session: Snapshot of ``session_count`` at Engram creation.
+
+    Returns:
+        ``max(0, bank_session_count - engram_created_at_session)``. The guard
+        protects against race conditions where a fresh Engram's snapshot could
+        briefly appear higher than the bank counter.
+    """
+    return max(0, bank_session_count - engram_created_at_session)
+
+
 def compute_recount_score(access_count: int, cycles_alive: int) -> float:
     """Logarithmic access-frequency metric.
 

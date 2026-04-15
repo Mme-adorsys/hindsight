@@ -416,3 +416,34 @@ async def get_bank_op_count(pool: asyncpg.Pool, bank_id: str) -> int:
             bank_id,
         )
         return row["op_count"] if row else 0
+
+
+async def increment_bank_session_count(pool: asyncpg.Pool, bank_id: str) -> int:
+    """Atomically increment banks.session_count and return the new value.
+
+    Called once per session close (Epic 24 Story 01) — the new aging metric.
+    Idempotency is enforced by the caller: MemoryEngine.end_session_async runs
+    this only after SessionManager.end_session() has successfully popped the
+    session state, so a double-close raises KeyError before reaching this.
+    """
+    async with acquire_with_retry(pool) as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE banks
+            SET session_count = session_count + 1
+            WHERE bank_id = $1
+            RETURNING session_count
+            """,
+            bank_id,
+        )
+        return row["session_count"] if row else 0
+
+
+async def get_bank_session_count(pool: asyncpg.Pool, bank_id: str) -> int:
+    """Read the current session_count for a bank (non-mutating)."""
+    async with acquire_with_retry(pool) as conn:
+        row = await conn.fetchrow(
+            "SELECT session_count FROM banks WHERE bank_id = $1",
+            bank_id,
+        )
+        return row["session_count"] if row else 0
