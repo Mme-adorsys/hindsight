@@ -357,6 +357,22 @@ async def pg_pool(module_memory: MemoryEngine) -> asyncpg.Pool:
     return module_memory._pool
 
 
+@pytest.fixture(scope="module")
+def neo4j_client(module_memory: MemoryEngine):
+    """Expose the engine's Neo4j client for graph-level assertions.
+
+    Uses the private ``MemoryEngine._get_neo4j_client()`` helper, which
+    pulls the client from ``self._retain.engram_storage._neo4j`` — the
+    only stable path after the post-Epic-18 EngineContext refactor.
+    Skips the whole module if Neo4j is not wired up (e.g. dev stack
+    started without the container).
+    """
+    client = module_memory._get_neo4j_client()
+    if client is None:
+        pytest.skip("Neo4j client not available on MemoryEngine — dev stack without Neo4j?")
+    return client
+
+
 # ---------------------------------------------------------------------------
 # Test cases
 # ---------------------------------------------------------------------------
@@ -448,23 +464,15 @@ class TestRetainIntegration:
         # carries only content, not the pair fields — see units_to_content_dicts)
         assert count >= 3, f"expected ≥ 3 rows with expectation+outcome, got {count}"
 
-    async def test_neo4j_engrams_match_postgres(
-        self, retained_data: dict, pg_pool: asyncpg.Pool, module_memory: MemoryEngine
-    ):
+    async def test_neo4j_engrams_match_postgres(self, retained_data: dict, pg_pool: asyncpg.Pool, neo4j_client):
         """Every active engram_dictionary row has a matching Engram node in Neo4j."""
-        neo4j = getattr(module_memory, "_neo4j_client", None) or getattr(
-            module_memory._engine_context, "neo4j_client", None
-        )
-        if neo4j is None:
-            pytest.skip("Neo4j client not wired into MemoryEngine — dev stack without Neo4j?")
-
         async with pg_pool.acquire() as conn:
             ed_count = await conn.fetchval(
                 "SELECT COUNT(*) FROM engram_dictionary WHERE bank_id = $1 AND status = 'active'",
                 retained_data["bank_id"],
             )
 
-        result = await neo4j.run_cypher(
+        result = await neo4j_client.run_cypher(
             "MATCH (e:Engram {bank_id: $bank_id}) RETURN count(e) AS c",
             {"bank_id": retained_data["bank_id"]},
         )
@@ -472,27 +480,21 @@ class TestRetainIntegration:
 
         assert neo4j_count == ed_count, f"Neo4j engrams={neo4j_count}, Postgres active={ed_count}"
 
-    async def test_neo4j_semantic_and_entity_links_present(self, retained_data: dict, module_memory: MemoryEngine):
+    async def test_neo4j_semantic_and_entity_links_present(self, retained_data: dict, neo4j_client):
         """Retain Step 7/8/9 writes SEMANTIC + ENTITY relationships to Neo4j."""
-        neo4j = getattr(module_memory, "_neo4j_client", None) or getattr(
-            module_memory._engine_context, "neo4j_client", None
-        )
-        if neo4j is None:
-            pytest.skip("Neo4j client not available")
-
         bank_id = retained_data["bank_id"]
-        sem = await neo4j.run_cypher(
+        sem = await neo4j_client.run_cypher(
             "MATCH (:Engram {bank_id: $b})-[r:SEMANTIC]->() RETURN count(r) AS c",
             {"b": bank_id},
         )
-        ent = await neo4j.run_cypher(
+        ent = await neo4j_client.run_cypher(
             "MATCH (:Engram {bank_id: $b})-[r:ENTITY]->() RETURN count(r) AS c",
             {"b": bank_id},
         )
         assert (sem[0]["c"] if sem else 0) >= 1, "no SEMANTIC relationships in Neo4j"
         assert (ent[0]["c"] if ent else 0) >= 1, "no ENTITY relationships in Neo4j"
 
-    async def test_neo4j_causal_links_present(self, retained_data: dict, module_memory: MemoryEngine):
+    async def test_neo4j_causal_links_present(self, retained_data: dict, neo4j_client):
         """Both CAUSAL producers (ACTION_EFFECT pair + LLM causal_relations) wrote edges.
 
         Lower bound of 2: at least one edge from the ACTION_EFFECT chain and at
@@ -500,13 +502,7 @@ class TestRetainIntegration:
         prompt is best-effort on causal_relations, so we don't hard-assert the
         exact count from the 3-fact chain.
         """
-        neo4j = getattr(module_memory, "_neo4j_client", None) or getattr(
-            module_memory._engine_context, "neo4j_client", None
-        )
-        if neo4j is None:
-            pytest.skip("Neo4j client not available")
-
-        result = await neo4j.run_cypher(
+        result = await neo4j_client.run_cypher(
             "MATCH (:Engram {bank_id: $b})-[r:CAUSAL]->() RETURN count(r) AS c, collect(DISTINCT r.source) AS sources",
             {"b": retained_data["bank_id"]},
         )
@@ -522,20 +518,14 @@ class TestRetainIntegration:
             f"no LLM causal_relations CAUSAL edges — mirror path broken? sources={sources}"
         )
 
-    async def test_neo4j_prediction_error_links_optional(self, retained_data: dict, module_memory: MemoryEngine):
+    async def test_neo4j_prediction_error_links_optional(self, retained_data: dict, neo4j_client):
         """PREDICTION_ERROR links are created only for pairs with cosine < 0.8.
 
         This assertion is soft: we log the count but don't fail if zero,
         because it depends on the actual embedding similarity of our fixture
         expectations vs outcomes.
         """
-        neo4j = getattr(module_memory, "_neo4j_client", None) or getattr(
-            module_memory._engine_context, "neo4j_client", None
-        )
-        if neo4j is None:
-            pytest.skip("Neo4j client not available")
-
-        result = await neo4j.run_cypher(
+        result = await neo4j_client.run_cypher(
             "MATCH (:Engram {bank_id: $b})-[r:PREDICTION_ERROR]->() RETURN count(r) AS c",
             {"b": retained_data["bank_id"]},
         )
