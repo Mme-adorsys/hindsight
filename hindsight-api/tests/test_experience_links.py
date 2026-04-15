@@ -12,11 +12,14 @@ Covers:
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
+
 import pytest
 
 from hindsight_api.engine.retain.experience_links import (
     _cosine_similarity,
     build_causal_links,
+    build_llm_causal_links,
     build_prediction_error_links,
 )
 from hindsight_api.engine.retain.neo4j_link_writer import LinkRecord
@@ -27,9 +30,25 @@ from hindsight_api.engine.retain.sequence_analysis import (
 )
 
 
+# Lightweight stand-ins so the tests don't have to build fully-populated
+# ProcessedFact / CausalRelation dataclasses (which carry many unrelated fields).
+# build_llm_causal_links reads attributes via getattr, so duck typing is fine.
+@dataclass
+class _Rel:
+    relation_type: str
+    target_fact_index: int
+    strength: float = 1.0
+
+
+@dataclass
+class _Fact:
+    causal_relations: list[_Rel]
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_unit(
     unit_type: UnitType,
@@ -56,6 +75,7 @@ _SOURCE = {"context": "base_ctx", "event_date": None, "tags": ["base_tag"]}
 # units_to_content_dicts — FACT unit
 # ---------------------------------------------------------------------------
 
+
 class TestUnitsToContentDictsFact:
     def test_fact_single_dict(self):
         unit = _make_unit(UnitType.FACT, content="Alice works at ACME.")
@@ -79,6 +99,7 @@ class TestUnitsToContentDictsFact:
 # ---------------------------------------------------------------------------
 # units_to_content_dicts — ACTION_EFFECT unit
 # ---------------------------------------------------------------------------
+
 
 class TestUnitsToContentDictsActionEffect:
     def _unit(self):
@@ -123,6 +144,7 @@ class TestUnitsToContentDictsActionEffect:
 # ---------------------------------------------------------------------------
 # units_to_content_dicts — EXPERIENCE unit
 # ---------------------------------------------------------------------------
+
 
 class TestUnitsToContentDictsExperience:
     def _unit(self):
@@ -190,6 +212,7 @@ class TestUnitsToContentDictsExperience:
 # build_causal_links
 # ---------------------------------------------------------------------------
 
+
 class TestBuildCausalLinks:
     def _paired_dicts(self, confidence: float = 0.9) -> tuple[list[dict], list[str | None]]:
         unit = _make_unit(
@@ -254,6 +277,7 @@ class TestBuildCausalLinks:
 # _cosine_similarity
 # ---------------------------------------------------------------------------
 
+
 class TestCosineSimilarity:
     def test_identical_vectors(self):
         v = [1.0, 0.0, 0.0]
@@ -279,6 +303,7 @@ class TestCosineSimilarity:
 # ---------------------------------------------------------------------------
 # build_prediction_error_links
 # ---------------------------------------------------------------------------
+
 
 def _unit_embed(text: str, similarity_to_other: float = 0.5) -> list[float]:
     """Return a simple 2D embedding; pair similarity controlled by the caller."""
@@ -395,6 +420,7 @@ class TestBuildPredictionErrorLinks:
 # Recall compatibility: "experience" tag survives in outcome dict
 # ---------------------------------------------------------------------------
 
+
 class TestRecallCompatibility:
     def test_experience_tag_in_outcome_dict(self):
         unit = _make_unit(
@@ -417,8 +443,127 @@ class TestRecallCompatibility:
         """Private metadata keys (_*) must not interfere with standard RetainContentDict fields."""
         unit = _make_unit(UnitType.ACTION_EFFECT, content="action", outcome="effect")
         dicts = units_to_content_dicts([unit], {})
-        standard_keys = {"content", "context", "event_date", "metadata", "entities", "document_id", "tags",
-                         "expectation", "outcome", "thalamus_scores"}
+        standard_keys = {
+            "content",
+            "context",
+            "event_date",
+            "metadata",
+            "entities",
+            "document_id",
+            "tags",
+            "expectation",
+            "outcome",
+            "thalamus_scores",
+        }
         for d in dicts:
             private_keys = [k for k in d if k.startswith("_")]
             assert all(k not in standard_keys for k in private_keys)
+
+
+# ---------------------------------------------------------------------------
+# build_llm_causal_links — Neo4j mirror of LLM-extracted causal_relations
+# ---------------------------------------------------------------------------
+
+
+class TestBuildLLMCausalLinks:
+    def test_causes_keeps_direction(self):
+        """'causes' points from the source fact to its target."""
+        facts = [
+            _Fact(causal_relations=[_Rel("causes", target_fact_index=1, strength=0.9)]),
+            _Fact(causal_relations=[]),
+        ]
+        unit_ids = ["eng-0", "eng-1"]
+        links = build_llm_causal_links(unit_ids, facts)
+
+        assert len(links) == 1
+        link = links[0]
+        assert link.rel_type == "CAUSAL"
+        assert link.from_id == "eng-0"
+        assert link.to_id == "eng-1"
+        assert link.weight == pytest.approx(0.9)
+        assert link.source == "llm_causal_relations:causes"
+
+    def test_caused_by_flips_direction(self):
+        """'caused_by' is the semantic inverse — stored as target→source in Neo4j."""
+        facts = [
+            _Fact(causal_relations=[]),
+            _Fact(causal_relations=[_Rel("caused_by", target_fact_index=0, strength=0.75)]),
+        ]
+        unit_ids = ["eng-a", "eng-b"]
+        links = build_llm_causal_links(unit_ids, facts)
+
+        assert len(links) == 1
+        # fact 1 was caused_by fact 0 → edge goes 0 → 1 (cause → effect)
+        assert links[0].from_id == "eng-a"
+        assert links[0].to_id == "eng-b"
+        assert links[0].source == "llm_causal_relations:caused_by"
+
+    def test_enables_and_prevents_preserve_subtype(self):
+        facts = [
+            _Fact(
+                causal_relations=[
+                    _Rel("enables", target_fact_index=1, strength=0.6),
+                    _Rel("prevents", target_fact_index=2, strength=0.4),
+                ]
+            ),
+            _Fact(causal_relations=[]),
+            _Fact(causal_relations=[]),
+        ]
+        unit_ids = ["u0", "u1", "u2"]
+        links = build_llm_causal_links(unit_ids, facts)
+
+        assert len(links) == 2
+        by_subtype = {link.source.split(":", 1)[1]: link for link in links}
+        assert by_subtype["enables"].from_id == "u0" and by_subtype["enables"].to_id == "u1"
+        assert by_subtype["prevents"].from_id == "u0" and by_subtype["prevents"].to_id == "u2"
+        assert all(link.rel_type == "CAUSAL" for link in links)
+
+    def test_chain_of_three_facts(self):
+        """Lost job → couldn't pay rent → moved apartment (the prompt's own example)."""
+        facts = [
+            _Fact(causal_relations=[]),
+            _Fact(causal_relations=[_Rel("caused_by", target_fact_index=0)]),
+            _Fact(causal_relations=[_Rel("caused_by", target_fact_index=1)]),
+        ]
+        unit_ids = ["job", "rent", "move"]
+        links = build_llm_causal_links(unit_ids, facts)
+
+        assert len(links) == 2
+        edges = {(link.from_id, link.to_id) for link in links}
+        assert ("job", "rent") in edges
+        assert ("rent", "move") in edges
+
+    def test_self_link_skipped(self):
+        facts = [_Fact(causal_relations=[_Rel("causes", target_fact_index=0)])]
+        links = build_llm_causal_links(["solo"], facts)
+        assert links == []
+
+    def test_out_of_range_target_skipped(self):
+        facts = [_Fact(causal_relations=[_Rel("causes", target_fact_index=99)])]
+        links = build_llm_causal_links(["u0", "u1"], facts)
+        assert links == []
+
+    def test_unknown_relation_type_dropped(self):
+        facts = [_Fact(causal_relations=[_Rel("correlates_with", target_fact_index=1)])]
+        links = build_llm_causal_links(["u0", "u1"], facts)
+        assert links == []
+
+    def test_empty_inputs_return_empty(self):
+        assert build_llm_causal_links([], []) == []
+        assert build_llm_causal_links(["u0"], []) == []
+        assert build_llm_causal_links([], [_Fact(causal_relations=[])]) == []
+
+    def test_mismatched_lengths_return_empty(self):
+        """Defensive: orchestrator is supposed to pass aligned lists."""
+        facts = [_Fact(causal_relations=[_Rel("causes", target_fact_index=1)])]
+        links = build_llm_causal_links(["u0", "u1"], facts)
+        assert links == []
+
+    def test_facts_without_causal_relations_are_ignored(self):
+        facts = [
+            _Fact(causal_relations=[]),
+            _Fact(causal_relations=[_Rel("causes", target_fact_index=0, strength=0.5)]),
+        ]
+        links = build_llm_causal_links(["u0", "u1"], facts)
+        assert len(links) == 1
+        assert links[0].from_id == "u1" and links[0].to_id == "u0"

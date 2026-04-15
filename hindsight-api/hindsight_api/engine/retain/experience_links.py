@@ -11,6 +11,24 @@ Called by the retain orchestrator after the main retain pipeline has committed
 engrams to all three databases. Uses content_dict metadata (_action_pair_key,
 _effect_pair_key, _experience_pair_key) to identify paired engrams and build
 Neo4j LinkRecords.
+
+Three producers of :CAUSAL edges live here:
+
+1. ``build_causal_links``           — structured ACTION_EFFECT unit pairs
+                                       (_action_pair_key / _effect_pair_key,
+                                       set by sequence_analysis.units_to_content_dicts).
+2. ``build_llm_causal_links``       — LLM-extracted ``causal_relations`` on
+                                       ProcessedFacts (the "causes / caused_by /
+                                       enables / prevents" links the extractor
+                                       already persists into Postgres
+                                       ``memory_links`` via
+                                       ``link_utils.create_causal_links_batch``).
+                                       We mirror them into Neo4j so the graph
+                                       view and graph-mode retrieval can follow
+                                       free-text causal chains, not only the
+                                       structured ACTION_EFFECT pairs.
+3. ``build_prediction_error_links`` — EXPERIENCE pairs with high
+                                       expectation↔outcome divergence.
 """
 
 from __future__ import annotations
@@ -22,9 +40,21 @@ from typing import TYPE_CHECKING, Any
 from .neo4j_link_writer import LinkRecord
 
 if TYPE_CHECKING:
-    pass
+    from .types import ProcessedFact
 
 logger = logging.getLogger(__name__)
+
+# LLM causal_relation_type → (flip_direction, subtype_label)
+# "caused_by" is the semantic inverse of "causes", so we flip the endpoints to
+# store a consistent A-causes-B orientation in Neo4j. "enables" / "prevents"
+# keep their direction; their nuance is preserved via the LinkRecord.source
+# label so downstream can distinguish subtypes if needed.
+_LLM_CAUSAL_DIRECTIONS: dict[str, tuple[bool, str]] = {
+    "causes": (False, "causes"),
+    "caused_by": (True, "caused_by"),
+    "enables": (False, "enables"),
+    "prevents": (False, "prevents"),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +107,94 @@ def build_causal_links(
                 source="experience_links",
             )
         )
+
+    return links
+
+
+# ---------------------------------------------------------------------------
+# CAUSAL links (LLM-extracted causal_relations on ProcessedFacts)
+# ---------------------------------------------------------------------------
+
+
+def build_llm_causal_links(
+    unit_ids: list[str],
+    facts: "list[ProcessedFact]",
+) -> list[LinkRecord]:
+    """
+    Mirror LLM-extracted causal_relations into Neo4j as ``:CAUSAL`` edges.
+
+    The fact-extraction prompt lets the LLM declare up to two causal links per
+    fact (``causes`` / ``caused_by`` / ``enables`` / ``prevents``). Those
+    relations are already persisted into the Postgres ``memory_links`` table
+    by ``link_utils.create_causal_links_batch`` — this helper generates the
+    parallel Neo4j LinkRecords so the graph view and graph-mode retrieval can
+    follow free-text causal chains, not only the structured ACTION_EFFECT
+    pairs handled by ``build_causal_links``.
+
+    Direction handling:
+      * ``causes``   — ``(fact_i)-[:CAUSAL]->(target)``
+      * ``caused_by``— flipped to ``(target)-[:CAUSAL]->(fact_i)`` so every
+                       edge in Neo4j points from cause to effect
+      * ``enables``  — ``(fact_i)-[:CAUSAL]->(target)`` (semantic nuance kept
+                       via ``source='llm_causal_relations:enables'``)
+      * ``prevents`` — ``(fact_i)-[:CAUSAL]->(target)`` (source carries the
+                       'prevents' label)
+
+    Args:
+        unit_ids: Engram IDs in the same order as ``facts``. Must be
+                  length-aligned — this is the convention already used by
+                  ``link_utils.create_causal_links_batch``.
+        facts:    ProcessedFacts carrying ``causal_relations`` with
+                  ``target_fact_index`` pointing into the same list.
+
+    Returns:
+        List of CAUSAL LinkRecords. Skips self-links and out-of-range target
+        indexes; logs and drops unknown relation_type values.
+    """
+    if not unit_ids or not facts or len(unit_ids) != len(facts):
+        return []
+
+    links: list[LinkRecord] = []
+    for i, fact in enumerate(facts):
+        relations = getattr(fact, "causal_relations", None)
+        if not relations:
+            continue
+
+        from_unit_id = unit_ids[i]
+        for rel in relations:
+            relation_type = getattr(rel, "relation_type", None)
+            target_idx = getattr(rel, "target_fact_index", None)
+            if relation_type is None or target_idx is None:
+                continue
+
+            direction = _LLM_CAUSAL_DIRECTIONS.get(relation_type)
+            if direction is None:
+                logger.warning(
+                    "build_llm_causal_links: unknown relation_type %r on fact %d — skipping",
+                    relation_type,
+                    i,
+                )
+                continue
+
+            if target_idx < 0 or target_idx >= len(unit_ids):
+                continue
+            to_unit_id = unit_ids[target_idx]
+            if to_unit_id == from_unit_id:
+                continue  # self-link
+
+            flip, subtype = direction
+            src, dst = (to_unit_id, from_unit_id) if flip else (from_unit_id, to_unit_id)
+
+            weight = float(getattr(rel, "strength", 1.0) or 1.0)
+            links.append(
+                LinkRecord(
+                    from_id=src,
+                    to_id=dst,
+                    rel_type="CAUSAL",
+                    weight=weight,
+                    source=f"llm_causal_relations:{subtype}",
+                )
+            )
 
     return links
 

@@ -782,9 +782,16 @@ async def retain_batch(
                     ),
                 )
 
-                # Step 12.5: Experience links — CAUSAL (ACTION_EFFECT) + PREDICTION_ERROR (EXPERIENCE)
-                # Only runs when R0 was active (budget is set) and pair-key markers are present.
+                # Step 12.5: Experience + causal links
+                #   * CAUSAL (ACTION_EFFECT pairs from R0 sequence analysis)
+                #   * CAUSAL (LLM-extracted causal_relations mirrored from Postgres
+                #     memory_links so free-text causal chains are visible in Neo4j)
+                #   * PREDICTION_ERROR (EXPERIENCE pairs with expectation↔outcome divergence)
+                # ACTION_EFFECT + PREDICTION_ERROR only run when R0 was active (budget set)
+                # and pair-key markers are present; the LLM causal mirror runs whenever
+                # the extractor returned any causal_relations — independent of budget.
                 from .experience_links import build_causal_links as _build_causal_links
+                from .experience_links import build_llm_causal_links as _build_llm_causal_links
                 from .experience_links import build_prediction_error_links as _build_prediction_error_links
 
                 # Build content_dict_index → first retained unit_id mapping
@@ -798,16 +805,21 @@ async def retain_batch(
 
                 _causal_links = _build_causal_links(contents_dicts, _aligned_eids)
 
+                # Mirror LLM causal_relations to Neo4j. unit_ids and non_duplicate_facts
+                # share ordering by construction (see create_causal_links_batch caller).
+                _llm_causal_links = _build_llm_causal_links(unit_ids, non_duplicate_facts)
+
                 async def _embed_texts(texts: list[str]) -> list[list[float]]:
                     return await embedding_processing.generate_embeddings_batch(embeddings_model, texts)
 
                 _pe_links = await _build_prediction_error_links(contents_dicts, _aligned_eids, _embed_texts)
 
-                _experience_links = _causal_links + _pe_links
+                _experience_links = _causal_links + _llm_causal_links + _pe_links
                 if _experience_links:
                     await _write_links_to_neo4j(neo4j_client, _experience_links)
                     log_buffer.append(
-                        f"[12.5] Experience links: {len(_causal_links)} CAUSAL, {len(_pe_links)} PREDICTION_ERROR"
+                        f"[12.5] Experience links: {len(_causal_links)} CAUSAL (action/effect), "
+                        f"{len(_llm_causal_links)} CAUSAL (llm), {len(_pe_links)} PREDICTION_ERROR"
                     )
 
             # Regenerate observations - sync (in transaction) or async (background task)
