@@ -112,6 +112,30 @@ PROTECTION_BETA: float = 0.5
 REFERENCE_BANK_SIZE: int = 1000
 MIN_EQUILIBRIUM_RATE: float = 0.001  # lower guard against pathological input
 
+# ---------------------------------------------------------------------------
+# Epic 24 Story 04 — Tag-based promote thresholds + normalized hard gates
+# ---------------------------------------------------------------------------
+#
+# Promote thresholds become tag-aware rather than mode-aware: facts are
+# cheap routine material and need a strict bar, experiences and opinions are
+# already-processed knowledge and get promoted earlier. The hard access gate
+# is normalized by bank size because access_count inflates in small banks
+# (every Engram is recalled more often on average) and deflates in large
+# ones (competition).
+#
+# The old MODE_PROMOTE_THRESHOLDS / MIN_ACCESS_FOR_PROMOTE / get_promote_threshold
+# stay in place until Story 06 migrates the callers and deletes them.
+#
+# Concept reference: concept.md §5.3.
+
+TAG_PROMOTE_THRESHOLDS: dict[str, float] = {
+    "fact": 0.7,
+    "experience": 0.4,
+    "opinion": 0.4,
+}
+DEFAULT_TAG_PROMOTE_THRESHOLD: float = 0.7  # conservative fallback (like fact)
+BASE_MIN_ACCESS_FOR_PROMOTE: int = 5  # bank-size 1000 anchor
+
 
 def sessions_alive(bank_session_count: int, engram_created_at_session: int) -> int:
     """Return the number of sessions a given Engram has been alive for.
@@ -352,3 +376,70 @@ def compute_composite(
     if raw < 0.0:
         return 0.0
     return min(COMPOSITE_MAX, raw)
+
+
+def get_promote_threshold_for_tags(tags: list[str] | None) -> float:
+    """Tag-based promote threshold (Epic 24 Story 04).
+
+    Iterates over an Engram's tags and picks the *lowest* matching threshold
+    — multi-tag Engrams get the benefit of the doubt. Tags outside
+    ``TAG_PROMOTE_THRESHOLDS`` are ignored; if no tag matches, the default
+    (``DEFAULT_TAG_PROMOTE_THRESHOLD``, equal to the strict ``fact`` value)
+    applies.
+
+    Args:
+        tags: Engram tag list from ``engram_dictionary.tags``. ``None`` and
+            empty lists both collapse to the default threshold.
+
+    Returns:
+        The promote threshold the composite score must reach.
+    """
+    if not tags:
+        return DEFAULT_TAG_PROMOTE_THRESHOLD
+    matches = [TAG_PROMOTE_THRESHOLDS[t] for t in tags if t in TAG_PROMOTE_THRESHOLDS]
+    if not matches:
+        return DEFAULT_TAG_PROMOTE_THRESHOLD
+    return min(matches)
+
+
+def compute_min_access(bank_size: int, base: int = BASE_MIN_ACCESS_FOR_PROMOTE) -> int:
+    """Bank-size normalized access gate (Epic 24 Story 04).
+
+    Small banks inflate ``access_count`` because every Engram has a higher
+    per-session recall probability; large banks deflate it due to
+    competition. Multiplying ``base`` by the same ``compute_bank_factor``
+    used for the equilibrium rate keeps the access gate fair.
+
+    Args:
+        bank_size: Current Engram count for the bank.
+        base: Anchor value at ``REFERENCE_BANK_SIZE`` (default 5).
+
+    Returns:
+        ``ceil(base × bank_factor(bank_size))``, clamped to a minimum of 1
+        so the gate can never collapse to "no access needed".
+    """
+    raw = base * compute_bank_factor(bank_size)
+    return max(1, math.ceil(raw))
+
+
+def passes_hard_gates(access_count: int, novelty: float, bank_size: int) -> bool:
+    """Combined access + novelty gate check (Epic 24 Story 04).
+
+    Both gates must pass before a composite score is even evaluated:
+
+    - ``access_count >= compute_min_access(bank_size)`` (normalized STC gate)
+    - ``novelty >= MIN_NOVELTY_FOR_PROMOTE`` (CA1 mismatch gate, unchanged)
+
+    Args:
+        access_count: Total recall hits accumulated for this Engram.
+        novelty: Thalamus novelty score at Engram creation time.
+        bank_size: Current Engram count in the bank.
+
+    Returns:
+        ``True`` iff both gates pass.
+    """
+    if access_count < compute_min_access(bank_size):
+        return False
+    if novelty < MIN_NOVELTY_FOR_PROMOTE:
+        return False
+    return True
