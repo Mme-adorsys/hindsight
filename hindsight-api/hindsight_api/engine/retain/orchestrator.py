@@ -95,12 +95,21 @@ async def retain_batch(
 
     # Epic 24: increment bank.op_count and capture the new value so that
     # every engram created in this batch gets created_at_op = current op_count.
+    from ..engram_dictionary import get_bank_session_count as _get_sc
     from ..engram_dictionary import increment_bank_op_count as _inc_op
 
     try:
         _bank_op_count = await _inc_op(pool, bank_id)
     except Exception:
         _bank_op_count = 0
+
+    # Epic 24 Story 06: capture session_count for created_at_session. Session
+    # count is only bumped at session close (by MemoryEngine.end_session_async),
+    # so reading it here is safe and cheap.
+    try:
+        _bank_session_count = await _get_sc(pool, bank_id)
+    except Exception:
+        _bank_session_count = 0
 
     # Buffer all logs
     log_buffer = []
@@ -582,7 +591,11 @@ async def retain_batch(
 
             step_start = time.time()
             new_unit_ids = await fact_storage.insert_facts_batch(
-                conn, bank_id, keep_facts, bank_op_count=_bank_op_count
+                conn,
+                bank_id,
+                keep_facts,
+                bank_op_count=_bank_op_count,
+                bank_session_count=_bank_session_count,
             )
             _r5_duration_ms = (time.time() - step_start) * 1000
             log_buffer.append(f"[5] Insert facts: {len(new_unit_ids)} units in {_r5_duration_ms / 1000:.3f}s")
@@ -870,6 +883,7 @@ async def retain_batch(
                     session_task_context=session_task_context,
                     parent_tags=_parent_tags,
                     bank_op_count=_bank_op_count,
+                    bank_session_count=_bank_session_count,
                 )
                 entity_ids_for_async = []
                 tracer.record_step(

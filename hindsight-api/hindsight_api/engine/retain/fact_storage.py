@@ -8,7 +8,6 @@ import json
 import logging
 import uuid
 
-from ..consolidation.scoring import SALIENCY_WEIGHT
 from ..memory_engine import fq_table
 from .types import ProcessedFact
 
@@ -22,6 +21,7 @@ async def insert_facts_batch(
     document_id: str | None = None,
     *,
     bank_op_count: int = 0,
+    bank_session_count: int = 0,
 ) -> list[str]:
     """
     Insert facts into the database in batch.
@@ -31,8 +31,11 @@ async def insert_facts_batch(
         bank_id: Bank identifier
         facts: List of ProcessedFact objects to insert
         document_id: Optional document ID to associate with facts
-        bank_op_count: Current bank.op_count — passed through to engram_dictionary
-            as created_at_op for composite strength scoring (Epic 24).
+        bank_op_count: Current bank.op_count — legacy aging anchor, kept until
+            the op_count column itself is retired in a follow-up cleanup.
+        bank_session_count: Current bank.session_count — Epic 24 Story 06 aging
+            anchor. Stored as ``created_at_session`` so ``compute_decay`` can
+            derive ``sessions_alive`` later.
 
     Returns:
         List of unit IDs (UUIDs as strings) for the inserted facts
@@ -106,7 +109,14 @@ async def insert_facts_batch(
 
     # Write tags + thalamus scores to engram_dictionary (same transaction).
     # memory_units.id == engram_dictionary.engram_id — the shared Engram ID.
-    await _insert_engram_dictionary_batch(conn, bank_id, unit_ids, facts, bank_op_count=bank_op_count)
+    await _insert_engram_dictionary_batch(
+        conn,
+        bank_id,
+        unit_ids,
+        facts,
+        bank_op_count=bank_op_count,
+        bank_session_count=bank_session_count,
+    )
 
     return unit_ids
 
@@ -118,6 +128,7 @@ async def _insert_engram_dictionary_batch(
     facts: list[ProcessedFact],
     *,
     bank_op_count: int = 0,
+    bank_session_count: int = 0,
 ) -> None:
     """Write tags + thalamus scores + retain provenance into engram_dictionary.
 
@@ -132,32 +143,30 @@ async def _insert_engram_dictionary_batch(
       - task_context                      (TEXT, effective task_context)
       - retain_context                    (JSONB, Thalamus rationale dump)
 
-    Epic 24 addition:
+    Epic 24 Story 01 + 06 additions:
       - created_at_op                     (INT, snapshot of bank.op_count)
+      - created_at_session                (INT, snapshot of bank.session_count)
+      - strength                          = thalamus_scores.overall at birth
 
     Args:
         conn: Active DB connection (already inside a transaction).
         bank_id: Bank identifier.
         unit_ids: UUIDs returned from the memory_units INSERT (one per fact).
         facts: ProcessedFact list in the same order as unit_ids.
-        bank_op_count: Current bank.op_count value — stored as created_at_op
-            so composite strength can compute cycles_alive later.
+        bank_op_count: Current bank.op_count value — stored as created_at_op.
+        bank_session_count: Current bank.session_count value — stored as
+            created_at_session so compute_decay can derive sessions_alive later.
     """
     for unit_id, fact in zip(unit_ids, facts):
         ts = fact.thalamus_scores
 
-        # Initial strength inherits the saliency boost from the thalamus scores.
-        # This mirrors `compute_composite_strength` at access_count=0:
-        #     strength = 0.0 (recall_score) + SALIENCY_WEIGHT * max(emo, surprise)
-        # Without this boost, fresh facts enter with strength=0.0 and get dropped
-        # by the recall strength_pre_filter (precision=0.05, validation=0.1, etc.)
-        # before the cross-encoder ever sees them — leaving recalls dominated by
-        # observations (which already enter with strength=0.3).
-        if ts is not None:
-            saliency = max(ts.emotional_valence or 0.0, ts.surprise or 0.0)
-            initial_strength = SALIENCY_WEIGHT * saliency
-        else:
-            initial_strength = 0.0
+        # Epic 24 Story 06: initial strength = thalamus_overall. At
+        # sessions_alive=0 the decay factor is exactly 1.0, so
+        # ``compute_composite`` returns the birth value unchanged. This
+        # replaces the old saliency-proxy (SALIENCY_WEIGHT × max(val, sur))
+        # with the real composite semantics — a fresh Engram enters with its
+        # Thalamus score and only amplifies via recall.
+        initial_strength = float(ts.overall) if ts is not None else 0.0
 
         # Flatten the ThalamusRationale into a JSON-serialisable dict for
         # retain_context. None-values are kept so the UI can tell "no info"
@@ -183,9 +192,9 @@ async def _insert_engram_dictionary_batch(
                 novelty, surprise, task_relevance, emotional_valence, thalamus_overall,
                 strength, layer, status,
                 expectation, outcome, session_mode, task_context, retain_context,
-                created_at_op
+                created_at_op, created_at_session
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                      $12, $13, $14, $15, $16::jsonb, $17)
+                      $12, $13, $14, $15, $16::jsonb, $17, $18)
             ON CONFLICT (engram_id) DO NOTHING
             """,
             uuid.UUID(unit_id),
@@ -205,6 +214,7 @@ async def _insert_engram_dictionary_batch(
             fact.task_context,
             json.dumps(retain_context_dict) if retain_context_dict is not None else None,
             bank_op_count,
+            bank_session_count,
         )
 
 

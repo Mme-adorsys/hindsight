@@ -1,31 +1,40 @@
 """
-Composite Strength Scoring for Selective Consolidation (Epic 24, revised).
+Lifecycle Scoring for Epic 24 (Memory Evolves).
 
-The composite strength score combines a recall-frequency metric with a
-saliency boost from emotional valence and surprise to determine whether
-a Working Memory Engram should be promoted to the Buffer.
+The composite score is the single metric for all lifecycle decisions
+(Consolidation1 promotion, NCR decay/archive, NCR strengthen/promote,
+Story 05 reactivation and downgrade):
 
-Formula:
-    saliency      = max(emotional_valence, surprise)
-    recall_score  = log(1 + access_count) / log(2 + cycles_alive)
-    composite     = recall_score + SALIENCY_WEIGHT * saliency
+    r         = compute_equilibrium_rate(thalamus_scores, mode, bank_size)
+    decay     = log(1 + access_count) / log(1 + sessions_alive × r)
+    composite = thalamus_overall × decay
 
-Two hard gates must be passed before the score is evaluated:
-    1. access_count >= MIN_ACCESS_FOR_PROMOTE  (rehearsal required)
-    2. novelty     >= MIN_NOVELTY_FOR_PROMOTE   (only new info consolidates)
+At ``sessions_alive=0`` the decay is exactly 1.0, so a freshly created Engram
+enters with ``strength == thalamus_overall``. As recall happens, ``decay``
+can grow above 1.0 (amplification) or shrink below 1.0 (natural forgetting)
+depending on how the actual access rate compares to the per-Engram
+equilibrium ``r``.
 
-The promote threshold is mode-dependent (MODE_PROMOTE_THRESHOLDS),
-keyed on the session_mode at Engram creation time.
+Two hard gates guard promotion:
+    1. access_count >= compute_min_access(bank_size)   (STC rehearsal, normalized)
+    2. novelty      >= MIN_NOVELTY_FOR_PROMOTE         (CA1 mismatch detection)
+
+The promote threshold is tag-dependent (``TAG_PROMOTE_THRESHOLDS``) — facts
+are strict, experiences/opinions get the benefit of the doubt.
 
 Bio mapping:
-- Recall score    = rehearsal-dependent capture (repeated reactivation)
-- Saliency boost  = amygdala modulation (emotional) + noradrenaline (surprise)
-- Novelty gate    = CA1 mismatch detection — known info is not re-consolidated
-- Logarithmic decay = natural forgetting curve in hippocampus
-- Min-access gate = STC requirement: tagging alone is insufficient,
-  capture (rehearsal) must also occur
+- Amplification regime (decay > 1) = LTP-Late reinforcement through repeated
+  reactivation
+- Decay regime (decay < 1) = SWS pruning of weakly reactivated traces
+- Novelty gate              = CA1 mismatch detection
+- Normalized access gate    = STC capture requirement, fair across bank sizes
+- Bank factor               = balances inflated per-Engram recall probability
+                              in small banks against competition in large ones
+- Tag thresholds            = facts are cheap routine, experiences are already
+                              distilled knowledge
 
-Ref: concept.md ch. 12 (Consolidation Pipeline), STC model.
+Refs: concept.md §5.3 (Lifecycle Scoring), §12 (Consolidation Pipeline),
+engram-lifecycle-scoring.md ch. 3.
 """
 
 from __future__ import annotations
@@ -41,29 +50,10 @@ if TYPE_CHECKING:
 # Hard gates
 # ---------------------------------------------------------------------------
 
-MIN_ACCESS_FOR_PROMOTE: int = 5  # STC: rehearsal required for consolidation
 MIN_NOVELTY_FOR_PROMOTE: float = 0.2  # CA1: only novel info consolidates
 
 # ---------------------------------------------------------------------------
-# Score parameters
-# ---------------------------------------------------------------------------
-
-SALIENCY_WEIGHT: float = 0.3  # max bonus = 0.3 (at saliency=1.0)
-
-# ---------------------------------------------------------------------------
-# Mode-dependent promote thresholds
-# ---------------------------------------------------------------------------
-
-MODE_PROMOTE_THRESHOLDS: dict[str, float] = {
-    "precision": 0.8,
-    "validation": 0.7,
-    "analogy": 0.6,
-    "exploration": 0.5,
-}
-DEFAULT_PROMOTE_THRESHOLD: float = 0.7  # fallback when mode is unknown
-
-# ---------------------------------------------------------------------------
-# Archive threshold (unchanged from Epic 24)
+# Archive thresholds (layer-aware, used by NCR Phase 1 / C2a Decay)
 # ---------------------------------------------------------------------------
 
 ARCHIVE_THRESHOLD_WM: float = 0.08
@@ -116,15 +106,11 @@ MIN_EQUILIBRIUM_RATE: float = 0.001  # lower guard against pathological input
 # Epic 24 Story 04 — Tag-based promote thresholds + normalized hard gates
 # ---------------------------------------------------------------------------
 #
-# Promote thresholds become tag-aware rather than mode-aware: facts are
-# cheap routine material and need a strict bar, experiences and opinions are
-# already-processed knowledge and get promoted earlier. The hard access gate
-# is normalized by bank size because access_count inflates in small banks
-# (every Engram is recalled more often on average) and deflates in large
-# ones (competition).
-#
-# The old MODE_PROMOTE_THRESHOLDS / MIN_ACCESS_FOR_PROMOTE / get_promote_threshold
-# stay in place until Story 06 migrates the callers and deletes them.
+# Promote thresholds are tag-aware: facts are cheap routine material and need a
+# strict bar, experiences and opinions are already-processed knowledge and get
+# promoted earlier. The hard access gate is normalized by bank size because
+# access_count inflates in small banks (every Engram is recalled more often on
+# average) and deflates in large ones (competition).
 #
 # Concept reference: concept.md §5.3.
 
@@ -154,74 +140,6 @@ def sessions_alive(bank_session_count: int, engram_created_at_session: int) -> i
         briefly appear higher than the bank counter.
     """
     return max(0, bank_session_count - engram_created_at_session)
-
-
-def compute_recount_score(access_count: int, cycles_alive: int) -> float:
-    """Logarithmic access-frequency metric.
-
-    Returns a value in [0, ~1.0+]:
-    - 0.0 when access_count == 0 (never accessed)
-    - approaches 1.0 when accesses >> cycles
-    - decays logarithmically as cycles_alive grows without new accesses
-
-    The log(2 + cycles) denominator ensures:
-    - At cycles_alive=0: log(2) ≈ 0.693 → recount stays bounded
-    - Growth is sub-linear → natural decay even with constant access_count
-
-    The log(1 + access) numerator ensures:
-    - At access_count=0: 0.0 (clean zero)
-    - Each additional access has diminishing returns
-    - But on OLD memories (high denominator), each access has
-      proportionally larger impact → asymmetric recovery
-    """
-    if access_count <= 0:
-        return 0.0
-    return math.log(1 + access_count) / math.log(2 + cycles_alive)
-
-
-def compute_composite_strength(
-    emotional_valence: float | None,
-    surprise: float | None,
-    access_count: int,
-    cycles_alive: int,
-    *,
-    saliency_weight: float = SALIENCY_WEIGHT,
-) -> float:
-    """Compute the composite strength score for an Engram.
-
-    The score is primarily driven by recall frequency (access_count),
-    with a saliency boost from emotional_valence and surprise.
-
-    Args:
-        emotional_valence: Amygdala modulation score [0, 1]. None → 0.0.
-        surprise: Noradrenaline surprise score [0, 1]. None → 0.0.
-        access_count: Number of recall hits for this Engram.
-        cycles_alive: bank.op_count - engram.created_at_op (session-relative age).
-        saliency_weight: Weight for the saliency boost (default 0.3).
-
-    Returns:
-        Composite strength score clamped to [0.0, 10.0].
-    """
-    ev = emotional_valence if emotional_valence is not None else 0.0
-    sur = surprise if surprise is not None else 0.0
-    saliency = max(ev, sur)
-    recall = compute_recount_score(access_count, cycles_alive)
-    raw = recall + saliency_weight * saliency
-    return min(10.0, raw)  # clamp to prevent inf/overflow in edge cases
-
-
-def get_promote_threshold(mode: str | None) -> float:
-    """Return the promote threshold for a given session mode.
-
-    Args:
-        mode: Session mode at Engram creation time. None → DEFAULT.
-
-    Returns:
-        Threshold value the composite score must reach for promotion.
-    """
-    if mode is None:
-        return DEFAULT_PROMOTE_THRESHOLD
-    return MODE_PROMOTE_THRESHOLDS.get(mode, DEFAULT_PROMOTE_THRESHOLD)
 
 
 def compute_bank_factor(bank_size: int, reference_size: int = REFERENCE_BANK_SIZE) -> float:

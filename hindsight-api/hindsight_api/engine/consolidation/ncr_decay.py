@@ -1,31 +1,43 @@
 """
 NCR Phase 1 — Decay.
 
-Weakens Engrams each NCR cycle. Engrams below the archive threshold are marked
-as archived across all three storage systems. Links are preserved — Schema
-Formation (NCR Phase 3) may still reference archived Engrams.
+Recomputes each active Engram's composite score each NCR cycle using the
+Epic 24 formula:
+
+    composite = thalamus_overall × compute_decay(access_count, sessions_alive, r)
+
+The result is persisted as ``strength``. Engrams whose composite falls below
+the layer-appropriate archive threshold are marked archived across all three
+storage systems. Links are preserved — Schema Formation (NCR Phase 3) may
+still reference archived Engrams. Neocortex-layer Engrams are skipped
+entirely (they are consolidated long-term memory and should not decay).
 
 Biological mapping:
-  SWS / Sharp-Wave Ripples — weak synaptic connections are pruned during slow-wave sleep.
-  Frequent activation counteracts Decay (synaptic consolidation via LTP Late).
+  SWS / Sharp-Wave Ripples — weak synaptic connections are pruned during
+  slow-wave sleep. Frequent activation counteracts decay (LTP Late).
   Ref: concept.md ch. 12 — NCR Phase 1 (Decay)
+  Ref: concept.md §5.3 — Lifecycle Scoring
 
-Epic 12, Story 02.
+Epic 12 Story 02 (original), refactored Epic 24 Story 06.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import math
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 
 import asyncpg
 
 from hindsight_api.engine import engram_dictionary as dict_repo
+from hindsight_api.engine.consolidation.scoring import (
+    ARCHIVE_THRESHOLD_BUFFER,
+    ARCHIVE_THRESHOLD_WM,
+    compute_composite,
+    compute_equilibrium_rate,
+    sessions_alive,
+)
 from hindsight_api.engine.engram_storage import EngramStorageInterface
-from hindsight_api.engine.neo4j_client import Neo4jEngineClient
+from hindsight_api.engine.engram_types import ThalamusScores
 from hindsight_api.engine.qdrant_client import QdrantEngineClient
 
 logger = logging.getLogger(__name__)
@@ -35,10 +47,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _BATCH_SIZE = 200
-_DEFAULT_DECAY_RATE = 0.9
-_ARCHIVE_THRESHOLD = 0.05
-_EXTRA_DECAY_BASE = 0.95
-_EXTRA_DECAY_DAYS_UNIT = 30
 
 
 # ---------------------------------------------------------------------------
@@ -48,14 +56,20 @@ _EXTRA_DECAY_DAYS_UNIT = 30
 
 @dataclass(frozen=True)
 class DecayConfig:
-    """Configurable parameters for NCR Decay.
+    """Configurable parameters for NCR Decay (Epic 24 Story 06).
 
-    decay_rate: Fraction of strength retained per cycle (0.9 = 10% loss).
-    archive_threshold: Strength below which an Engram is archived.
+    The decay formula itself is no longer configurable — it lives in
+    ``scoring.compute_composite`` and is derived from the Thalamus birth value,
+    access count, sessions alive, and equilibrium rate. Only the two archive
+    thresholds can still be overridden, e.g. for integration tests that want
+    tighter or looser boundaries.
+
+    archive_threshold_wm:     composite floor for ``layer='working'`` Engrams.
+    archive_threshold_buffer: composite floor for ``layer='buffer'`` Engrams.
     """
 
-    decay_rate: float = _DEFAULT_DECAY_RATE
-    archive_threshold: float = _ARCHIVE_THRESHOLD
+    archive_threshold_wm: float = ARCHIVE_THRESHOLD_WM
+    archive_threshold_buffer: float = ARCHIVE_THRESHOLD_BUFFER
 
 
 # ---------------------------------------------------------------------------
@@ -81,16 +95,16 @@ class DecayResult:
 
 
 class DecayProcessor:
-    """
-    NCR Phase 1: applies decay formula to all active buffer/neocortex Engrams.
+    """NCR Phase 1 (C2a) — Epic 24 Story 06 composite-based decay.
 
-    Decay formula (per Engram):
-        frequency_bonus  = 1.0 + log10(1 + access_count) / 10
-        new_strength     = strength * decay_rate * frequency_bonus
-        extra decay if days_since_access > 30:
-            new_strength *= 0.95 ^ (days_since_access / 30)
+    For every active ``buffer`` / ``working`` Engram in the bank the processor
+    reconstructs the Thalamus birth value, derives the per-Engram equilibrium
+    rate, computes the new composite, and persists it as ``strength``. Engrams
+    whose composite falls below the layer-appropriate archive threshold are
+    archived in all three storage systems. ``neocortex`` Engrams are guarded
+    against decay entirely — they are already consolidated long-term memory.
 
-    Archiving (strength < archive_threshold):
+    Archive behavior (unchanged):
         - engram_dictionary: layer='archived', status='archived'
         - Neo4j node:        archived=true
         - Qdrant payload:    archived=true
@@ -100,7 +114,7 @@ class DecayProcessor:
         pool:            asyncpg connection pool (PostgreSQL).
         storage_service: EngramStorageInterface — mirrors layer/status to Neo4j.
         qdrant:          QdrantEngineClient — for payload-only archive flag.
-        config:          DecayConfig with tunable parameters.
+        config:          DecayConfig with tunable archive thresholds.
     """
 
     def __init__(
@@ -120,11 +134,12 @@ class DecayProcessor:
     # -----------------------------------------------------------------------
 
     async def process(self, bank_id: str) -> DecayResult:
-        """
-        Run NCR Decay for all active buffer/neocortex Engrams of a bank.
+        """Run NCR Decay for all active buffer/working Engrams of a bank.
 
         Processes in batches of 200. Each batch is independent — a failure in
-        one entry does not block subsequent entries.
+        one entry does not block subsequent entries. ``bank.session_count`` and
+        the bank engram count are fetched once at the start and reused for the
+        entire run (they are stable during the pass).
 
         Args:
             bank_id: The memory bank to process.
@@ -133,6 +148,11 @@ class DecayProcessor:
             DecayResult with counts of decayed, archived, unchanged, errors.
         """
         result = DecayResult()
+
+        # Epic 24 Story 06: bank-level scoring inputs fetched once per run.
+        bank_session_count = await dict_repo.get_bank_session_count(self._pool, bank_id)
+        bank_size = await dict_repo.get_bank_engram_count(self._pool, bank_id)
+
         offset = 0
 
         while True:
@@ -146,7 +166,7 @@ class DecayProcessor:
                 break
 
             result.total += len(batch)
-            batch_result = await self._process_batch(batch)
+            batch_result = await self._process_batch(batch, bank_session_count, bank_size)
             result.decayed += batch_result.decayed
             result.archived += batch_result.archived
             result.unchanged += batch_result.unchanged
@@ -181,24 +201,54 @@ class DecayProcessor:
     # Internals
     # -----------------------------------------------------------------------
 
-    async def _process_batch(self, batch: list[dict]) -> DecayResult:
+    async def _process_batch(
+        self,
+        batch: list[dict],
+        bank_session_count: int,
+        bank_size: int,
+    ) -> DecayResult:
         result = DecayResult()
 
         for entry in batch:
             engram_id = str(entry["engram_id"])
             try:
+                layer = entry.get("layer")
+                # Neocortex guard — consolidated memories do not decay. Story 05
+                # will add the bidirectional lifecycle which touches other
+                # layers; neocortex stays stable through all of it.
+                if layer == "neocortex":
+                    result.unchanged += 1
+                    continue
+
                 current_strength = float(entry.get("strength") or 0.0)
                 access_count = int(entry.get("access_count") or 0)
-                last_accessed = entry.get("last_accessed")
+                created_at_session = int(entry.get("created_at_session") or 0)
+                session_mode = entry.get("session_mode")
 
-                new_strength = _apply_decay_formula(
-                    strength=current_strength,
-                    access_count=access_count,
-                    last_accessed=last_accessed,
-                    decay_rate=self._config.decay_rate,
+                thalamus_scores = ThalamusScores(
+                    novelty=float(entry.get("novelty") or 0.0),
+                    surprise=float(entry.get("surprise") or 0.0),
+                    task_relevance=float(entry.get("task_relevance") or 0.0),
+                    emotional_valence=float(entry.get("emotional_valence") or 0.0),
+                    overall=float(entry.get("thalamus_overall") or 0.0),
                 )
 
-                if new_strength < self._config.archive_threshold:
+                sa = sessions_alive(bank_session_count, created_at_session)
+                r = compute_equilibrium_rate(thalamus_scores, session_mode, bank_size)
+                new_strength = compute_composite(
+                    thalamus_scores.overall,
+                    access_count,
+                    sa,
+                    r,
+                )
+
+                archive_threshold = (
+                    self._config.archive_threshold_buffer
+                    if layer == "buffer"
+                    else self._config.archive_threshold_wm
+                )
+
+                if new_strength < archive_threshold:
                     await self._archive_engram(engram_id)
                     result.archived += 1
                 elif abs(new_strength - current_strength) < 1e-9:
@@ -227,48 +277,3 @@ class DecayProcessor:
         except Exception as exc:
             # Non-fatal: Dictionary/Neo4j already updated — log and continue
             logger.warning("[NCRDecay] Qdrant archive flag failed engram=%s: %s", engram_id, exc)
-
-
-# ---------------------------------------------------------------------------
-# Decay formula (pure function — testable without DB)
-# ---------------------------------------------------------------------------
-
-
-def _apply_decay_formula(
-    strength: float,
-    access_count: int,
-    last_accessed: datetime | None,
-    decay_rate: float = _DEFAULT_DECAY_RATE,
-) -> float:
-    """
-    Compute new strength after one NCR Decay cycle.
-
-        frequency_bonus = 1.0 + log10(1 + access_count) / 10
-        new_strength    = strength * decay_rate * frequency_bonus
-
-    Extra decay for stale Engrams (last_accessed > 30 days ago):
-        new_strength   *= 0.95 ^ (days_since_access / 30)
-
-    Args:
-        strength:      Current Engram strength (0.0–1.0).
-        access_count:  Number of times the Engram has been recalled.
-        last_accessed: Timestamp of last access (timezone-aware or naive UTC).
-        decay_rate:    Base decay fraction (default 0.9).
-
-    Returns:
-        New strength after decay (may exceed current strength for very frequently
-        accessed Engrams — NCR Phase 2 will cap at 1.0 during strengthening).
-    """
-    frequency_bonus = 1.0 + math.log10(1 + access_count) / 10
-    new_strength = strength * decay_rate * frequency_bonus
-
-    if last_accessed is not None:
-        now = datetime.now(timezone.utc)
-        # Normalise naive datetimes to UTC
-        if last_accessed.tzinfo is None:
-            last_accessed = last_accessed.replace(tzinfo=timezone.utc)
-        days_since = max(0, (now - last_accessed).days)
-        if days_since > _EXTRA_DECAY_DAYS_UNIT:
-            new_strength *= _EXTRA_DECAY_BASE ** (days_since / _EXTRA_DECAY_DAYS_UNIT)
-
-    return new_strength

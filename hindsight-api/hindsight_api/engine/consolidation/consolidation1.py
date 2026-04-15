@@ -1,18 +1,21 @@
 """
 Consolidation 1 — Selective Working Memory → Buffer Promotion.
 
-Evaluates each Working Memory Engram using a recall-driven composite
-score with saliency boost and two hard gates:
+Evaluates each Working Memory Engram using the Epic 24 composite score:
+
+  composite = thalamus_overall × decay(access_count, sessions_alive, r)
+  r         = compute_equilibrium_rate(thalamus_scores, session_mode, bank_size)
+
+Two gates control promotion:
 
   1. Novelty gate:  novelty < MIN_NOVELTY_FOR_PROMOTE → archive
-     (known information is not worth consolidating)
-  2. Access gate:   access_count < MIN_ACCESS_FOR_PROMOTE → stay in WM
-     (STC: rehearsal is required for capture)
-  3. Score gate:    composite >= mode-dependent threshold → promote
-     composite = recall_score + SALIENCY_WEIGHT * max(emotional_valence, surprise)
-
-The promote threshold depends on the session_mode at Engram creation:
-  precision=0.8, validation=0.7, analogy=0.6, exploration=0.5
+     (known information is not worth consolidating; skipped for synthesized
+     engrams where novelty is NULL)
+  2. Hard gates:    access_count >= compute_min_access(bank_size)
+                    AND novelty >= MIN_NOVELTY_FOR_PROMOTE
+     (STC rehearsal requirement, normalized per bank size)
+  3. Score gate:    composite >= get_promote_threshold_for_tags(tags)
+     (tag-driven promote bar — facts strict, experiences/opinions lenient)
 
 Biological mapping:
   Sharp-Wave Ripples (SWS) selectively replay high-salience traces from
@@ -22,8 +25,9 @@ Biological mapping:
   rehearsal — matching the Synaptic Tagging & Capture model.
 
   Ref: concept.md ch. 12 — Consolidation Pipeline, 4-Stufen-Modell
+  Ref: concept.md §5.3 — Lifecycle Scoring
 
-Epic 12 (original), refactored Epic 24.
+Epic 12 (original), refactored Epic 24 Story 06.
 """
 
 from __future__ import annotations
@@ -36,13 +40,15 @@ import asyncpg
 
 from hindsight_api.engine import engram_dictionary as dict_repo
 from hindsight_api.engine.consolidation.scoring import (
-    ARCHIVE_THRESHOLD_WM,
-    MIN_ACCESS_FOR_PROMOTE,
     MIN_NOVELTY_FOR_PROMOTE,
-    compute_composite_strength,
-    get_promote_threshold,
+    compute_composite,
+    compute_equilibrium_rate,
+    compute_min_access,
+    get_promote_threshold_for_tags,
+    sessions_alive,
 )
 from hindsight_api.engine.engram_storage import EngramStorageInterface
+from hindsight_api.engine.engram_types import ThalamusScores
 
 logger = logging.getLogger(__name__)
 
@@ -130,8 +136,12 @@ class Consolidation1Service:
         """
         result = ConsolidationResult()
 
-        # Read current bank.op_count once — used for cycles_alive per Engram.
-        bank_op_count = await dict_repo.get_bank_op_count(self._pool, bank_id)
+        # Epic 24 Story 06: read bank-level scoring inputs once per run.
+        # session_count drives sessions_alive, engram_count drives bank_factor
+        # — both stay constant during the scoring pass, so one fetch is enough.
+        bank_session_count = await dict_repo.get_bank_session_count(self._pool, bank_id)
+        bank_size = await dict_repo.get_bank_engram_count(self._pool, bank_id)
+        min_access = compute_min_access(bank_size)
 
         async def _run() -> None:
             offset = 0
@@ -146,7 +156,7 @@ class Consolidation1Service:
                     break
 
                 result.total += len(batch)
-                batch_result = await self._process_batch(batch, bank_op_count)
+                batch_result = await self._process_batch(batch, bank_session_count, bank_size, min_access)
                 result.consolidated += batch_result.consolidated
                 result.skipped += batch_result.skipped
                 result.archived += batch_result.archived
@@ -189,8 +199,14 @@ class Consolidation1Service:
     # Internals
     # -----------------------------------------------------------------------
 
-    async def _process_batch(self, batch: list[dict], bank_op_count: int) -> ConsolidationResult:
-        """Process a single batch of unconsolidated entries."""
+    async def _process_batch(
+        self,
+        batch: list[dict],
+        bank_session_count: int,
+        bank_size: int,
+        min_access: int,
+    ) -> ConsolidationResult:
+        """Process a single batch of unconsolidated entries (Epic 24 Story 06)."""
         result = ConsolidationResult()
 
         for entry in batch:
@@ -199,18 +215,26 @@ class Consolidation1Service:
                 # Note: novelty can legitimately be NULL for synthesized engrams
                 # (observations from observation_regeneration). NULL means
                 # "not applicable" — these are abstractions, not raw input that
-                # would need a novelty check. We skip the novelty gate for them
-                # by treating NULL as "passes the gate" (using a sentinel above
-                # the threshold).
+                # would need a novelty check. We skip BOTH the novelty gate and
+                # the novelty component of the hard gates for them.
                 raw_novelty = entry.get("novelty")
                 novelty_is_null = raw_novelty is None
-                novelty = raw_novelty if raw_novelty is not None else 1.0
-                emotional_valence = entry.get("emotional_valence") or 0.0
-                surprise = entry.get("surprise") or 0.0
-                access_count = entry.get("access_count") or 0
-                created_at_op = entry.get("created_at_op") or 0
+                novelty = float(raw_novelty) if raw_novelty is not None else 0.0
+
+                access_count = int(entry.get("access_count") or 0)
+                created_at_session = int(entry.get("created_at_session") or 0)
                 session_mode = entry.get("session_mode")
-                cycles_alive = max(0, bank_op_count - created_at_op)
+                tags = entry.get("tags") or None
+
+                # Reconstruct ThalamusScores (ValueError-safe: all fields default
+                # to 0.0 and get clamped into [0, 1] by the DB write path).
+                thalamus_scores = ThalamusScores(
+                    novelty=novelty,
+                    surprise=float(entry.get("surprise") or 0.0),
+                    task_relevance=float(entry.get("task_relevance") or 0.0),
+                    emotional_valence=float(entry.get("emotional_valence") or 0.0),
+                    overall=float(entry.get("thalamus_overall") or 0.0),
+                )
 
                 # Gate 1: Novelty — known info is not worth consolidating.
                 # Skipped for synthesized engrams (NULL novelty) — they have
@@ -223,30 +247,34 @@ class Consolidation1Service:
                     result.archived += 1
                     continue
 
-                # Gate 2: Minimum recalls — STC capture requires rehearsal
-                if access_count < MIN_ACCESS_FOR_PROMOTE:
-                    strength = compute_composite_strength(emotional_valence, surprise, access_count, cycles_alive)
+                # Composite score via new Epic 24 formula.
+                sa = sessions_alive(bank_session_count, created_at_session)
+                r = compute_equilibrium_rate(thalamus_scores, session_mode, bank_size)
+                composite = compute_composite(
+                    thalamus_scores.overall,
+                    access_count,
+                    sa,
+                    r,
+                )
+
+                # Hard gates: access + novelty (novelty check skipped for
+                # synthesized engrams, matching the Gate 1 bypass).
+                access_ok = access_count >= min_access
+                novelty_ok = novelty_is_null or novelty >= MIN_NOVELTY_FOR_PROMOTE
+                hard_gates_passed = access_ok and novelty_ok
+
+                threshold = get_promote_threshold_for_tags(tags)
+
+                if hard_gates_passed and composite >= threshold:
                     await self._storage.update_metadata(
                         engram_id,
-                        {"strength": strength},
-                    )
-                    result.skipped += 1
-                    continue
-
-                # Score + mode-dependent threshold
-                strength = compute_composite_strength(emotional_valence, surprise, access_count, cycles_alive)
-                threshold = get_promote_threshold(session_mode)
-
-                if strength >= threshold:
-                    await self._storage.update_metadata(
-                        engram_id,
-                        {"layer": "buffer", "strength": strength},
+                        {"layer": "buffer", "strength": composite},
                     )
                     result.consolidated += 1
                 else:
                     await self._storage.update_metadata(
                         engram_id,
-                        {"strength": strength},
+                        {"strength": composite},
                     )
                     result.skipped += 1
 

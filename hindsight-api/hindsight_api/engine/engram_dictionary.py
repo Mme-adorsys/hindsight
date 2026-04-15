@@ -447,3 +447,29 @@ async def get_bank_session_count(pool: asyncpg.Pool, bank_id: str) -> int:
             bank_id,
         )
         return row["session_count"] if row else 0
+
+
+async def get_bank_engram_count(pool: asyncpg.Pool, bank_id: str) -> int:
+    """Return the current Engram count for a bank (Epic 24 Story 06).
+
+    Used by the NCR phases (C1, C2a, C2b) to compute ``bank_factor`` and the
+    bank-size-normalized hard gates without pulling the full row set. Called
+    once per ``run(bank_id)``, so the simple COUNT(*) is cheap enough — the
+    table is already indexed on ``bank_id`` via
+    ``idx_engram_dictionary_bank_layer_status``.
+
+    Args:
+        pool: asyncpg connection pool.
+        bank_id: Target bank.
+
+    Returns:
+        Count of rows in ``engram_dictionary`` for this bank. Returns 0 when
+        the bank is empty or does not exist — ``compute_bank_factor`` then
+        falls back to its max-compensation value (2.0).
+    """
+    async with acquire_with_retry(pool) as conn:
+        row = await conn.fetchrow(
+            "SELECT COUNT(*) AS n FROM engram_dictionary WHERE bank_id = $1",
+            bank_id,
+        )
+        return int(row["n"]) if row else 0

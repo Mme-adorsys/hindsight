@@ -4,13 +4,22 @@ NCR Phase 2 — Strengthen.
 Promotes buffer Engrams to the neocortex layer when they meet all promotion
 criteria. Also increments ncr_cycles_survived for every surviving Engram.
 
+Epic 24 Story 06 promotion logic:
+  - composite = ``strength`` (already recomputed in C2a)
+  - passes_hard_gates(access_count, novelty, bank_size) must hold
+  - composite ≥ get_promote_threshold_for_tags(tags)
+  - ncr_cycles_survived ≥ promotion_ncr_cycles (karenz period)
+  - Kein künstlicher +0.1 Boost mehr — der composite > 1.0 regime übernimmt
+    die Verstärkungs-Rolle.
+
 Biological mapping:
   SWS replay strengthens important memories — repeated reactivation across
   multiple sleep cycles leads to stable long-term storage (LTP Late).
   Promotion to neocortex = transfer from hippocampal buffer to cortical storage.
   Ref: concept.md ch. 12 — NCR Phase 2 (Strengthen)
+  Ref: concept.md §5.3 — Lifecycle Scoring
 
-Epic 12, Story 03.
+Epic 12 Story 03 (original), refactored Epic 24 Story 06.
 """
 
 from __future__ import annotations
@@ -22,6 +31,10 @@ from datetime import datetime, timezone
 import asyncpg
 
 from hindsight_api.engine import engram_dictionary as dict_repo
+from hindsight_api.engine.consolidation.scoring import (
+    get_promote_threshold_for_tags,
+    passes_hard_gates,
+)
 from hindsight_api.engine.engram_storage import EngramStorageInterface
 
 logger = logging.getLogger(__name__)
@@ -31,11 +44,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _BATCH_SIZE = 100
-_DEFAULT_PROMOTION_STRENGTH = 0.4
-_DEFAULT_PROMOTION_ACCESS = 3
 _DEFAULT_PROMOTION_NCR_CYCLES = 2
-_PROMOTION_STRENGTH_BOOST = 0.1
-_STRENGTH_MAX = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -45,15 +54,13 @@ _STRENGTH_MAX = 1.0
 
 @dataclass(frozen=True)
 class StrengthenConfig:
-    """Configurable thresholds for NCR Phase 2 promotion.
+    """Configurable thresholds for NCR Phase 2 promotion (Epic 24 Story 06).
 
-    promotion_strength_threshold: Minimum strength for neocortex promotion.
-    promotion_access_threshold:   Minimum access_count for promotion.
-    promotion_ncr_cycles:         Minimum NCR cycles survived for promotion.
+    promotion_ncr_cycles: Karenzzeit — minimum NCR cycles a buffer Engram
+        must survive before it can be promoted. Prevents immediate
+        promotion of freshly buffered Engrams that got one lucky recall.
     """
 
-    promotion_strength_threshold: float = _DEFAULT_PROMOTION_STRENGTH
-    promotion_access_threshold: int = _DEFAULT_PROMOTION_ACCESS
     promotion_ncr_cycles: int = _DEFAULT_PROMOTION_NCR_CYCLES
 
 
@@ -79,17 +86,20 @@ class StrengthenResult:
 
 
 class StrengthenProcessor:
-    """
-    NCR Phase 2: promotes eligible buffer Engrams to neocortex layer.
+    """NCR Phase 2 (C2b) — Epic 24 Story 06 composite-driven promotion.
 
     Promotion criteria (all three must be met):
-        1. strength >= promotion_strength_threshold  (default 0.4)
-        2. access_count >= promotion_access_threshold (default 3)
-        3. ncr_cycles_survived >= promotion_ncr_cycles (default 2)
+        1. composite ≥ get_promote_threshold_for_tags(tags)
+           The composite is read from ``strength`` — C2a already persisted the
+           freshly computed value earlier in the same NCR cycle.
+        2. passes_hard_gates(access_count, novelty, bank_size)
+           Normalized STC access gate + novelty gate.
+        3. ncr_cycles_survived ≥ promotion_ncr_cycles (karenz period)
 
     On promotion:
         - layer: 'buffer' → 'neocortex' (Dictionary + Neo4j mirror)
-        - strength += PROMOTION_STRENGTH_BOOST (capped at 1.0)
+        - strength unchanged — the composite already reflects amplification via
+          ``decay > 1.0``, so the old +0.1 boost is gone.
         - promoted_at: current UTC timestamp
 
     For all surviving non-archived buffer/neocortex Engrams:
@@ -98,7 +108,7 @@ class StrengthenProcessor:
     Args:
         pool:            asyncpg connection pool (PostgreSQL).
         storage_service: EngramStorageInterface — mirrors layer/strength to Neo4j.
-        config:          StrengthenConfig with tunable thresholds.
+        config:          StrengthenConfig with the karenz threshold.
     """
 
     def __init__(
@@ -116,14 +126,11 @@ class StrengthenProcessor:
     # -----------------------------------------------------------------------
 
     async def process(self, bank_id: str) -> StrengthenResult:
-        """
-        Run NCR Strengthen for all active buffer Engrams of a bank.
+        """Run NCR Strengthen for all active buffer Engrams of a bank.
 
-        Two passes:
-          1. Promotion pass — check buffer Engrams against promotion criteria
-          2. Cycle increment — increment ncr_cycles_survived for all survivors
-
-        The cycle increment runs via a single bulk UPDATE for efficiency.
+        Bank-size is fetched once per run and reused for the normalized
+        hard gates. Each batch is independent — a failure in one entry does
+        not block subsequent entries.
 
         Args:
             bank_id: The memory bank to process.
@@ -132,6 +139,10 @@ class StrengthenProcessor:
             StrengthenResult with counts of promoted, incremented, errors.
         """
         result = StrengthenResult()
+
+        # Epic 24 Story 06: bank size is stable during the run → single fetch.
+        bank_size = await dict_repo.get_bank_engram_count(self._pool, bank_id)
+
         offset = 0
 
         while True:
@@ -145,7 +156,7 @@ class StrengthenProcessor:
                 break
 
             result.total += len(batch)
-            batch_result = await self._process_batch(batch)
+            batch_result = await self._process_batch(batch, bank_size)
             result.promoted += batch_result.promoted
             result.incremented += batch_result.incremented
             result.errors += batch_result.errors
@@ -183,13 +194,13 @@ class StrengthenProcessor:
     # Internals
     # -----------------------------------------------------------------------
 
-    async def _process_batch(self, batch: list[dict]) -> StrengthenResult:
+    async def _process_batch(self, batch: list[dict], bank_size: int) -> StrengthenResult:
         result = StrengthenResult()
 
         for entry in batch:
             engram_id = str(entry["engram_id"])
             try:
-                if self._meets_promotion_criteria(entry):
+                if self._meets_promotion_criteria(entry, bank_size):
                     await self._promote(engram_id, float(entry.get("strength") or 0.0))
                     result.promoted += 1
                 else:
@@ -202,26 +213,28 @@ class StrengthenProcessor:
 
         return result
 
-    def _meets_promotion_criteria(self, entry: dict) -> bool:
-        """Return True if all three promotion criteria are satisfied."""
-        strength = float(entry.get("strength") or 0.0)
+    def _meets_promotion_criteria(self, entry: dict, bank_size: int) -> bool:
+        """Return True if all three Epic 24 promotion criteria are satisfied."""
+        composite = float(entry.get("strength") or 0.0)
         access_count = int(entry.get("access_count") or 0)
         ncr_cycles = int(entry.get("ncr_cycles_survived") or 0)
+        novelty = float(entry.get("novelty") or 0.0)
+        tags = entry.get("tags") or None
 
-        return (
-            strength >= self._config.promotion_strength_threshold
-            and access_count >= self._config.promotion_access_threshold
-            and ncr_cycles >= self._config.promotion_ncr_cycles
-        )
+        if ncr_cycles < self._config.promotion_ncr_cycles:
+            return False
+        if not passes_hard_gates(access_count, novelty, bank_size):
+            return False
+        threshold = get_promote_threshold_for_tags(tags)
+        return composite >= threshold
 
     async def _promote(self, engram_id: str, current_strength: float) -> None:
-        """Promote a buffer Engram to neocortex layer."""
-        new_strength = min(current_strength + _PROMOTION_STRENGTH_BOOST, _STRENGTH_MAX)
+        """Promote a buffer Engram to neocortex layer (no strength boost)."""
         await self._storage.update_metadata(
             engram_id,
             {
                 "layer": "neocortex",
-                "strength": new_strength,
+                "strength": current_strength,
                 "promoted_at": datetime.now(timezone.utc),
             },
         )
