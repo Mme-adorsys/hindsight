@@ -184,7 +184,7 @@ Phase 9:  * → 23 (Benchmarking) [geparkt]
 - [x] Epic 22 — CP: Schema Explorer
 
 ### Phase 8 — Lifecycle Scoring Overhaul
-- [ ] Epic 24 — Lifecycle Scoring Overhaul
+- [x] Epic 24 — Lifecycle Scoring Overhaul
 
 ### Phase 9 — Qualitätssicherung _(geparkt)_
 - [ ] Epic 23 — Benchmarking & Validation

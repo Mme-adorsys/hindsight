@@ -47,9 +47,21 @@ Das bestehende Scoring-System (recall_score + saliency_weight × saliency) wird 
 
 ## Stories
 
-1. [Sessions-Alive Taktgeber](story-01-sessions-alive.md)
-2. [Equilibrium Rate r](story-02-equilibrium-rate.md)
-3. [Composite Score Migration](story-03-composite-score.md)
-4. [Tag-abhängige Thresholds & normalisierte Hard Gates](story-04-thresholds-hardgates.md)
-5. [Bidirektionaler Lifecycle](story-05-bidirectional-lifecycle.md)
-6. [C1/C2 Phasen-Migration](story-06-phase-migration.md)
+1. [x] [Sessions-Alive Taktgeber](story-01-sessions-alive.md)
+2. [x] [Equilibrium Rate r](story-02-equilibrium-rate.md)
+3. [x] [Composite Score Migration](story-03-composite-score.md)
+4. [x] [Tag-abhängige Thresholds & normalisierte Hard Gates](story-04-thresholds-hardgates.md)
+5. [x] [Bidirektionaler Lifecycle](story-05-bidirectional-lifecycle.md) *(nach Story 06 ausgeführt per Reihenfolge-Swap)*
+6. [x] [C1/C2 Phasen-Migration](story-06-phase-migration.md) *(vorgezogen, um die neue Scoring-Basis vor Story 05 bereitzustellen)*
+
+## Status
+
+**Abgeschlossen** (April 2026). Alle 6 Stories done. Milestone M8 "Memory Evolves" erreicht.
+
+Commits:
+- Story 01: `536127c`, `1e85c98`
+- Story 02: `45ccc41`
+- Story 03: `6a4282f`
+- Story 04: `7eb1a09`
+- Story 06: `d0eb398`, `39904c9`, `ffa1931`
+- Story 05: `86f6297`
