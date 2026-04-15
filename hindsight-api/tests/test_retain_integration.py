@@ -84,6 +84,9 @@ if str(_SCRIPTS_DIR) not in sys.path:
 # ---------------------------------------------------------------------------
 
 # Group A: pure world facts, no expectation/outcome, various task contexts.
+# Kept intentionally small (3 items) so the overall dataset is experience-heavy:
+# retain integration needs >60% of items with expectation+outcome to exercise
+# the Sequence Analysis EXPERIENCE split + PREDICTION_ERROR candidate path.
 WORLD_FACTS = [
     {
         "content": (
@@ -102,15 +105,6 @@ WORLD_FACTS = [
         ),
         "context": "hr / team-structure",
         "tags": ["people", "infrastructure"],
-    },
-    {
-        "content": (
-            "The quarterly review meeting took place on March 15, 2026. Bob "
-            "presented the on-call metrics and the team agreed to reduce "
-            "P1 pages from 14 per week to under 5."
-        ),
-        "context": "operations review",
-        "tags": ["meeting", "decision", "on-call"],
     },
     {
         "content": (
@@ -154,6 +148,55 @@ STRUCTURED_EXPERIENCES = [
         "outcome": (
             "We still saw two duplicate charges in the first week, caused "
             "by retries that arrived before the key was persisted."
+        ),
+    },
+    {
+        "content": "Enabled connection pooling on the analytics service via PgBouncer in transaction mode.",
+        "context": "perf-investigation",
+        "tags": ["pgbouncer", "performance", "analytics"],
+        "expectation": "p95 query latency on the analytics dashboard drops below 200ms.",
+        "outcome": (
+            "p95 latency improved to 180ms, but prepared-statement caching "
+            "broke and we had to patch the ORM to disable it for the pool."
+        ),
+    },
+    {
+        "content": "Rolled out the new ML-based spam filter to 10% of inbound traffic.",
+        "context": "ml / spam",
+        "tags": ["spam", "ml", "canary"],
+        "expectation": "False positive rate stays under 0.5% while recall climbs above 95%.",
+        "outcome": (
+            "Recall hit 96.2% but false positives spiked to 1.8% on "
+            "marketing campaign traffic — worse than the baseline filter."
+        ),
+    },
+    {
+        "content": "Switched the event bus from RabbitMQ to Kafka for order events.",
+        "context": "infrastructure / messaging",
+        "tags": ["kafka", "rabbitmq", "events"],
+        "expectation": "Peak-hour throughput doubles without any increase in tail latency.",
+        "outcome": (
+            "Throughput reached 2.3x baseline and p99 consumer lag fell from 4 seconds to 600ms over the first week."
+        ),
+    },
+    {
+        "content": "Added aggressive HTTP caching to the public product catalogue API.",
+        "context": "cdn / caching",
+        "tags": ["http", "cache", "cdn"],
+        "expectation": "Origin CPU drops at least 40% during peak traffic windows.",
+        "outcome": (
+            "Origin CPU dropped 55% on average, but stale price data "
+            "surfaced for roughly 12 minutes after each catalogue update."
+        ),
+    },
+    {
+        "content": "Added a circuit breaker around the payment gateway call in checkout.",
+        "context": "reliability",
+        "tags": ["circuit-breaker", "payments", "checkout"],
+        "expectation": "Checkout error rate during gateway outages stays below 2%.",
+        "outcome": (
+            "During the next gateway incident error rate capped at 1.3% "
+            "and cart abandonment stayed flat — breaker ran for 7 minutes."
         ),
     },
 ]
@@ -387,10 +430,10 @@ class TestRetainIntegration:
                 "SELECT COUNT(*) FROM memory_units WHERE bank_id = $1",
                 retained_data["bank_id"],
             )
-        # World facts + structured experiences (split ×2) + ACTION_EFFECT split
-        # + causal chain (typically 3 facts) → at least ~15 rows. We assert a
-        # lower bound that is resilient to LLM variance.
-        assert count >= 8, f"expected ≥ 8 memory_units rows, got {count}"
+        # 3 world facts + 8 structured experiences (split ×2 → 16) + ACTION_EFFECT
+        # split (≥2) + causal chain (typically 3 facts) → at least ~24 rows. We
+        # assert a lower bound resilient to LLM variance.
+        assert count >= 15, f"expected ≥ 15 memory_units rows, got {count}"
 
     async def test_engram_dictionary_matches(self, retained_data: dict, pg_pool: asyncpg.Pool):
         """Every memory_units row has a matching active engram_dictionary row."""
@@ -460,9 +503,10 @@ class TestRetainIntegration:
                 "WHERE bank_id = $1 AND expectation IS NOT NULL AND outcome IS NOT NULL",
                 retained_data["bank_id"],
             )
-        # 3 structured experiences × 1 outcome-dict each (expectation-dict
-        # carries only content, not the pair fields — see units_to_content_dicts)
-        assert count >= 3, f"expected ≥ 3 rows with expectation+outcome, got {count}"
+        # 8 structured experiences × 1 outcome-dict each (expectation-dict
+        # carries only content, not the pair fields — see units_to_content_dicts).
+        # Lower bound allows for LLM-side drops without failing the gate.
+        assert count >= 6, f"expected ≥ 6 rows with expectation+outcome, got {count}"
 
     async def test_neo4j_engrams_match_postgres(self, retained_data: dict, pg_pool: asyncpg.Pool, neo4j_client):
         """Every active engram_dictionary row has a matching Engram node in Neo4j."""
