@@ -262,3 +262,93 @@ def compute_equilibrium_rate(
     bank_factor = compute_bank_factor(bank_size)
     r = r_base * demand / protection * bank_factor
     return max(MIN_EQUILIBRIUM_RATE, r)
+
+
+# ---------------------------------------------------------------------------
+# Epic 24 Story 03 — Natural Decay & Composite Score
+# ---------------------------------------------------------------------------
+#
+# The new composite is a product rather than a sum:
+#
+#     decay     = log(1 + access_count) / log(1 + sessions_alive × r)
+#     composite = thalamus_overall × decay
+#
+# Key property: decay can be > 1.0. When an Engram is recalled more often than
+# its equilibrium rate predicts, the composite grows above the thalamus-derived
+# birth value — amplification, not just decay. This structurally fixes the
+# Epic 12 frequency_bonus issue where the bonus only overcame the 0.9 decay
+# once access_count > 12.
+#
+# The decay itself is NOT clamped — the > 1.0 regime is semantically meaningful.
+# Only the final composite gets an [0.0, 10.0] overflow guard matching the old
+# compute_composite_strength() contract.
+#
+# Concept reference: concept.md §5.3, engram-lifecycle-scoring.md ch. 3.
+
+COMPOSITE_MAX: float = 10.0  # composite overflow guard (matches old contract)
+
+
+def compute_decay(access_count: int, sessions_alive: int, r: float) -> float:
+    """Natural decay factor for an Engram (Epic 24 Story 03).
+
+    Measures actual recall frequency against the expected frequency
+    ``sessions_alive × r``. Values below 1.0 mean the Engram is being recalled
+    less than expected (true decay); values above 1.0 mean it is being recalled
+    more than expected (amplification).
+
+    Args:
+        access_count: Total recall hits accumulated for this Engram.
+        sessions_alive: Number of completed sessions since creation (see
+            ``sessions_alive()`` helper).
+        r: Per-Engram equilibrium rate from ``compute_equilibrium_rate()``.
+
+    Returns:
+        The raw decay factor. Edge cases:
+
+        - ``sessions_alive <= 0`` → 1.0 (fresh Engram, no decay yet — avoids
+          ``log(1) = 0`` in the denominator).
+        - ``r <= 0`` → 1.0 (defensive guard; ``compute_equilibrium_rate`` already
+          clamps to ``MIN_EQUILIBRIUM_RATE``).
+        - ``access_count <= 0`` → 0.0 (never accessed → full decay).
+
+        Never clamped above — ``decay > 1.0`` is a valid amplification signal.
+    """
+    if sessions_alive <= 0:
+        return 1.0
+    if r <= 0:
+        return 1.0
+    if access_count <= 0:
+        return 0.0
+    expected = sessions_alive * r
+    return math.log(1 + access_count) / math.log(1 + expected)
+
+
+def compute_composite(
+    thalamus_overall: float,
+    access_count: int,
+    sessions_alive: int,
+    r: float,
+) -> float:
+    """Composite lifecycle score: ``thalamus_overall × decay`` (Epic 24 Story 03).
+
+    Replaces ``compute_composite_strength`` as the single scoring metric for all
+    lifecycle decisions (promote, archive, reactivate). At ``sessions_alive=0``
+    the decay is exactly 1.0, so a freshly created Engram's composite equals its
+    ``thalamus_overall`` birth value.
+
+    Args:
+        thalamus_overall: Birth-value score from the Thalamus Filter (0.0–1.0).
+        access_count: Total recall hits accumulated for this Engram.
+        sessions_alive: Number of completed sessions since creation.
+        r: Per-Engram equilibrium rate from ``compute_equilibrium_rate()``.
+
+    Returns:
+        Composite score in ``[0.0, COMPOSITE_MAX]``. The upper clamp only
+        protects against pathological inputs — realistic values stay in a much
+        narrower band around the thalamus score.
+    """
+    decay = compute_decay(access_count, sessions_alive, r)
+    raw = thalamus_overall * decay
+    if raw < 0.0:
+        return 0.0
+    return min(COMPOSITE_MAX, raw)

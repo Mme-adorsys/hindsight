@@ -348,7 +348,13 @@ class EngramDictionary(Base):
     engram_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     bank_id: Mapped[str] = mapped_column(Text, ForeignKey("banks.bank_id", ondelete="CASCADE"), nullable=False)
 
-    # Engram strength (0.0–1.0) — increases via reinforcement, decays over time
+    # Engram strength — composite lifecycle score. Epic 24 Story 03 reframes
+    # this field as ``thalamus_overall × decay`` (see scoring.compute_composite).
+    # At creation time ``strength == thalamus_scores.overall`` because decay=1.0
+    # while sessions_alive=0. The column stays nominally in [0.0, 10.0] (the
+    # new composite's overflow guard) — realistic values cluster in [0, ~1.5].
+    # The actual read/write switch happens in Epic 24 Story 06 when the C1/C2
+    # phases migrate off ``compute_composite_strength``.
     strength: Mapped[float] = mapped_column(Float, server_default="0.0")
 
     # Memory layer: 'buffer' (recent, fragile) or 'neocortex' (consolidated, stable)
