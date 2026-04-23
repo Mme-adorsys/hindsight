@@ -1064,6 +1064,7 @@ class RecallOrchestrator:
             # is a logit that can be negative for models without sigmoid output,
             # which silently rejected every candidate under the mode thresholds.
             if ce_min_score > 0:
+                pre_filter_scored = list(top_scored)
                 pre_ce_count = len(top_scored)
                 top_scored = [
                     sr
@@ -1076,6 +1077,27 @@ class RecallOrchestrator:
                     log_buffer.append(
                         f"  [5.5] CE filter: removed {ce_filtered} below {ce_min_score} ({len(top_scored)} remaining)"
                     )
+
+                # BM25 safety rescue: when the CE filter rejects every
+                # candidate but BM25 had actual keyword hits, restore the
+                # top-N by BM25 score. Sigmoid of a negative CE logit
+                # (typical for single-token queries against long engrams)
+                # can fall below the Precision threshold 0.05 even for
+                # exact matches — the rescue prevents those from vanishing.
+                # Guard: only fires when CE let nothing through. If a
+                # single candidate passed, trust the reranker.
+                if not top_scored and ce_filtered > 0:
+                    bm25_hits = sorted(
+                        (sr for sr in pre_filter_scored if (sr.retrieval.bm25_score or 0.0) > 0.0),
+                        key=lambda sr: sr.retrieval.bm25_score or 0.0,
+                        reverse=True,
+                    )
+                    if bm25_hits:
+                        top_scored = bm25_hits[:max_results]
+                        log_buffer.append(
+                            f"  [5.5] CE rescue: all {pre_ce_count} filtered below {ce_min_score}, "
+                            f"restoring top-{len(top_scored)} by BM25"
+                        )
 
             # Step 6: Token budget filtering
             step_start = time.time()

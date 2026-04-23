@@ -40,10 +40,7 @@ pytestmark = [pytest.mark.integration]
 # the candidate. After the fix, sigmoid-normalized score > 0.01 (exploration
 # threshold) lets it through.
 BANK_ID = "ce-threshold-test-bank"
-ENGRAM_TEXT = (
-    "Ab Git Version 2.28 wird der Standard-Branch-Name 'main' automatisch "
-    "für neue Repositories verwendet."
-)
+ENGRAM_TEXT = "Ab Git Version 2.28 wird der Standard-Branch-Name 'main' automatisch für neue Repositories verwendet."
 QUERY = "branch"
 
 
@@ -137,8 +134,37 @@ async def test_exploration_recalls_single_token_bm25_match(
         "likely compared a raw logit against a sigmoid-scaled threshold again."
     )
     texts = " | ".join(getattr(f, "text", "") or "" for f in facts)
-    assert "Branch" in texts or "branch" in texts, (
-        f"Expected a 'branch' engram in results, got: {texts[:200]}"
+    assert "Branch" in texts or "branch" in texts, f"Expected a 'branch' engram in results, got: {texts[:200]}"
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_precision_mode_exact_keyword_recall_via_bm25_rescue(
+    isolated_memory: MemoryEngine,
+    seeded_bank,
+):
+    """
+    Precision mode sets ce_min_score=0.05. For the same 'branch' single-token
+    query the sigmoid-normalized CE score lands around 0.03, so the filter
+    rejects every candidate on its own. The BM25 safety-rescue restores the
+    engram because BM25 had a real keyword hit.
+
+    Asserts outcome (engram returned) rather than mechanism — a genuinely
+    unambiguous match may clear 0.05 naturally on some model/platform
+    combinations, and the test should pass in both paths.
+    """
+    result = await isolated_memory.recall_async(
+        BANK_ID,
+        QUERY,
+        session=Session(mode=RetrievalMode.PRECISION),
+        request_context=RequestContext(),
     )
 
-
+    facts = result.results
+    assert facts, (
+        "Precision-mode recall returned no results. BM25 safety-rescue should "
+        "have restored the 'branch' engram after the CE filter dropped everything."
+    )
+    texts = " | ".join(getattr(f, "text", "") or "" for f in facts)
+    assert "Branch" in texts or "branch" in texts, (
+        f"Expected a 'branch' engram in precision results, got: {texts[:200]}"
+    )
