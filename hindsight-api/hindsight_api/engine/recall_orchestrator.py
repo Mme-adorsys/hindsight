@@ -866,7 +866,16 @@ class RecallOrchestrator:
                 calculate_strength_weight,
                 calculate_thalamus_weight,
             )
+            from .search.tag_overlap import extract_query_tags, jaccard_tag_overlap
             from .session.mode_config import get_mode_config as _get_mode_config
+            from .session.mode_config import tag_overlap_enabled
+
+            # Precompute the query's implicit tag set once per recall. When
+            # the Context-Tag-Overlap kill switch is off we leave the set
+            # empty so jaccard_tag_overlap returns 0.0 for every candidate
+            # without further branching in the scoring loop.
+            tags_enabled = tag_overlap_enabled()
+            query_tags = extract_query_tags(query) if tags_enabled else set()
 
             engram_data: dict[str, dict] = {}
             scoring_weights = None
@@ -876,7 +885,7 @@ class RecallOrchestrator:
                 async with acquire_with_retry(pool) as conn:
                     rows = await conn.fetch(
                         """
-                        SELECT engram_id::text, strength,
+                        SELECT engram_id::text, strength, tags,
                                novelty, surprise, task_relevance, emotional_valence
                         FROM engram_dictionary
                         WHERE bank_id = $1 AND engram_id::text = ANY($2::text[])
@@ -984,7 +993,13 @@ class RecallOrchestrator:
                     )
 
                     if scoring_weights is not None:
-                        # Extended 6-term formula with mode-specific weights
+                        # Extended 7-term formula with mode-specific weights.
+                        # Tag overlap is Jaccard between the query tokens
+                        # (computed once above) and the engram's stored
+                        # tags — empty sets collapse to 0.0 naturally.
+                        engram_tags_raw = edata.get("tags") or []
+                        engram_tags_set = set(engram_tags_raw) if engram_tags_raw else set()
+                        tag_overlap_score = jaccard_tag_overlap(query_tags, engram_tags_set)
                         sr.combined_score = calculate_combined_score(
                             ce=sr.cross_encoder_score_normalized,
                             rrf=sr.rrf_normalized,
@@ -993,6 +1008,7 @@ class RecallOrchestrator:
                             strength_weight=calculate_strength_weight(sr.engram_strength),
                             thalamus_weight=sr.thalamus_score,
                             weights=scoring_weights,
+                            tag_overlap=tag_overlap_score,
                         )
                     else:
                         # Fallback: original Hindsight weights (60/20/10/10)
@@ -1032,8 +1048,8 @@ class RecallOrchestrator:
                     },
                     outputs={"top5_combined": _top_combined},
                     rationale=(
-                        "6-term extended scoring: w1·CE + w2·RRF + w3·temporal + w4·recency "
-                        "+ w5·strength + w6·thalamus (mode-specific weights)"
+                        "7-term extended scoring: w1·CE + w2·RRF + w3·temporal + w4·recency "
+                        "+ w5·strength + w6·thalamus + w7·tag_overlap (mode-specific weights)"
                         if scoring_weights is not None
                         else "fallback Hindsight scoring 60·CE + 20·RRF + 10·temporal + 10·recency"
                     ),

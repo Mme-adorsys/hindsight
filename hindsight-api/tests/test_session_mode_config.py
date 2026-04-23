@@ -28,7 +28,7 @@ from hindsight_api.engine.session.mode_config import (
 
 
 def _weights_sum(w: ScoringWeights) -> float:
-    return w.ce + w.rrf + w.temporal + w.recency + w.engram_strength + w.thalamus_weighted
+    return w.ce + w.rrf + w.temporal + w.recency + w.engram_strength + w.thalamus_weighted + w.tag_overlap
 
 
 # ---------------------------------------------------------------------------
@@ -121,9 +121,15 @@ class TestDefaultProfiles:
 
 class TestScoringWeightsDirections:
     def test_precision_high_ce(self):
-        """Precision mode should emphasise CE (stay on task)."""
+        """
+        Precision mode emphasises exact-match evidence: the CE reranker
+        must remain the largest single weight, and together with the
+        Tag-Overlap term it has to dominate the formula.
+        """
         w = MODE_PROFILES[RetrievalMode.PRECISION].scoring_weights
-        assert w.ce > 0.5, "Precision CE weight should be dominant"
+        other_weights = [w.rrf, w.temporal, w.recency, w.engram_strength, w.thalamus_weighted, w.tag_overlap]
+        assert w.ce == max(w.ce, *other_weights), "Precision CE must be the largest single weight"
+        assert w.ce + w.tag_overlap > 0.5, "Precision exact-match evidence (CE + tag_overlap) should dominate"
 
     def test_exploration_high_thalamus(self):
         """Exploration mode should boost Thalamus (novelty capture)."""

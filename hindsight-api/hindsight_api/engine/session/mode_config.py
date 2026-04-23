@@ -32,11 +32,24 @@ ENV_MODE_EXPLORATION_STRENGTH = "ENGRAM_EXPLORATION_STRENGTH_THRESHOLD"
 ENV_MODE_ANALOGY_STRENGTH = "ENGRAM_ANALOGY_STRENGTH_THRESHOLD"
 ENV_MODE_VALIDATION_STRENGTH = "ENGRAM_VALIDATION_STRENGTH_THRESHOLD"
 
+# Kill switch for Context-Tag-Overlap scoring. When false the retrieval
+# pipeline passes tag_overlap=0.0 into calculate_combined_score, which
+# makes the 7th term vanish without having to rebalance the profiles
+# back to 6 terms — rollback is a one-env-var flip.
+ENV_TAG_OVERLAP_ENABLED = "HINDSIGHT_API_TAG_OVERLAP_ENABLED"
+
+
+def tag_overlap_enabled() -> bool:
+    """Read the Context-Tag-Overlap kill switch from the environment."""
+    raw = os.getenv(ENV_TAG_OVERLAP_ENABLED, "true").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
 
 # ---------------------------------------------------------------------------
 # ScoringWeights — T2
 # Weights for the extended scoring formula (concept.md § 8):
-#   w1×CE + w2×RRF + w3×Temporal + w4×Recency + w5×Engram_Strength + w6×Thalamus_Weighted
+#   w1×CE + w2×RRF + w3×Temporal + w4×Recency + w5×Engram_Strength
+# + w6×Thalamus_Weighted + w7×Tag_Overlap
 # Each row sums to 1.0.
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
@@ -44,8 +57,12 @@ class ScoringWeights:
     """
     Mode-specific weights for the Engram scoring formula.
 
-    All 6 weights should sum to 1.0 for a given mode.
+    All 7 weights should sum to 1.0 for a given mode.
     Frozen to ensure profiles remain immutable after construction.
+
+    ``tag_overlap`` defaults to 0.0 so older call sites that pass only the
+    six original weights continue to construct a valid, tag-unaware
+    profile — useful for tests and transitional code.
     """
 
     ce: float
@@ -66,14 +83,26 @@ class ScoringWeights:
     thalamus_weighted: float
     """Thalamus composite score weight (novelty/surprise/relevance blend)."""
 
+    tag_overlap: float = 0.0
+    """Context-Tag-Overlap (Jaccard) between query tokens and engram tags."""
+
     def __post_init__(self) -> None:
-        total = self.ce + self.rrf + self.temporal + self.recency + self.engram_strength + self.thalamus_weighted
+        total = (
+            self.ce
+            + self.rrf
+            + self.temporal
+            + self.recency
+            + self.engram_strength
+            + self.thalamus_weighted
+            + self.tag_overlap
+        )
         if abs(total - 1.0) > 1e-6:
             raise ValueError(
                 f"ScoringWeights must sum to 1.0, got {total:.6f} "
                 f"(ce={self.ce}, rrf={self.rrf}, temporal={self.temporal}, "
                 f"recency={self.recency}, engram_strength={self.engram_strength}, "
-                f"thalamus_weighted={self.thalamus_weighted})"
+                f"thalamus_weighted={self.thalamus_weighted}, "
+                f"tag_overlap={self.tag_overlap})"
             )
 
 
@@ -130,40 +159,49 @@ class ModeConfig:
 # Analogy:     balanced RRF + Thalamus — favour structural similarity
 # Validation:  moderate CE + high Thalamus — surface surprises / contradictions
 # ---------------------------------------------------------------------------
+# Tag-overlap weight per mode (higher for Precision/Validation where exact
+# tag matches are the strongest signal). The budget for the new 7th term
+# was taken proportionally from CE and RRF so no other dimension shifts
+# in relative importance — initial values are meant to be tuned
+# empirically once benchmarks surface regressions.
 _WEIGHTS_PRECISION = ScoringWeights(
-    ce=0.60,
-    rrf=0.15,
+    ce=0.48,
+    rrf=0.12,
     temporal=0.05,
     recency=0.05,
     engram_strength=0.05,
     thalamus_weighted=0.10,
+    tag_overlap=0.15,
 )
 
 _WEIGHTS_EXPLORATION = ScoringWeights(
-    ce=0.20,
-    rrf=0.15,
+    ce=0.17,
+    rrf=0.13,
     temporal=0.10,
     recency=0.10,
     engram_strength=0.15,
     thalamus_weighted=0.30,
+    tag_overlap=0.05,
 )
 
 _WEIGHTS_ANALOGY = ScoringWeights(
-    ce=0.30,
-    rrf=0.25,
+    ce=0.27,
+    rrf=0.23,
     temporal=0.05,
     recency=0.05,
     engram_strength=0.10,
     thalamus_weighted=0.25,
+    tag_overlap=0.05,
 )
 
 _WEIGHTS_VALIDATION = ScoringWeights(
-    ce=0.35,
-    rrf=0.10,
+    ce=0.27,
+    rrf=0.08,
     temporal=0.10,
     recency=0.05,
     engram_strength=0.10,
     thalamus_weighted=0.30,
+    tag_overlap=0.10,
 )
 
 

@@ -156,8 +156,12 @@ class TestStrengthWeight:
 class TestCalculateCombinedScore:
     def _make_weights(self, ce=0.6, rrf=0.2, temporal=0.1, recency=0.1, strength=0.0, thalamus=0.0):
         return ScoringWeights(
-            ce=ce, rrf=rrf, temporal=temporal, recency=recency,
-            engram_strength=strength, thalamus_weighted=thalamus,
+            ce=ce,
+            rrf=rrf,
+            temporal=temporal,
+            recency=recency,
+            engram_strength=strength,
+            thalamus_weighted=thalamus,
         )
 
     def test_pure_ce_weights(self):
@@ -233,7 +237,7 @@ class TestScoringWeightsIntegration:
 
         for mode, profile in MODE_PROFILES.items():
             w = profile.scoring_weights
-            total = w.ce + w.rrf + w.temporal + w.recency + w.engram_strength + w.thalamus_weighted
+            total = w.ce + w.rrf + w.temporal + w.recency + w.engram_strength + w.thalamus_weighted + w.tag_overlap
             assert abs(total - 1.0) < 1e-6, f"Weights for {mode} don't sum to 1.0: {total}"
 
     def test_invalid_weights_raise_value_error(self):

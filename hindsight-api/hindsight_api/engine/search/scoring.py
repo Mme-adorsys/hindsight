@@ -127,15 +127,20 @@ def calculate_combined_score(
     strength_weight: float,
     thalamus_weight: float,
     weights: ScoringWeights,
+    tag_overlap: float = 0.0,
 ) -> float:
     """
-    Compute the extended 6-term scoring formula with mode-specific weights.
+    Compute the extended 7-term scoring formula with mode-specific weights.
 
-    Formula: w1×CE + w2×RRF + w3×Temporal + w4×Recency + w5×Strength + w6×Thalamus
-    Weights sum to 1.0 (enforced by ScoringWeights.__post_init__).
+    Formula:
+        w1×CE + w2×RRF + w3×Temporal + w4×Recency + w5×Strength
+        + w6×Thalamus + w7×TagOverlap
+
+    Weights sum to 1.0 (enforced by ``ScoringWeights.__post_init__``).
 
     Bio-mapping: PFC top-down attention (Session Mode) sets the weight profile —
-    Precision boosts CE, Exploration boosts Thalamus (concept.md § 8).
+    Precision boosts CE and Tag-Overlap, Exploration boosts Thalamus
+    (concept.md § 8, docs/engram/11_retrieval_architecture.md §3.2).
 
     Args:
         ce: Cross-encoder normalized score [0, 1]
@@ -144,7 +149,11 @@ def calculate_combined_score(
         recency: Recency weight (strength-modulated) [0, 1]
         strength_weight: Logarithmically dampened Engram Strength [0, 1]
         thalamus_weight: Thalamus composite (possibly boosted) [0, 1]
-        weights: Mode-specific ScoringWeights (6 floats summing to 1.0)
+        weights: Mode-specific ScoringWeights (7 floats summing to 1.0)
+        tag_overlap: Jaccard overlap between query tags and engram tags
+            [0, 1]. Defaults to 0.0 so legacy call sites that do not yet
+            compute tag overlap continue to produce valid scores
+            (contribution collapses to zero regardless of the weight).
 
     Returns:
         Combined score in [0, 1]
@@ -156,6 +165,7 @@ def calculate_combined_score(
         + weights.recency * recency
         + weights.engram_strength * strength_weight
         + weights.thalamus_weighted * thalamus_weight
+        + weights.tag_overlap * tag_overlap
     )
 
 
