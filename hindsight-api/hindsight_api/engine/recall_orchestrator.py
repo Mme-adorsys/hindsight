@@ -56,14 +56,13 @@ class RecallOrchestrator:
     # Mode-dependent recall parameters: controls retrieval precision.
     # Bio mapping: PFC attention modulates hippocampal retrieval breadth.
     # Precision = narrow spotlight, Exploration = broad diffuse attention.
-    # Note on ce_min_score: the multilingual mmarco cross-encoder
-    # (cross-encoder/mmarco-mMiniLMv2-L12-H384-v1) produces lower absolute
-    # scores than the old English-only ms-marco model — observed range
-    # 0.0–0.5 for relevant matches. The old precision=0.3 threshold
-    # removed 100% of candidates. Setting it to 0.0 lets too much noise
-    # through. Sweet spot calibrated empirically: precision=0.05 still
-    # filters cross-topic noise (CE ≈ 0.0) but lets borderline-relevant
-    # German matches through (CE ≈ 0.05–0.15).
+    # ce_min_score is compared against the sigmoid-normalized cross-encoder
+    # score (cross_encoder_score_normalized), not the raw logit. Normalized
+    # scores live in [0, 1] so thresholds have a stable interpretation
+    # regardless of the underlying model. Calibrated empirically for the
+    # multilingual mmarco cross-encoder: precision=0.05 still filters
+    # cross-topic noise (normalized ≈ 0.0) but lets borderline-relevant
+    # German single-token matches through.
     RECALL_MODE_CONFIG: dict[str, dict[str, float | int]] = {
         "precision": {"similarity_threshold": 0.7, "max_tokens": 1024, "ce_min_score": 0.05, "max_results": 3},
         "validation": {"similarity_threshold": 0.6, "max_tokens": 2048, "ce_min_score": 0.03, "max_results": 5},
@@ -1061,12 +1060,16 @@ class RecallOrchestrator:
             # Step 5.5: Cross-encoder score minimum filter (mode-dependent)
             # Bio mapping: PFC relevance gate — only sufficiently relevant
             # reactivations pass through to conscious retrieval.
+            # Compare against the sigmoid-normalized score. Raw cross_encoder_score
+            # is a logit that can be negative for models without sigmoid output,
+            # which silently rejected every candidate under the mode thresholds.
             if ce_min_score > 0:
                 pre_ce_count = len(top_scored)
                 top_scored = [
                     sr
                     for sr in top_scored
-                    if sr.cross_encoder_score is not None and sr.cross_encoder_score >= ce_min_score
+                    if sr.cross_encoder_score_normalized is not None
+                    and sr.cross_encoder_score_normalized >= ce_min_score
                 ]
                 ce_filtered = pre_ce_count - len(top_scored)
                 if ce_filtered > 0:

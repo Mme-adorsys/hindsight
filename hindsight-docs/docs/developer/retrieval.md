@@ -272,6 +272,134 @@ Classic spreading activation that propagates relevance scores through the graph 
 
 ---
 
+## Pipeline & Modes (As Implemented)
+
+This section documents **what the code actually does today** (file references are authoritative). It complements the higher-level narrative above and flags gaps against the Engram concept in `11_retrieval_architecture.md`.
+
+### End-to-End Flow
+
+Entry point: `RecallOrchestrator.recall_async()` in `hindsight-api/hindsight_api/engine/recall_orchestrator.py`.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Orchestrator as RecallOrchestrator
+    participant Sem as retrieve_semantic
+    participant BM25 as retrieve_bm25
+    participant Graph as retrieve_graph (MPFP/BFS)
+    participant Temp as retrieve_temporal
+    participant RRF as Reciprocal Rank Fusion
+    participant CE as Cross-Encoder
+    participant Budget as Token Budget
+
+    Client->>Orchestrator: recall(bank, query, mode)
+    Orchestrator->>Orchestrator: resolve RECALL_MODE_CONFIG + ModeConfig
+    par 4-way parallel retrieval
+        Orchestrator->>Sem: embed(query) → cosine, threshold
+        Orchestrator->>BM25: regex sanitize → to_tsquery('simple', OR-join)
+        Orchestrator->>Graph: seeds (semantic) + meta-path traversal
+        Orchestrator->>Temp: date-window + semantic (if temporal)
+    end
+    Sem-->>RRF: candidates + similarity
+    BM25-->>RRF: candidates + ts_rank_cd
+    Graph-->>RRF: candidates + activation
+    Temp-->>RRF: candidates + temporal_score
+    RRF->>CE: merged candidates
+    CE->>Budget: ce_min_score filter + MMR
+    Budget-->>Client: results up to max_tokens
+```
+
+### `RECALL_MODE_CONFIG` (runtime thresholds)
+
+Defined at `engine/recall_orchestrator.py:67`. Controls retriever behavior and reranker cutoff:
+
+| Mode | `similarity_threshold` | `ce_min_score` | `max_results` | `max_tokens` |
+|---|---|---|---|---|
+| `precision` | 0.7 | 0.05 | 3 | 1024 |
+| `validation` | 0.6 | 0.03 | 5 | 2048 |
+| `analogy` | 0.5 | 0.02 | 5 | 2048 |
+| `exploration` | 0.5 | 0.01 | 10 | 2048 |
+
+> **Why `ce_min_score` is so low**: the multilingual `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` produces absolute scores in `[0.0, 0.5]` for relevant matches — substantially lower than the English-only `ms-marco` model it replaced. `precision=0.05` was calibrated empirically to filter cross-topic noise (CE ≈ 0.0) while letting borderline-relevant German matches through (CE ≈ 0.05–0.15). See the comment block at `recall_orchestrator.py:59-66`.
+
+### `ModeConfig` (scoring & traversal profile)
+
+A second, orthogonal profile at `engine/session/mode_config.py` drives scoring weights, graph depth, reconsolidation behavior, and `strength_pre_filter` between RRF and CE:
+
+| Mode | `strength_pre_filter` | `traversal_depth` | Weights (`ce / rrf / thalamus`) |
+|---|---|---|---|
+| `precision` | 0.05 | shallow | 0.60 / 0.15 / 0.10 |
+| `exploration` | 0.0 | deep | 0.20 / 0.15 / 0.30 |
+| `analogy` | 0.05 | medium | 0.30 / 0.25 / 0.25 |
+| `validation` | 0.1 | medium | 0.35 / 0.10 / 0.30 |
+
+The `strength_pre_filter` was intentionally lowered from 0.3–0.5 to 0.05–0.1 so that fresh buffer engrams (`strength ≈ 0.1`) are not silently discarded before reranking. See `mode_config.py:174-182`.
+
+### BM25 Tokenization
+
+Two layers, both language-agnostic by design:
+
+**Stored side** (`alembic/versions/c1d2e3f4a5b6_bm25_simple_config.py`):
+
+```sql
+search_vector GENERATED ALWAYS AS (
+    to_tsvector('simple', COALESCE(text,'') || ' ' || COALESCE(context,''))
+) STORED
+```
+
+- `simple` config: lowercase + split on whitespace/punctuation.
+- **No stemming**, **no stopword filter** — deliberate. English stemming mangled German (`Festplattenausfall` → `festplattenausfal`).
+- Trade-off: morphological variants (`Datenbank` / `Datenbanken`) must be caught by semantic search, not BM25.
+
+**Query side** (`engine/search/retrieval.py:134-149`):
+
+```python
+sanitized_text = re.sub(r"[^\w\s]", " ", query_text.lower())
+tokens = [t for t in sanitized_text.split() if t]
+query_tsquery = " | ".join(tokens)   # OR — not AND
+```
+
+- Special chars dropped (hyphens, apostrophes, quotes, punctuation).
+- Tokens are **OR-joined**, so any single matching token scores via `ts_rank_cd`.
+- There is **no BM25 score threshold** — everything that matches the tsquery survives to RRF.
+
+### Filter Chain (hard cuts)
+
+1. **Semantic**: `1 - cosine_distance >= similarity_threshold` (hard cut, mode-dependent).
+2. **RRF merge**: rank-based (k=60), no cut.
+3. **`strength_pre_filter`** (`mode_config.py`): drops engrams below the mode's minimum strength *before* the cross-encoder spends compute.
+4. **Cross-encoder**: `score >= ce_min_score` (hard cut, mode-dependent).
+5. **MMR**: diversity rerank, no cut.
+6. **Token budget**: `max_tokens` stops iteration; `max_results` caps count.
+
+Any stage can eliminate a candidate silently. That matters for diagnosis: a missing result could be blocked at (1), (3), (4), or never enter the candidate set at all.
+
+### Concept vs. Implementation — Known Gaps
+
+`11_retrieval_architecture.md` prescribes behavior that the current code does not fully deliver:
+
+| Concept says | Code does | Impact |
+|---|---|---|
+| "High weight on **Context Tag Overlap**" for Precision mode | Tags in `engram_dictionary.tags` only **filter** (AND-match) — they never contribute to scoring | Verbatim keyword-overlap alone cannot rescue a retrieval when semantic similarity and CE both score low |
+| "Exact Engram match" for Precision | No exact-match short-circuit. All queries go through `semantic ∪ BM25 ∪ graph ∪ temporal → RRF → CE` | A stored fact containing the query keywords may still be dropped by the CE threshold |
+| Pattern Completion (CA3) vs. Separation (DG) | No distinct mechanism; mode differences are purely threshold/weight tweaks on a single pipeline | Exploration is broader, but does not use a genuinely different retrieval path |
+| Schema Prediction Match as Medium-weight scoring term | Not wired into the recall scoring formula (schemas exist in Neo4j but aren't queried during recall) | Schema-driven priors are unavailable at retrieval time |
+
+These gaps explain some failure modes that look like "recall just doesn't work" — particularly for short, single-token queries against long multilingual engrams, where semantic and CE both score near zero and BM25 alone isn't enough to save the result.
+
+### Diagnostic Checklist
+
+When a recall returns empty despite the fact being stored:
+
+1. **Is the engram in the right bank?** `SELECT id, left(text,120) FROM memory_units WHERE bank_id=$1 AND text ILIKE '%keyword%'`.
+2. **Does the stored tsvector contain the query tokens?** `SELECT to_tsvector('simple', text || ' ' || COALESCE(context,'')) FROM memory_units WHERE id=$1`.
+3. **Does BM25 alone find it?** Run the query from `retrieve_bm25` directly against the DB.
+4. **What is the top-10 semantic similarity without a threshold?** Confirms whether mode threshold is too strict.
+5. **What does the cross-encoder actually score this pair?** Often the silent killer for short queries vs. long text.
+6. **Enable `enable_trace=True`** on `recall_async` to see which stage dropped the candidate.
+
+---
+
 ## Next Steps
 
 - [**Retain**](./retain) — How memories are stored with rich context
