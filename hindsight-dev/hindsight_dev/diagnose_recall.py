@@ -100,7 +100,9 @@ async def check_0_global_inventory(conn, query: str) -> None:
                 f"%{tok}%",
             )
             if hits:
-                console.print(f"  [green]'{tok}' ILIKE hits:[/green] " + ", ".join(f"{h['bank_id']}={h['n']}" for h in hits))
+                console.print(
+                    f"  [green]'{tok}' ILIKE hits:[/green] " + ", ".join(f"{h['bank_id']}={h['n']}" for h in hits)
+                )
 
 
 async def check_1_bank_sanity(conn, bank_id: str, query: str) -> list[dict[str, Any]]:
@@ -117,7 +119,7 @@ async def check_1_bank_sanity(conn, bank_id: str, query: str) -> list[dict[str, 
         rows = await conn.fetch(
             f"""
             SELECT id, left(text, 160) AS snippet, fact_type, mentioned_at
-            FROM {fq_table('memory_units')}
+            FROM {fq_table("memory_units")}
             WHERE bank_id = $1 AND text ILIKE $2
             LIMIT 5
             """,
@@ -151,7 +153,7 @@ async def check_2_tsvector(conn, unit_ids: list[Any]) -> None:
         f"""
         SELECT id,
                to_tsvector('simple', COALESCE(text,'') || ' ' || COALESCE(context,'')) AS tokens
-        FROM {fq_table('memory_units')}
+        FROM {fq_table("memory_units")}
         WHERE id = ANY($1::uuid[])
         """,
         unit_ids,
@@ -172,7 +174,7 @@ async def check_3_bm25(conn, bank_id: str, query: str) -> list[dict[str, Any]]:
         f"""
         SELECT id, left(text, 160) AS snippet,
                ts_rank_cd(search_vector, to_tsquery('simple', $1)) AS bm25_score
-        FROM {fq_table('memory_units')}
+        FROM {fq_table("memory_units")}
         WHERE bank_id = $2 AND search_vector @@ to_tsquery('simple', $1)
         ORDER BY bm25_score DESC
         LIMIT 10
@@ -226,7 +228,7 @@ async def check_4_semantic(engine: MemoryEngine, conn, bank_id: str, query: str)
         f"""
         SELECT id, left(text, 160) AS snippet,
                1 - (embedding <=> $1::vector) AS similarity
-        FROM {fq_table('memory_units')}
+        FROM {fq_table("memory_units")}
         WHERE bank_id = $2 AND embedding IS NOT NULL
         ORDER BY embedding <=> $1::vector
         LIMIT 10
