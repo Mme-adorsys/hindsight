@@ -343,12 +343,19 @@ Transientes Objekt im Application Layer. Lebt **über** der MemoryEngine, wird n
 | Aspekt | Precision | Exploration | Analogy | Validation |
 |--------|-----------|-------------|---------|------------|
 | **MPFP Patterns** | Kurz, hohe Thresholds | Lang, niedrige Thresholds | Schema-Links | Causal + Contradiction |
-| **Strength Pre-Filter** | ≥ 0.5 | ≥ 0.1 | ≥ 0.3 | ≥ 0.3 |
+| **Strength Pre-Filter** | ≥ 0.05 | ≥ 0.0 | ≥ 0.05 | ≥ 0.1 |
+| **CE-Threshold (sigmoid)** | ≥ 0.05 | ≥ 0.01 | ≥ 0.02 | ≥ 0.03 |
+| **Tag-Overlap Gewicht** | 0.15 (höchstes) | 0.05 | 0.05 | 0.10 |
 | **Thalamus Boost** | Task-Relevance | Novelty | — | Surprise |
 | **Weak Links** | Ignoriert | Folgt | Bevorzugt | Ignoriert |
-| **Traversal Depth** | Flach | Tief | Mittel | Mittel |
+| **Traversal Depth** | Flach (1 Hop) | Tief (3+) | Mittel (2) | Mittel (2) |
+| **Max Results** | 3 | 10 | 5 | 5 |
 | **Construction** | Konservativ | Kreativ | Cross-Domain | Evidenz-basiert |
 | **Reconsolidation** | Minimal | Moderat | Schema-Update | Aggressiv |
+
+> **Zur Strength-Pre-Filter-Kalibrierung (2026-04-09):** Die Werte wurden gegenüber älteren Design-Dokumenten (Precision 0.5, Validation 0.3) deutlich gesenkt. Frische Buffer-Engrams initialisieren mit `strength ≈ 0.1` (siehe Consolidation 1); die alten Schwellen hätten praktisch jedes nicht-konsolidierte Engram aus dem Recall geworfen. Der Scoring-Stage (`w5 × strength_weight` mit log-Dampening) holt die Stärke-Information später mit weniger zerstörerischer Wirkung wieder rein.
+
+> **Zur CE-Threshold-Kalibrierung (2026-04-23):** CE-Werte sind seit dem Threshold-Filter-Fix sigmoid-normalisiert (`reranking.py:94-97`), nicht mehr Roh-Logits. Sigmoid(−3.5) ≈ 0.029 — Werte in dieser Größenordnung sind für Single-Token-Queries gegen lange Engrams die Norm. Daher sind die Schwellen ≤ 0.05; höhere Werte würden auch exakte Matches wegfiltern. Siehe `score-formulas.md` Kalibrierungs-Abschnitt für die Modell-Bindung.
 
 ### Mode als Transient Signal
 
@@ -394,11 +401,30 @@ Der Mode wird nicht gespeichert — er fließt als Parameter durch alle Storage-
 
 ### Scoring-Formel (erweitert)
 
-Aktuell Hindsight: `60% CE + 20% RRF + 10% Temporal + 10% Recency`
+Aktuell Hindsight (Fallback ohne Session): `60% CE + 20% RRF + 10% Temporal + 10% Recency`
 
-Ziel: `w1×CE + w2×RRF + w3×Temporal + w4×Recency(strength-moduliert) + w5×Engram_Strength + w6×Thalamus_Weighted`
+Mit ModeConfig: `w1×CE + w2×RRF + w3×Temporal + w4×Recency(strength-moduliert) + w5×Engram_Strength + w6×Thalamus_Weighted + w7×Tag_Overlap`
 
-Gewichte mode-abhängig konfiguriert.
+Gewichte mode-abhängig konfiguriert (`mode_config.py:_WEIGHTS_PRECISION/EXPLORATION/ANALOGY/VALIDATION`).
+`tag_overlap` ist ein Jaccard-Score zwischen den implizit aus der Query extrahierten Tokens und den auf dem Engram gespeicherten Tags
+(Pure Functions in `engine/search/tag_overlap.py`, Kill-Switch via Env-Var `HINDSIGHT_API_TAG_OVERLAP_ENABLED`).
+
+> **Konzeptlücken (zwei Phase-2-Kriterien aus `11_retrieval_architecture.md` §3.3 sind im Code noch nicht verdrahtet):**
+> - **Schema Prediction Match** — vorgesehen als "Medium"-Kriterium, hängt an Epic 13 (Schema Emergence). Heute wird der Match nicht ins Scoring eingespeist.
+> - **Outcome Weight** — `expectation`/`outcome` werden bei Recall aus `engram_dictionary` geladen, fließen aber nur in die Provenance, nicht ins Ranking. Ein Outcome-getriggertes Strength-Update existiert über die Reconsolidation, aber kein direkter Score-Beitrag.
+> Beide werden bewusst aufgeschoben bis Schema-System und Outcome-Tracking belastbare Signale liefern.
+
+### S7 — BM25 Safety-Rescue (2026-04-23)
+
+Sigmoid-normalisierte CE-Scores für Single-Token-Queries gegen lange Engrams können bei `~0.03` landen — unter jeder Mode-Schwelle. Bei
+exakten Keyword-Matches ist das ein False-Negative.
+
+**Mechanismus** (`recall_orchestrator.py` Step 5.5): Wenn der CE-Filter **alle** Kandidaten verwirft (`top_scored == [] AND ce_filtered > 0`),
+wird die Top-N nach `bm25_score > 0` aus den vor-Filter-Kandidaten wiederhergestellt (N = `max_results` aus Mode-Config).
+
+**Mode-Wirkung:** Greift in allen Modi, aber spürbar primär in Precision (höchste CE-Schwelle 0.05). Der Rescue erfüllt die in `11_retrieval_architecture.md` §4 Mode 1 spezifizierte Promise "exact Context Tag Overlap" auch dann, wenn der Cross-Encoder die Semantik einer rein lexikalischen Übereinstimmung niedrig bewertet — ohne den Threshold global zu lockern und damit Cross-Topic-Noise einzulassen.
+
+**Trade-off:** Precision wird minimal weniger "strict" (CE kann komplett verworfen werden, BM25 rettet), bekommt dafür aber zwei orthogonale "exact match"-Signale (CE-Semantik + Tag-Overlap-Term + BM25-Rescue als Safety-Net).
 
 ---
 
