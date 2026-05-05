@@ -1011,7 +1011,13 @@ class RecallOrchestrator:
                             tag_overlap=tag_overlap_score,
                         )
                     else:
-                        # Fallback: original Hindsight weights (60/20/10/10)
+                        # Session-less callers (e.g. extension validators, low-level
+                        # integration tests) bypass mode resolution entirely. Score
+                        # them with the legacy four-term Hindsight weighting so the
+                        # absence of a Session can never collapse the ranking signal
+                        # to zero. This branch must stay in lock-step with the
+                        # `mode_key="exploration"` fallback at line 595 — both fire
+                        # together whenever no Session is attached.
                         sr.combined_score = (
                             0.6 * sr.cross_encoder_score_normalized
                             + 0.2 * sr.rrf_normalized
@@ -1021,9 +1027,13 @@ class RecallOrchestrator:
                     sr.weight = sr.combined_score
 
                 # Fix 2: Apply weak-link boost to combined_score for Analogy mode.
-                # The 1.5× boost was applied to activation_map in EngramRetriever but is lost
-                # after enrichment (scoring uses CE/RRF, not activation). Re-apply here so
-                # weak-link results actually rank higher in Analogy mode output.
+                # The 1.5× boost was already applied to activation_map in EngramRetriever
+                # to bias *selection* toward weak-link nodes (the top-N enrichment cut
+                # uses activation_map). After enrichment the magnitude is dropped
+                # because the final score is built from CE/RRF/etc, not activation.
+                # Re-applying the boost here puts weak-link hits back above
+                # equivalent strong-link hits in the *ranking* — without it the
+                # selection bias would survive but the final order would not.
                 # Bio mapping: Analogy retrieval preferentially follows associative bridges —
                 # weak-link hits should surface above equivalent strong-link hits.
                 if mode is not None and mode.value == "analogy":

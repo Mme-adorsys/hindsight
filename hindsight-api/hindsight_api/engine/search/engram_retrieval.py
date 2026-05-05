@@ -361,11 +361,19 @@ class EngramRetriever(GraphRetriever):
         # seed_id_set created early — needed by both prefer-mode and traversal_source marking
         seed_id_set = set(seed_ids)
 
-        # T2: Prefer mode — additional weak-link traversal with score boost (Analogy mode)
+        # T2: Prefer mode — additional weak-link traversal with score boost (Analogy mode).
         # Bio mapping: Analogy thinking preferentially follows weak associative bridges
         # to surface cross-domain patterns not reachable via strong links.
         # Fix 17: only add to weak_link_ids when the boost actually wins over the strong-link score,
         # so nodes that are primarily strong-link results are never mis-marked as weak-link.
+        #
+        # Why this boost is NOT redundant with the second boost in
+        # recall_orchestrator.py: the activation-map magnitude is later
+        # discarded by CE/RRF scoring, but the *selection* decision is
+        # not. ``_enrich`` fetches the top-N nodes by activation_map
+        # value, so a boost here determines which engrams reach the
+        # pipeline at all. The orchestrator-side boost then adds the
+        # magnitude back into the final combined_score ranking.
         weak_link_ids: set[str] = set()
         if weak_link_policy == "prefer":
             weak_rel_types = list(WEAK_LINK_TYPES)
