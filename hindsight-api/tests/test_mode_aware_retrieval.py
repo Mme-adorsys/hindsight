@@ -18,7 +18,6 @@ import pytest
 from hindsight_api.engine.response_models import RetrievalMode
 from hindsight_api.engine.search.types import RetrievalResult
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -209,10 +208,10 @@ class TestNeo4jRelationshipTypeValidation:
             )
 
     def test_all_valid_relationship_types_accepted(self) -> None:
-        """All 8 RELATIONSHIP_TYPES are considered valid (no ValueError raised during init)."""
+        """All 9 RELATIONSHIP_TYPES are considered valid (no ValueError raised during init)."""
         from hindsight_api.engine.neo4j_client import RELATIONSHIP_TYPES
 
-        assert len(RELATIONSHIP_TYPES) == 8
+        assert len(RELATIONSHIP_TYPES) == 9
         expected = {
             "SEMANTIC",
             "TEMPORAL",
@@ -222,6 +221,7 @@ class TestNeo4jRelationshipTypeValidation:
             "TEMPORAL_PROXIMITY",
             "SCHEMA",
             "CONTRADICTION",
+            "PREDICTION_ERROR",
         }
         assert set(RELATIONSHIP_TYPES) == expected
 
@@ -236,16 +236,18 @@ class TestSessionLifecycleCoActivationAndAssociationWindow:
     async def test_session_lifecycle_co_activation_tracks_pairs(self) -> None:
         """
         Simulates a recall session: WorkingContext populated with engrams,
-        CoActivationTracker.track_recall() called, pairs accumulate correctly.
+        SessionCache.co_activation_tracker.track_recall() called, pairs
+        accumulate correctly. The tracker moved from WorkingContext to
+        SessionCache when the session layer was split.
         """
-        from hindsight_api.engine.session.co_activation_tracker import CoActivationTracker
+        from hindsight_api.engine.session.session_cache import SessionCache
         from hindsight_api.engine.session.working_context import (
-            ActiveEngrams,
             EngramRef,
             WorkingContext,
         )
 
         wc = WorkingContext(session_id="test-session")
+        sc = SessionCache(session_id="test-session")
         now = datetime.now(UTC)
 
         # Push 3 engrams into focus
@@ -260,12 +262,12 @@ class TestSessionLifecycleCoActivationAndAssociationWindow:
 
         # Simulate recall: track focus+supporting IDs
         active_ids = [r.engram_id for r in wc.active_engrams.focus]
-        wc.co_activation_tracker.track_recall(active_ids)
-        wc.co_activation_tracker.track_recall(active_ids)
-        wc.co_activation_tracker.track_recall(active_ids)
+        sc.co_activation_tracker.track_recall(active_ids)
+        sc.co_activation_tracker.track_recall(active_ids)
+        sc.co_activation_tracker.track_recall(active_ids)
 
         # 3 engrams → 3 pairs; each tracked 3 times
-        counter = wc.co_activation_tracker._counter
+        counter = sc.co_activation_tracker._counter
         assert len(counter) == 3
         for pair, count in counter.items():
             assert count == 3
@@ -274,15 +276,18 @@ class TestSessionLifecycleCoActivationAndAssociationWindow:
     async def test_session_lifecycle_association_window_tracks_temporal_pairs(self) -> None:
         """
         Association window detects temporally proximate engrams in focus tier.
-        flush_to_neo4j(None) is a no-op (graceful degradation).
+        flush_to_neo4j(None) is a no-op (graceful degradation). The window
+        moved from WorkingContext to SessionCache when the session layer
+        was split.
         """
+        from hindsight_api.engine.session.session_cache import SessionCache
         from hindsight_api.engine.session.working_context import (
-            ActiveEngrams,
             EngramRef,
             WorkingContext,
         )
 
         wc = WorkingContext(session_id="test-session")
+        sc = SessionCache(session_id="test-session")
         now = datetime.now(UTC)
 
         # Two refs within 1 minute of each other
@@ -300,12 +305,12 @@ class TestSessionLifecycleCoActivationAndAssociationWindow:
         )
         wc.active_engrams.focus = [ref_a, ref_b]
 
-        pairs = wc.association_window.check_associations(wc.active_engrams)
+        pairs = sc.association_window.check_associations(wc.active_engrams)
         assert len(pairs) == 1
         assert pairs[0] == ("ea", "eb")
 
         # Flush to None is no-op
-        written = await wc.association_window.flush_to_neo4j(None)
+        written = await sc.association_window.flush_to_neo4j(None)
         assert written == 0
 
     @pytest.mark.asyncio
@@ -330,6 +335,7 @@ class TestSessionLifecycleCoActivationAndAssociationWindow:
 
         lc.create_co_activation_link = flaky_link
         try:
+
             class FakeNeo4j:
                 pass
 

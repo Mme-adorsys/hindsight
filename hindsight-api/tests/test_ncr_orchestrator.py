@@ -29,7 +29,6 @@ from hindsight_api.engine.consolidation.ncr_orchestrator import (
 from hindsight_api.engine.consolidation.ncr_strengthen import StrengthenResult
 from hindsight_api.engine.consolidation.schema_processor import SchemaResult
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -136,13 +135,16 @@ class TestNCROrchestrator:
     async def test_all_phases_run(self):
         pool, consolidation, decay, strengthen, schema, conn = _make_orchestrator()
 
-        with patch(
-            "hindsight_api.engine.consolidation.ncr_orchestrator.acquire_with_retry",
-            return_value=conn,
-        ), patch(
-            "hindsight_api.engine.consolidation.ncr_orchestrator.dict_repo.filter_entries",
-            new_callable=AsyncMock,
-            return_value=[],
+        with (
+            patch(
+                "hindsight_api.engine.consolidation.ncr_orchestrator.acquire_with_retry",
+                return_value=conn,
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.ncr_orchestrator.dict_repo.filter_entries",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
         ):
             orch = NCROrchestrator(pool, consolidation, decay, strengthen, schema)
             report = await orch.run("test-bank")
@@ -163,13 +165,16 @@ class TestNCROrchestrator:
             decay_raises=RuntimeError("Decay down")
         )
 
-        with patch(
-            "hindsight_api.engine.consolidation.ncr_orchestrator.acquire_with_retry",
-            return_value=conn,
-        ), patch(
-            "hindsight_api.engine.consolidation.ncr_orchestrator.dict_repo.filter_entries",
-            new_callable=AsyncMock,
-            return_value=[],
+        with (
+            patch(
+                "hindsight_api.engine.consolidation.ncr_orchestrator.acquire_with_retry",
+                return_value=conn,
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.ncr_orchestrator.dict_repo.filter_entries",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
         ):
             orch = NCROrchestrator(pool, consolidation, decay, strengthen, schema)
             report = await orch.run("test-bank")
@@ -202,13 +207,16 @@ class TestNCROrchestrator:
             consolidation_raises=RuntimeError("Consolidation error")
         )
 
-        with patch(
-            "hindsight_api.engine.consolidation.ncr_orchestrator.acquire_with_retry",
-            return_value=conn,
-        ), patch(
-            "hindsight_api.engine.consolidation.ncr_orchestrator.dict_repo.filter_entries",
-            new_callable=AsyncMock,
-            return_value=[],
+        with (
+            patch(
+                "hindsight_api.engine.consolidation.ncr_orchestrator.acquire_with_retry",
+                return_value=conn,
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.ncr_orchestrator.dict_repo.filter_entries",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
         ):
             orch = NCROrchestrator(pool, consolidation, decay, strengthen, schema)
             report = await orch.run("test-bank")
@@ -220,13 +228,16 @@ class TestNCROrchestrator:
     async def test_report_has_bank_id_and_timestamps(self):
         pool, consolidation, decay, strengthen, schema, conn = _make_orchestrator()
 
-        with patch(
-            "hindsight_api.engine.consolidation.ncr_orchestrator.acquire_with_retry",
-            return_value=conn,
-        ), patch(
-            "hindsight_api.engine.consolidation.ncr_orchestrator.dict_repo.filter_entries",
-            new_callable=AsyncMock,
-            return_value=[],
+        with (
+            patch(
+                "hindsight_api.engine.consolidation.ncr_orchestrator.acquire_with_retry",
+                return_value=conn,
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.ncr_orchestrator.dict_repo.filter_entries",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
         ):
             orch = NCROrchestrator(pool, consolidation, decay, strengthen, schema)
             report = await orch.run("my-bank")
@@ -246,19 +257,31 @@ class TestNCROrchestrator:
 class TestNCRScheduler:
     def test_disabled_scheduler_does_not_start(self):
         orch = MagicMock()
-        scheduler = NCRScheduler(orch, bank_ids=["b"], interval_hours=1, enabled=False)
+        # NCR was split into C2 (decay+strengthen) and C3 (schema compression)
+        # when M8 landed; the constructor takes the two intervals separately
+        # and exposes _c2_task/_c3_task instead of a single _task.
+        scheduler = NCRScheduler(orch, bank_ids=["b"], c2_interval_hours=1.0, enabled=False)
         scheduler.start()
-        assert scheduler._task is None
+        assert scheduler._c2_task is None
+        assert scheduler._c3_task is None
 
     @pytest.mark.asyncio
     async def test_scheduler_can_be_stopped(self):
         orch = AsyncMock()
         orch.run.return_value = NCRReport(bank_id="b", started_at=datetime.now(timezone.utc))
-        scheduler = NCRScheduler(orch, bank_ids=["b"], interval_hours=100, enabled=True)
+        scheduler = NCRScheduler(
+            orch,
+            bank_ids=["b"],
+            c2_interval_hours=100.0,
+            c3_interval_hours=200.0,
+            enabled=True,
+        )
         scheduler.start()
-        assert scheduler._task is not None
+        assert scheduler._c2_task is not None
+        assert scheduler._c3_task is not None
         await scheduler.stop()
-        assert scheduler._task.done()
+        assert scheduler._c2_task.done()
+        assert scheduler._c3_task.done()
 
     @pytest.mark.asyncio
     async def test_stop_idempotent_when_not_started(self):

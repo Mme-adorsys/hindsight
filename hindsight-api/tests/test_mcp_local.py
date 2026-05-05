@@ -1,8 +1,9 @@
 """Test local MCP server."""
 
 import asyncio
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 
 @pytest.fixture
@@ -27,9 +28,15 @@ async def test_local_mcp_server_retain(mock_memory):
     tools = mcp_server._tool_manager._tools
     assert "retain" in tools
 
-    # Call retain
+    # Call retain — mode + task_context are now required parameters
+    # (Thalamus scoring needs the session mode and a non-trivial task hint).
     retain_tool = tools["retain"]
-    result = await retain_tool.fn(content="test content", context="test_context")
+    result = await retain_tool.fn(
+        content="test content",
+        mode="precision",
+        task_context="unit testing retain plumbing",
+        context="test_context",
+    )
 
     # Returns immediately with accepted status
     assert result["status"] == "accepted"
@@ -47,8 +54,8 @@ async def test_local_mcp_server_retain(mock_memory):
 @pytest.mark.asyncio
 async def test_local_mcp_server_recall(mock_memory):
     """Test that recall tool calls memory.recall_async with correct params."""
-    from hindsight_api.mcp_local import create_local_mcp_server
     from hindsight_api.engine.memory_engine import Budget
+    from hindsight_api.mcp_local import create_local_mcp_server
 
     # Mock recall_async to return a proper pydantic model
     mock_result = MagicMock()
@@ -89,8 +96,12 @@ async def test_local_mcp_server_retain_with_default_context(mock_memory):
     tools = mcp_server._tool_manager._tools
     retain_tool = tools["retain"]
 
-    # Call retain without context
-    await retain_tool.fn(content="test content")
+    # Call retain without `context` — mode and task_context still required.
+    await retain_tool.fn(
+        content="test content",
+        mode="precision",
+        task_context="unit testing default context",
+    )
 
     # Wait for background task
     await asyncio.sleep(0.1)
@@ -111,8 +122,13 @@ async def test_local_mcp_server_retain_error_handling(mock_memory):
     tools = mcp_server._tool_manager._tools
     retain_tool = tools["retain"]
 
-    # Retain returns immediately with accepted status (fire and forget)
-    result = await retain_tool.fn(content="test content")
+    # Retain returns immediately with accepted status (fire and forget).
+    # mode + task_context are required by the tool signature.
+    result = await retain_tool.fn(
+        content="test content",
+        mode="precision",
+        task_context="unit testing error path",
+    )
     assert result["status"] == "accepted"
 
     # Wait for background task to complete (and log error)
@@ -142,8 +158,8 @@ async def test_local_mcp_server_recall_error_handling(mock_memory):
 @pytest.mark.asyncio
 async def test_local_mcp_server_recall_with_defaults(mock_memory):
     """Test that recall uses default max_tokens and budget."""
-    from hindsight_api.mcp_local import create_local_mcp_server
     from hindsight_api.engine.memory_engine import Budget
+    from hindsight_api.mcp_local import create_local_mcp_server
 
     mock_result = MagicMock()
     mock_result.model_dump.return_value = {"results": []}
@@ -159,4 +175,5 @@ async def test_local_mcp_server_recall_with_defaults(mock_memory):
 
     call_kwargs = mock_memory.recall_async.call_args.kwargs
     assert call_kwargs["max_tokens"] == 4096
-    assert call_kwargs["budget"] == Budget.LOW
+    # mcp_local recall tool defaults to budget="mid" — Budget.MID, not LOW.
+    assert call_kwargs["budget"] == Budget.MID
