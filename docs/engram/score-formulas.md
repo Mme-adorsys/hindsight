@@ -2,8 +2,47 @@
 
 Vollständige Übersicht der Score-Berechnungen und State-Übergänge im Engram Memory System.
 
-> Stand: 2026-04-12
+> Stand: 2026-05-05
 > Code-Referenzen: `hindsight-api/hindsight_api/engine/`
+
+---
+
+## ⚠️ Modell-Kalibrierungs-Bindung
+
+Alle Schwellwerte in diesem Dokument (CE-Min-Score, Strength-Pre-Filter, Similarity-Threshold, Composite-Hard-Gates, Tag-Overlap-Gewichte) sind **empirisch kalibriert** gegen die aktuell konfigurierten Modelle:
+
+| Komponente | Modell | Default-Quelle |
+|---|---|---|
+| Cross-Encoder | `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` | `engine/cross_encoder.py` (`LocalSTCrossEncoder`) |
+| Embeddings | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | `engine/embeddings.py` (`LocalSTEmbeddings`) |
+
+Ein Modellwechsel **invalidiert** die Kalibrierung — die Schwellwerte stimmen dann nicht mehr mit der neuen Score-Verteilung überein und die Recall-Pipeline kann je nach Verschiebungsrichtung entweder alles durchlassen oder alles wegfiltern.
+
+### Konsequenzen pro Wechsel-Typ
+
+- **Cross-Encoder-Wechsel** → CE-Score-Verteilung ändert sich. `ce_min_score` pro Mode (`recall_orchestrator.py:RECALL_MODE_CONFIG`, aktuell 0.01–0.05) und die BM25-Rescue-Stufe (Step 5.5) müssen neu evaluiert werden.
+- **Embedding-Wechsel** → Cosine-Similarity-Verteilung ändert sich. `similarity_threshold` pro Mode (aktuell 0.5–0.7) muss neu gesetzt werden.
+- **Strength-Bootstrap-Wechsel** (neue Initial-Werte für frische Engrams) → `strength_pre_filter` pro Mode (`MODE_PROFILES`, aktuell 0.0–0.1) muss nachziehen, sonst gehen entweder alle frischen Engrams oder keine Buffer-Engrams durch.
+
+### Re-Kalibrierungs-Prozess
+
+1. Repräsentatives Query-Set + bekannte Ground-Truth-Engrams in einen Diagnose-Bank laden.
+2. Pro Query und Mode: `uv run python -m hindsight_dev.diagnose_recall --query "<query>" --mode <mode>` ausführen und die ausgegebenen BM25-, Semantik- und CE-Werte erfassen.
+3. CE-Score-Verteilung pro Mode beobachten (Min/Max/Median) — daraus neue Thresholds ableiten so dass Precision exakte Keyword-Matches sicher zurückgibt und Exploration breit genug bleibt.
+4. Schwellwerte an **beiden** Stellen anfassen: `engine/recall_orchestrator.py:RECALL_MODE_CONFIG` (Step-5.5-Filter, max_results, similarity_threshold) und `engine/session/mode_config.py:MODE_PROFILES` (strength_pre_filter, scoring_weights inkl. tag_overlap).
+5. `tests/test_ce_threshold_filter.py` erweitern um neue Modi-spezifische Regression-Cases (z.B. "Modus X liefert Engram zurück bei exaktem Keyword-Match").
+6. `tests/test_session_mode_config.py` Direction-Asserts (`test_precision_high_ce`, `test_exploration_high_thalamus`) auf das neue Modell-Verhalten anpassen falls die Gewichts-Hierarchie sich verschiebt.
+
+### Hardcoded Thresholds — Single Source of Truth
+
+Beide Konfigurations-Stellen müssen synchron bleiben:
+
+```
+hindsight-api/hindsight_api/engine/recall_orchestrator.py:66-71   # RECALL_MODE_CONFIG
+hindsight-api/hindsight_api/engine/session/mode_config.py:170-220 # _WEIGHTS_* + MODE_PROFILES
+```
+
+Wer das Cross-Encoder- oder Embedding-Modell tauscht ohne neu zu kalibrieren, verschiebt die operative Recall-Qualität ohne Test-Failure — die Tests sind so geschrieben dass sie Outcome (Engram zurückgegeben) prüfen, nicht konkrete Score-Magnituden.
 
 ---
 
