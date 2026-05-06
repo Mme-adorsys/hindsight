@@ -341,7 +341,9 @@ class EngramMetadata(BaseModel):
     engram_id: UUID
     bank_id: str
     strength: float = Field(default=0.0, ge=0.0, le=1.0)
-    layer: str | None = Field(default=None, description="'buffer' or 'neocortex'")
+    layer: str | None = Field(
+        default=None, description="'working' or 'buffer' (Epic 25: schemas live in Neo4j, not here)"
+    )
     abstraction_level: float = Field(default=0.0, ge=0.0, le=1.0)
     tags: list[str] = Field(default_factory=list)
     novelty: float | None = None
@@ -417,7 +419,7 @@ class Engram(BaseModel):
     embedding: list[float] | None = None
     tags: list[str] = Field(default_factory=list)
     strength: float = Field(default=0.0, ge=0.0, le=1.0)
-    layer: Literal["buffer", "neocortex"] = "buffer"
+    layer: Literal["working", "buffer"] = "buffer"
     abstraction_level: float = Field(default=0.0, ge=0.0, le=1.0)
     thalamus_scores: ThalamusScores = Field(default_factory=ThalamusScores)
     created_at: datetime

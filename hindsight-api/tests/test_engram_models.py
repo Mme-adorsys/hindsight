@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from hindsight_api.engine.engram_types import ThalamusScores
 from hindsight_api.engine.response_models import (
     Engram,
     EngramContent,
@@ -21,13 +22,11 @@ from hindsight_api.engine.response_models import (
     EngramRelationship,
     FullEngram,
 )
-from hindsight_api.engine.engram_types import ThalamusScores
 from hindsight_api.engine.retain.types import (
     CausalRelation,
     ExtractedFact,
     ProcessedFact,
 )
-
 
 # =============================================================================
 # ThalamusScores
@@ -158,13 +157,25 @@ class TestEngramModel:
         assert engram.thalamus_scores.overall == 0.0
 
     def test_layer_literal_valid(self):
-        engram = Engram(
-            engram_id=uuid.uuid4(),
-            text="Test",
-            created_at=datetime.now(timezone.utc),
-            layer="neocortex",
-        )
-        assert engram.layer == "neocortex"
+        for layer in ("working", "buffer"):
+            engram = Engram(
+                engram_id=uuid.uuid4(),
+                text="Test",
+                created_at=datetime.now(timezone.utc),
+                layer=layer,
+            )
+            assert engram.layer == layer
+
+    def test_layer_literal_neocortex_rejected(self):
+        # Epic 25 Story 02: schemas live in Neo4j as :Schema nodes; engrams
+        # never reach the neocortex layer.
+        with pytest.raises(Exception):
+            Engram(
+                engram_id=uuid.uuid4(),
+                text="Test",
+                created_at=datetime.now(timezone.utc),
+                layer="neocortex",
+            )
 
     def test_layer_literal_invalid(self):
         with pytest.raises(Exception):

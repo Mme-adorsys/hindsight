@@ -357,7 +357,9 @@ class EngramDictionary(Base):
     # phases migrate off ``compute_composite_strength``.
     strength: Mapped[float] = mapped_column(Float, server_default="0.0")
 
-    # Memory layer: 'buffer' (recent, fragile) or 'neocortex' (consolidated, stable)
+    # Memory layer (Epic 25 — CLS): 'working' (unconsolidated) or 'buffer'
+    # (recent, fragile). Schemas live in Neo4j as standalone :Schema nodes —
+    # the legacy 'neocortex' value was migrated to 'buffer' in revision e25a02layer.
     layer: Mapped[str | None] = mapped_column(Text)
 
     # Abstraction level (0.0 = concrete episode, 1.0 = abstract schema)
@@ -395,11 +397,16 @@ class EngramDictionary(Base):
     # Session that created this Engram (transient reference, not FK)
     session_ref: Mapped[PyUUID | None] = mapped_column(UUID(as_uuid=True))
 
+    # Epic 25 Story 02: audit stamp for engrams that were folded back from
+    # the legacy 'neocortex' layer to 'buffer' during the CLS-strict migration
+    # (revision e25a02layer). NULL for engrams that were never on neocortex.
+    migrated_from_neocortex_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+
     # Relationships
     bank = relationship("Bank", back_populates="engram_entries")
 
     __table_args__ = (
-        CheckConstraint("layer IN ('working', 'buffer', 'neocortex')", name="engram_dictionary_layer_check"),
+        CheckConstraint("layer IN ('working', 'buffer')", name="engram_dictionary_layer_check"),
         CheckConstraint("status IN ('active', 'archived', 'decayed')", name="engram_dictionary_status_check"),
         Index("idx_engram_dictionary_strength", "strength"),
         Index("idx_engram_dictionary_layer", "layer"),
