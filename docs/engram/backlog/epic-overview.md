@@ -106,6 +106,14 @@ Stories enthalten eingebettete Tasks als Checkliste.
 |---|------|-------------|----------------|
 | 23 | **Benchmarking & Validation** _(geparkt)_ | 4 Dimensionen: Storage Validation, Retrieval Validation, Knowledge Evolution, Construction Quality. 3 Ansätze: A) Scripted Scenarios, B) Simulated Agent Life, C) Golden Dataset. Konkrete Auswahl noch offen. | Alle vorherigen Epics |
 
+### Phase 10 — CLS Architecture Refactor → **Milestone 10: "Memory Separates"**
+
+> Strikte CLS-Trennung: Buffer (Hippocampus) hält ausschließlich Engrams, Neocortex (Neo4j) ausschließlich Schemas. C2 wird zur Pattern Recognition mit HDBSCAN-Clustering und Schema-Erzeugung; C3 zur Schema-Restrukturierung (R3 Hyper-Schemas, R5 Schema Death). Schemas verweisen indexbasiert auf Engrams (Top-N UUID-Array, kein Cross-DB-Edge).
+
+| # | Epic | Beschreibung | Abhängigkeiten |
+|---|------|-------------|----------------|
+| 25 | **CLS Architecture Refactor** | Neue 3-Phasen-Pipeline (C1, C2, C3), Schema als eigenständige Neo4j-Entität (`:Schema`/`:HyperSchema`-Knoten), Engram-Layer eingeschränkt auf {working, buffer}, Schema-Centroid in Qdrant (`payload.kind="schema"`), HDBSCAN-Cluster-Detection in C2 mit R1+R2-Maturation, Schema-Fingerprint-Match (Cosine ≥ 0.85), statistische Property-Aggregation, `consolidation.schema_description` Pipeline-Step (Tier SMALL + Template-Fallback), R4 batch + incremental, C3 mit Hyper-Schema-Bildung (R3) und Schema Death (R5), HybridRetriever für gemischte Engram/Schema-Treffer, Mode-abhängige Gewichtung. Cleanup der alten ncr_decay/ncr_strengthen/schema_processor-Module. **Plus Adaption** bestehender Epics auf neue Architektur: Reconsolidation auf Schema-Hits + Drift-Tracking (Epic 10), Multi-Bank-Schema-Promotion + Cross-Agent-Konvergenz + Konflikt-Resolution (Epic 14), Control-Plane Schema-Explorer Backend + Frontend (Epic 22). 28 Stories in 8 Blöcken. | Epic 01, Epic 02, Epic 03, Epic 10, Epic 12, Epic 13, Epic 14, Epic 22, Epic 24 |
+
 ---
 
 ## Abhängigkeitsgraph
@@ -141,6 +149,8 @@ Phase 7:  02 + 04 + 06 → 19 (CP Metadata & Modes)
 Phase 8:  04 + 06 + 12 → 24 (Lifecycle Scoring Overhaul)
 
 Phase 9:  * → 23 (Benchmarking) [geparkt]
+
+Phase 10: 01 + 02 + 03 + 10 + 12 + 13 + 14 + 22 + 24 → 25 (CLS Architecture Refactor)
 ```
 
 ---
@@ -189,6 +199,9 @@ Phase 9:  * → 23 (Benchmarking) [geparkt]
 ### Phase 9 — Qualitätssicherung _(geparkt)_
 - [ ] Epic 23 — Benchmarking & Validation
 
+### Phase 10 — CLS Architecture Refactor
+- [ ] Epic 25 — CLS Architecture Refactor
+
 ---
 
 ## Milestones
@@ -206,9 +219,12 @@ Detailliert in [milestones.md](milestones.md) — hier die Kurzübersicht:
 | M7 | System Visible | 7 (E19-22) | Control Plane zeigt Engram-Metadaten, Lifecycle, NCR, Schemas |
 | M8 | Memory Evolves | 8 (E24) | Neues Lifecycle Scoring mit Decay, Equilibrium Rate, bidirektionalem Lifecycle |
 | M9 | System Validated | 9 (E23) | Golden Dataset Benchmark, alle Dimensionen ≥ Mindest-Score |
+| M10 | Memory Separates | 10 (E25) | Strikte CLS-Trennung: Engrams im Buffer, Schemas im Cortex. C2 = Pattern Recognition, C3 = Schema-Restrukturierung. HybridRetriever liefert gemischte Treffer |
 
 ```
 M1 → M2 → M3 → M4 → M5 → M6 → M7 → M8 → M9
+                                              ↓
+                                              M10 (CLS Refactor)
 ```
 
 ---

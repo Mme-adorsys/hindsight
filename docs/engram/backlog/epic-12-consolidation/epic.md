@@ -1,5 +1,8 @@
 # Epic 12 — Consolidation Pipeline
 
+> ⚠️ **Superseded by [Epic 25 — CLS Architecture Refactor](../epic-25-cls-architecture-refactor/epic.md)**.
+> Die hier dokumentierte 4-Stufen-Architektur (Working → Buffer → Neocortex mit NCR Decay+Strengthen+Schema-Compression) wurde in Epic 25 durch das CLS-konforme 3-Phasen-Modell (C1, C2 Pattern Recognition, C3 Schema-Restrukturierung) ersetzt. Engrams leben nur noch im Buffer; Schemas sind eigene Neo4j-Knoten im Cortex. Diese Datei bleibt als Audit-Trail erhalten.
+
 > 4-Stufen-Modell: Working Memory → Buffer → Neocortex. NCR mit 3 Phasen.
 
 ## Ziel

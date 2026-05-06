@@ -1,5 +1,8 @@
 # Epic 13 — Schema Emergence
 
+> ⚠️ **Superseded by [Epic 25 — CLS Architecture Refactor](../epic-25-cls-architecture-refactor/epic.md)**.
+> Die Game-of-Life-Regeln R1–R5 wurden in Epic 25 neu auf die 3-Phasen-Pipeline verteilt: R1+R2 in C2 (Pattern Recognition), R3+R5 in C3 (Schema-Restrukturierung), R4 sowohl batch in C2 als auch incremental beim Retain. Schemas sind dort eigene Neo4j-Entitäten mit Centroid + Description + Properties. Diese Datei bleibt als Audit-Trail erhalten.
+
 > 5 Game-of-Life Regeln: Clustering, Maturation, Abstraction, Reinforcement, Competition.
 
 ## Ziel
