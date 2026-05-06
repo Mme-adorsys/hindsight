@@ -16,18 +16,18 @@ Bisher repräsentiert ein "Schema" indirekt einen Engram mit `layer='neocortex'`
 
 ## Akzeptanzkriterien
 
-- [ ] Neuer Knoten-Typ `:Schema` mit Properties (id, description, properties, evidence_engram_ids, evidence_count, centroid_qdrant_id, created_at, last_reinforced_at, cycles_survived, status)
-- [ ] Neuer Knoten-Typ `:HyperSchema` mit denselben Property-Feldern
-- [ ] Edge-Typ `:SPECIALIZES` zwischen Schema und HyperSchema definiert
-- [ ] Cypher-Helper-Funktionen: `create_schema()`, `get_schema(id)`, `update_schema(id, props)`, `archive_schema(id)`, `link_specialization(schema_id, hyper_id)`
-- [ ] Constraints: `id` unique pro Knoten-Typ
-- [ ] Indizes: `centroid_qdrant_id`, `last_reinforced_at`
-- [ ] Unit-Tests für CRUD-Operationen
+- [x] Neuer Knoten-Typ `:Schema` mit Properties (id, description, properties, evidence_engram_ids, evidence_count, centroid_qdrant_id, created_at, last_reinforced_at, cycles_survived, status)
+- [x] Neuer Knoten-Typ `:HyperSchema` mit denselben Property-Feldern
+- [x] Edge-Typ `:SPECIALIZES` zwischen Schema und HyperSchema definiert
+- [x] Cypher-Helper-Funktionen: `create_schema()`, `get_schema(id)`, `update_schema(id, props)`, `archive_schema(id)`, `link_specialization(schema_id, hyper_id)`
+- [x] Constraints: `id` unique pro Knoten-Typ
+- [x] Indizes: `centroid_qdrant_id`, `last_reinforced_at`
+- [x] Unit-Tests für CRUD-Operationen
 
 ## Tasks
 
-- [ ] **T1 — Neo4j Schema-Migration:** Cypher-Constraints `CREATE CONSTRAINT schema_id IF NOT EXISTS FOR (s:Schema) REQUIRE s.id IS UNIQUE` analog für `:HyperSchema`. Indizes für `centroid_qdrant_id` und `last_reinforced_at`.
-- [ ] **T2 — Schema-Helper-Modul:** Neue Datei `engine/schema/schema_repository.py` mit allen CRUD-Funktionen (`create_schema`, `get_schema`, `update_schema`, `archive_schema`, `list_active_schemas`, `link_specialization`).
-- [ ] **T3 — Pydantic-Modelle:** `models/schema.py` mit `SchemaModel` und `HyperSchemaModel` (alle Felder typisiert, default-Werte für created_at/cycles_survived/status).
-- [ ] **T4 — Helper-Funktion `materialize_schema_node`:** Nimmt Pydantic-Modell, schreibt nach Neo4j (idempotent — bei existierender ID Update statt Create).
-- [ ] **T5 — Unit-Tests:** Create + Read + Update + Archive je Knoten-Typ. Spezialisierungs-Edge schreiben + lesen. Konstraint-Verletzung (doppelte ID) wirft sauberen Fehler.
+- [x] **T1 — Neo4j Schema-Migration:** Cypher-Constraints `CREATE CONSTRAINT schema_id IF NOT EXISTS FOR (s:Schema) REQUIRE s.id IS UNIQUE` analog für `:HyperSchema`. Indizes für `centroid_qdrant_id` und `last_reinforced_at`.
+- [x] **T2 — Schema-Helper-Modul:** Neue Datei `engine/schema/schema_repository.py` mit allen CRUD-Funktionen (`create_schema`, `get_schema`, `update_schema`, `archive_schema`, `list_active_schemas`, `link_specialization`).
+- [x] **T3 — Pydantic-Modelle:** ~~`models/schema.py`~~ → `engine/schema/models.py` (Naming-Abweichung: `models.py` ist die SQLAlchemy-ORM-Datei; ein `models/`-Package würde sie shadowen — Pydantic-Modelle kolozieren neben dem Repository wie in `engine/constructive/models.py`). `SchemaModel` und `HyperSchemaModel` mit allen Feldern typisiert, default-Werte für created_at/cycles_survived/status.
+- [x] **T4 — Helper-Funktion `materialize_schema_node`:** Nimmt Pydantic-Modell, schreibt nach Neo4j (idempotent — bei existierender ID Update statt Create). Dispatch via `isinstance(model, HyperSchemaModel)`.
+- [x] **T5 — Unit-Tests:** 17 Unit-Tests in `tests/test_schema_repository.py` (mocked `run_cypher`); 5 Integration-Tests gegen echtes Neo4j gated via `@pytest.mark.integration` und graceful skip ohne Live-Instanz.

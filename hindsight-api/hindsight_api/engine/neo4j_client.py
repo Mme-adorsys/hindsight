@@ -124,6 +124,9 @@ class Neo4jEngineClient:
         - Unique constraint on Engram.engram_id
         - Composite index on (layer, status) for pre-filter queries
         - Indexes on strength, thalamus_overall, tags
+        - Unique constraints on :Schema.id and :HyperSchema.id (Epic 25 Story 01,
+          standalone cortex nodes per concept §4.2)
+        - Indexes on Schema/HyperSchema centroid_qdrant_id and last_reinforced_at
 
         Relationship types are created implicitly by Neo4j on first use.
         See module docstring for all 8 relationship types and their properties.
@@ -139,6 +142,13 @@ class Neo4jEngineClient:
             "CREATE INDEX engram_strength IF NOT EXISTS FOR (e:Engram) ON (e.strength)",
             # Index for thalamus_overall score (relevance gating)
             "CREATE INDEX engram_thalamus IF NOT EXISTS FOR (e:Engram) ON (e.thalamus_overall)",
+            # Epic 25 Story 01 — standalone cortex schema nodes
+            "CREATE CONSTRAINT schema_id_unique IF NOT EXISTS FOR (s:Schema) REQUIRE s.id IS UNIQUE",
+            "CREATE CONSTRAINT hyperschema_id_unique IF NOT EXISTS FOR (h:HyperSchema) REQUIRE h.id IS UNIQUE",
+            "CREATE INDEX schema_centroid_qdrant_id IF NOT EXISTS FOR (s:Schema) ON (s.centroid_qdrant_id)",
+            "CREATE INDEX schema_last_reinforced_at IF NOT EXISTS FOR (s:Schema) ON (s.last_reinforced_at)",
+            "CREATE INDEX hyperschema_centroid_qdrant_id IF NOT EXISTS FOR (h:HyperSchema) ON (h.centroid_qdrant_id)",
+            "CREATE INDEX hyperschema_last_reinforced_at IF NOT EXISTS FOR (h:HyperSchema) ON (h.last_reinforced_at)",
         ]
 
         async def _apply_schema():
