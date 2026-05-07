@@ -21,6 +21,7 @@ from hindsight_api.engine.consolidation.c2_pattern_recognition import (
     MATURATION_MIN_CYCLES,
     ClusterCandidate,
     ConsolidationPlan,
+    CreationPayload,
     DetectionStats,
     MatchedForReinforcement,
     MaturedClusterCandidate,
@@ -32,6 +33,7 @@ from hindsight_api.engine.consolidation.c2_pattern_recognition import (
     filter_matured,
     mature_clusters,
     partition_for_consolidation,
+    prepare_creation_payloads,
 )
 from hindsight_api.engine.consolidation.cluster_fingerprint_repository import FingerprintMatch
 
@@ -461,3 +463,76 @@ class TestPartitionForConsolidation:
         )
         assert plan.reinforcement == ()
         assert plan.creation == ()
+
+
+# ---------------------------------------------------------------------------
+# Story 07 — prepare_creation_payloads
+# ---------------------------------------------------------------------------
+
+
+def _matured_with_tags(member_tags: tuple[tuple[str, ...], ...]) -> MaturedClusterCandidate:
+    return MaturedClusterCandidate(
+        engram_ids=tuple(str(uuid.uuid4()) for _ in member_tags),
+        centroid=(1.0, 0.0),
+        dominant_tags=("activity", "mood"),
+        cycles_survived=2,
+        fingerprint_id=uuid.uuid4(),
+        matched_existing=False,
+        cohesion=0.9,
+        member_tags=member_tags,
+    )
+
+
+class TestPrepareCreationPayloads:
+    def test_aggregates_namespaced_tags_per_candidate(self):
+        c1 = _matured_with_tags(
+            (
+                ("activity:coffee", "mood:productive"),
+                ("activity:coffee", "mood:tired"),
+                ("activity:coffee", "mood:productive"),
+            )
+        )
+        c2 = _matured_with_tags(
+            (
+                ("activity:lunch", "duration_minutes:60"),
+                ("activity:lunch", "duration_minutes:50"),
+                ("activity:lunch", "duration_minutes:70"),
+            )
+        )
+        creation = (
+            UnmatchedForCreation(cluster=c1, best_cosine=0.5),
+            UnmatchedForCreation(cluster=c2, best_cosine=0.3),
+        )
+
+        payloads = prepare_creation_payloads(creation)
+
+        assert len(payloads) == 2
+        assert all(isinstance(p, CreationPayload) for p in payloads)
+        assert payloads[0].cluster is c1
+        assert payloads[0].properties["evidence_count"] == 3
+        assert payloads[0].properties["activity"]["value"] == "coffee"
+        assert payloads[0].properties["mood"]["value"] == "productive"
+        # Second cluster uses numeric aggregation for duration.
+        assert payloads[1].properties["duration_minutes"]["type"] == "numeric"
+        assert payloads[1].properties["duration_minutes"]["min"] == 50
+        assert payloads[1].properties["duration_minutes"]["max"] == 70
+
+    def test_empty_creation_bucket_yields_empty_payloads(self):
+        assert prepare_creation_payloads(()) == ()
+
+    def test_member_tags_default_empty_still_works(self):
+        # MaturedClusterCandidate with no member_tags should still produce a
+        # payload — properties just contain evidence_count from the cluster size.
+        cand = MaturedClusterCandidate(
+            engram_ids=("e1", "e2"),
+            centroid=(1.0,),
+            dominant_tags=(),
+            cycles_survived=2,
+            fingerprint_id=uuid.uuid4(),
+            matched_existing=False,
+            cohesion=0.9,
+            member_tags=((), ()),
+        )
+        payloads = prepare_creation_payloads((UnmatchedForCreation(cluster=cand, best_cosine=0.0),))
+        assert len(payloads) == 1
+        assert payloads[0].properties == {"evidence_count": 2}

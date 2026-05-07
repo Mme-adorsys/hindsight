@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import numpy as np
@@ -30,6 +30,7 @@ from ..engram_dictionary import filter_entries
 from ..schema.centroid import compute_centroid
 from .c2_schema_match import match_existing_schema
 from .cluster_fingerprint_repository import match_or_create
+from .property_aggregator import aggregate_properties
 
 if TYPE_CHECKING:
     import asyncpg
@@ -79,7 +80,9 @@ class MaturedClusterCandidate:
     """R1 candidate enriched with R2 fingerprint outcome (concept §13 R2).
 
     A candidate becomes a schema seed only once ``cycles_survived >= 2``
-    (``MATURATION_MIN_CYCLES``) — see ``filter_matured``.
+    (``MATURATION_MIN_CYCLES``) — see ``filter_matured``. ``member_tags``
+    carries the per-engram tag rows from the R1 step so Story 07's
+    property aggregator can run without a fresh PG round-trip.
     """
 
     engram_ids: tuple[str, ...]
@@ -89,6 +92,7 @@ class MaturedClusterCandidate:
     fingerprint_id: UUID
     matched_existing: bool
     cohesion: float
+    member_tags: tuple[tuple[str, ...], ...] = ()
 
     @property
     def is_mature(self) -> bool:
@@ -282,6 +286,7 @@ async def mature_clusters(
                 fingerprint_id=outcome.fingerprint_id,
                 matched_existing=outcome.matched_existing,
                 cohesion=cand.cohesion,
+                member_tags=cand.member_tags,
             )
         )
     logger.info(
@@ -371,6 +376,41 @@ async def partition_for_consolidation(
         skipped_immature,
     )
     return ConsolidationPlan(reinforcement=tuple(reinforcement), creation=tuple(creation))
+
+
+@dataclass(frozen=True)
+class CreationPayload:
+    """Schema-creation input bundle (Story 07 → Story 09).
+
+    ``properties`` is the deterministic statistical aggregation of the
+    cluster's tags (concept §13 R3 Engram-level extraction). The schema's
+    description (Story 08) and the Neo4j/Qdrant write (Story 09) consume
+    this bundle alongside the cluster's centroid.
+    """
+
+    cluster: MaturedClusterCandidate
+    properties: dict[str, Any]
+
+
+def prepare_creation_payloads(creation: tuple[UnmatchedForCreation, ...]) -> tuple[CreationPayload, ...]:
+    """Run :func:`aggregate_properties` per creation-bucket candidate.
+
+    No I/O — purely a tag-rollup over the cluster's already-fetched
+    ``member_tags``. Story 09 will pair the resulting properties with the
+    centroid to mint a fresh ``:Schema`` node.
+    """
+    payloads = tuple(
+        CreationPayload(
+            cluster=item.cluster,
+            properties=aggregate_properties([list(t) for t in item.cluster.member_tags]),
+        )
+        for item in creation
+    )
+    logger.info(
+        "C2 prepare_creation_payloads count=%d",
+        len(payloads),
+    )
+    return payloads
 
 
 def _log_stats(stats: DetectionStats) -> None:
