@@ -31,6 +31,7 @@ from ..schema.centroid import compute_centroid
 from .c2_schema_match import match_existing_schema
 from .cluster_fingerprint_repository import match_or_create
 from .property_aggregator import aggregate_properties
+from .schema_description import DescriptionLLMCaller, generate_schema_description
 
 if TYPE_CHECKING:
     import asyncpg
@@ -383,21 +384,22 @@ class CreationPayload:
     """Schema-creation input bundle (Story 07 → Story 09).
 
     ``properties`` is the deterministic statistical aggregation of the
-    cluster's tags (concept §13 R3 Engram-level extraction). The schema's
-    description (Story 08) and the Neo4j/Qdrant write (Story 09) consume
-    this bundle alongside the cluster's centroid.
+    cluster's tags (concept §13 R3 Engram-level extraction). ``description``
+    is the LLM-rendered (or template-fallback) one-sentence summary added by
+    Story 08. Story 09 (Schema persistence) writes Neo4j + Qdrant from this.
     """
 
     cluster: MaturedClusterCandidate
     properties: dict[str, Any]
+    description: str = ""
 
 
 def prepare_creation_payloads(creation: tuple[UnmatchedForCreation, ...]) -> tuple[CreationPayload, ...]:
     """Run :func:`aggregate_properties` per creation-bucket candidate.
 
     No I/O — purely a tag-rollup over the cluster's already-fetched
-    ``member_tags``. Story 09 will pair the resulting properties with the
-    centroid to mint a fresh ``:Schema`` node.
+    ``member_tags``. ``description`` stays empty here; Story 08's
+    :func:`attach_descriptions` is the async pass that fills it.
     """
     payloads = tuple(
         CreationPayload(
@@ -411,6 +413,35 @@ def prepare_creation_payloads(creation: tuple[UnmatchedForCreation, ...]) -> tup
         len(payloads),
     )
     return payloads
+
+
+async def attach_descriptions(
+    payloads: tuple[CreationPayload, ...],
+    llm_caller: "DescriptionLLMCaller | None" = None,
+) -> tuple[CreationPayload, ...]:
+    """Fill ``description`` on each payload via the schema_description step.
+
+    Sequential (not gathered) — the LLM endpoint is shared, descriptions
+    are short, and we want the WARN log to surface in the right order if
+    fallbacks fire. Returns a fresh tuple of payloads (frozen dataclass).
+    """
+    enriched: list[CreationPayload] = []
+    for payload in payloads:
+        evidence_count = int(payload.properties.get("evidence_count", 0) or 0)
+        description = await generate_schema_description(
+            payload.properties,
+            evidence_count,
+            llm_caller=llm_caller,
+        )
+        enriched.append(
+            CreationPayload(
+                cluster=payload.cluster,
+                properties=payload.properties,
+                description=description,
+            )
+        )
+    logger.info("C2 attach_descriptions filled=%d", len(enriched))
+    return tuple(enriched)
 
 
 def _log_stats(stats: DetectionStats) -> None:

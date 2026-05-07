@@ -74,6 +74,9 @@ class PipelineStep(str, Enum):
     SCHEMA_COMPRESSION = "schema_compression"
     """Schema compression: Pattern extraction and schema-fit evaluation."""
 
+    SCHEMA_DESCRIPTION = "schema_description"
+    """C2 schema description: Data-to-text rendering of aggregated properties (Epic 25 Story 08)."""
+
     OBSERVATION = "observation"
     """Observation synthesis: Entity-level fact summarisation."""
 
@@ -86,6 +89,7 @@ PIPELINE_STEP_TASK_KEY: Final[dict[PipelineStep, str]] = {
     PipelineStep.REFLECT: "reflect.think",
     PipelineStep.CONSTRUCTIVE_MEMORY: "reflect.constructive_memory_inference",
     PipelineStep.SCHEMA_COMPRESSION: "retain.schema_fit_check",
+    PipelineStep.SCHEMA_DESCRIPTION: "consolidation.schema_description",
     PipelineStep.OBSERVATION: "retain.observation_synthesis",
 }
 
@@ -154,6 +158,7 @@ LOW_BUDGET: Final[BudgetProfile] = BudgetProfile(
         PipelineStep.REFLECT: ModelTier.SMALL,
         PipelineStep.CONSTRUCTIVE_MEMORY: ModelTier.MEDIUM,
         PipelineStep.SCHEMA_COMPRESSION: ModelTier.SMALL,
+        PipelineStep.SCHEMA_DESCRIPTION: ModelTier.SMALL,
         PipelineStep.OBSERVATION: ModelTier.SMALL,
     }
 )
@@ -166,6 +171,8 @@ MID_BUDGET: Final[BudgetProfile] = BudgetProfile(
         PipelineStep.REFLECT: ModelTier.MEDIUM,
         PipelineStep.CONSTRUCTIVE_MEMORY: ModelTier.MEDIUM,
         PipelineStep.SCHEMA_COMPRESSION: ModelTier.MEDIUM,
+        # Description is pure data-to-text, not reasoning — stays SMALL even at MID.
+        PipelineStep.SCHEMA_DESCRIPTION: ModelTier.SMALL,
         PipelineStep.OBSERVATION: ModelTier.MEDIUM,
     }
 )
@@ -178,6 +185,9 @@ HIGH_BUDGET: Final[BudgetProfile] = BudgetProfile(
         PipelineStep.REFLECT: ModelTier.LARGE,
         PipelineStep.CONSTRUCTIVE_MEMORY: ModelTier.LARGE,
         PipelineStep.SCHEMA_COMPRESSION: ModelTier.LARGE,
+        # Even HIGH keeps description on SMALL — it's deterministic prose,
+        # not analytical work; spending Opus tokens here is wasted budget.
+        PipelineStep.SCHEMA_DESCRIPTION: ModelTier.SMALL,
         PipelineStep.OBSERVATION: ModelTier.MEDIUM,
     }
 )
@@ -250,6 +260,10 @@ TASK_TIER_MAPPING: Final[dict[str, ModelTier]] = {
     "retain.sequence_analysis_low": ModelTier.SMALL,
     "retain.sequence_analysis": ModelTier.MEDIUM,
     "retain.sequence_analysis_high": ModelTier.LARGE,
+    # --- Consolidation pipeline (Epic 25) ---
+    # C2 schema description: data-to-text from already-aggregated properties.
+    # No reasoning — just prose rendering → SMALL.
+    "consolidation.schema_description": ModelTier.SMALL,
     # --- Reflect pipeline ---
     # Think / answer construction: multi-hop reasoning over retrieved facts.
     # Deepest reasoning step in the system → LARGE.
