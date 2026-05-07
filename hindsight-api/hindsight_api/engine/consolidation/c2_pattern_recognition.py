@@ -28,12 +28,14 @@ import numpy as np
 
 from ..engram_dictionary import filter_entries
 from ..schema.centroid import compute_centroid
+from .c2_schema_match import match_existing_schema
 from .cluster_fingerprint_repository import match_or_create
 
 if TYPE_CHECKING:
     import asyncpg
 
     from ..qdrant_client import QdrantEngineClient
+    from ..schema.models import SchemaModel
 
 logger = logging.getLogger(__name__)
 
@@ -295,6 +297,80 @@ async def mature_clusters(
 def filter_matured(candidates: list[MaturedClusterCandidate]) -> list[MaturedClusterCandidate]:
     """Keep only candidates that survived ≥ ``MATURATION_MIN_CYCLES`` cycles."""
     return [c for c in candidates if c.is_mature]
+
+
+@dataclass(frozen=True)
+class MatchedForReinforcement:
+    """Mature cluster + the existing schema it should reinforce (Story 06)."""
+
+    cluster: MaturedClusterCandidate
+    schema: "SchemaModel"
+    cosine: float
+
+
+@dataclass(frozen=True)
+class UnmatchedForCreation:
+    """Mature cluster with no existing-schema match — feeds Story 09 creation."""
+
+    cluster: MaturedClusterCandidate
+    best_cosine: float
+
+
+@dataclass(frozen=True)
+class ConsolidationPlan:
+    """Two-bucket output of :func:`partition_for_consolidation`.
+
+    Stories 09 and 10 each consume exactly one bucket; the union covers all
+    matured candidates from R2 (concept §13 R2 → R4 split).
+    """
+
+    reinforcement: tuple[MatchedForReinforcement, ...]
+    creation: tuple[UnmatchedForCreation, ...]
+
+
+async def partition_for_consolidation(
+    matured: list[MaturedClusterCandidate],
+    bank_id: str,
+    qdrant: "QdrantEngineClient",
+    schema_lookup,
+) -> ConsolidationPlan:
+    """Split matured candidates into reinforcement vs creation buckets.
+
+    For each ``is_mature`` candidate, ask Qdrant whether a schema in the same
+    bank sits within ``SCHEMA_MATCH_THRESHOLD`` cosine of the centroid. Hits
+    feed Story 10 (R4 reinforcement); misses feed Story 09 (schema creation).
+
+    Non-mature candidates (``cycles_survived < MATURATION_MIN_CYCLES``) are
+    silently dropped — they ride in the cluster_fingerprint store waiting
+    for a future C2 cycle to push them over the threshold.
+    """
+    reinforcement: list[MatchedForReinforcement] = []
+    creation: list[UnmatchedForCreation] = []
+    skipped_immature = 0
+
+    for cand in matured:
+        if not cand.is_mature:
+            skipped_immature += 1
+            continue
+        schema, score = await match_existing_schema(
+            qdrant=qdrant,
+            schema_lookup=schema_lookup,
+            centroid=list(cand.centroid),
+            bank_id=bank_id,
+        )
+        if schema is not None:
+            reinforcement.append(MatchedForReinforcement(cluster=cand, schema=schema, cosine=score))
+        else:
+            creation.append(UnmatchedForCreation(cluster=cand, best_cosine=score))
+
+    logger.info(
+        "C2 partition_for_consolidation bank=%s reinforcement=%d creation=%d skipped_immature=%d",
+        bank_id,
+        len(reinforcement),
+        len(creation),
+        skipped_immature,
+    )
+    return ConsolidationPlan(reinforcement=tuple(reinforcement), creation=tuple(creation))
 
 
 def _log_stats(stats: DetectionStats) -> None:

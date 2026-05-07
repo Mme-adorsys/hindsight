@@ -20,14 +20,18 @@ from hindsight_api.engine.consolidation.c2_pattern_recognition import (
     DOMINANT_TAGS_TOP_N,
     MATURATION_MIN_CYCLES,
     ClusterCandidate,
+    ConsolidationPlan,
     DetectionStats,
+    MatchedForReinforcement,
     MaturedClusterCandidate,
+    UnmatchedForCreation,
     _dominant_tags,
     _l2_normalise,
     _mean_pairwise_cosine,
     detect_clusters,
     filter_matured,
     mature_clusters,
+    partition_for_consolidation,
 )
 from hindsight_api.engine.consolidation.cluster_fingerprint_repository import FingerprintMatch
 
@@ -373,3 +377,87 @@ class TestMatureClusters:
 def test_maturation_min_cycles_locked():
     # concept §13 R2 fixes survival threshold at 2 cycles.
     assert MATURATION_MIN_CYCLES == 2
+
+
+# ---------------------------------------------------------------------------
+# Story 06 — partition_for_consolidation
+# ---------------------------------------------------------------------------
+
+
+def _matured(cycles: int = 2) -> MaturedClusterCandidate:
+    return MaturedClusterCandidate(
+        engram_ids=(str(uuid.uuid4()),),
+        centroid=(1.0, 0.0),
+        dominant_tags=("x",),
+        cycles_survived=cycles,
+        fingerprint_id=uuid.uuid4(),
+        matched_existing=False,
+        cohesion=0.9,
+    )
+
+
+class TestPartitionForConsolidation:
+    async def test_mixed_inputs_split_into_two_buckets(self):
+        m_a, m_b, immature = _matured(2), _matured(3), _matured(1)
+        schema_obj = object()
+        # First mature → match (above threshold). Second mature → miss.
+        match_results = [
+            (schema_obj, 0.92),
+            (None, 0.55),
+        ]
+
+        async def _match(**kwargs):
+            return match_results.pop(0)
+
+        with patch(
+            "hindsight_api.engine.consolidation.c2_pattern_recognition.match_existing_schema",
+            new=_match,
+        ):
+            plan = await partition_for_consolidation(
+                [m_a, m_b, immature],
+                bank_id="bank-A",
+                qdrant=AsyncMock(),
+                schema_lookup=AsyncMock(),
+            )
+
+        assert isinstance(plan, ConsolidationPlan)
+        assert len(plan.reinforcement) == 1
+        assert len(plan.creation) == 1
+        assert isinstance(plan.reinforcement[0], MatchedForReinforcement)
+        assert plan.reinforcement[0].cluster is m_a
+        assert plan.reinforcement[0].schema is schema_obj
+        assert plan.reinforcement[0].cosine == pytest.approx(0.92)
+        assert isinstance(plan.creation[0], UnmatchedForCreation)
+        assert plan.creation[0].cluster is m_b
+        assert plan.creation[0].best_cosine == pytest.approx(0.55)
+
+    async def test_immature_candidates_are_dropped(self):
+        # Three candidates, all below MATURATION_MIN_CYCLES → both buckets empty.
+        immatures = [_matured(1) for _ in range(3)]
+
+        async def _match(**kwargs):  # pragma: no cover — never reached
+            raise AssertionError("match_existing_schema must not be called for immature candidates")
+
+        with patch(
+            "hindsight_api.engine.consolidation.c2_pattern_recognition.match_existing_schema",
+            new=_match,
+        ):
+            plan = await partition_for_consolidation(
+                immatures,
+                bank_id="bank-A",
+                qdrant=AsyncMock(),
+                schema_lookup=AsyncMock(),
+            )
+
+        assert plan.reinforcement == ()
+        assert plan.creation == ()
+
+    async def test_empty_input_yields_empty_plan(self):
+        plan = await partition_for_consolidation(
+            [],
+            bank_id="bank-A",
+            qdrant=AsyncMock(),
+            schema_lookup=AsyncMock(),
+        )
+        assert plan.reinforcement == ()
+        assert plan.creation == ()
