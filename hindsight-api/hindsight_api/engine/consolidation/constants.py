@@ -42,3 +42,13 @@ R4_INCREMENTAL_ENABLED: bool = True
 # barely shifts a multi-engram aggregation, and the property re-aggregation
 # costs an extra PG round-trip. Batch R4 in C2 (Story 10) refreshes properly.
 R4_INCREMENTAL_PROPERTY_REFRESH: bool = False
+
+# concept §13 R3 (schema → hyper-schema, Story 13). Two schemas with
+# centroid-cosine ≥ this threshold AND systematic property differences
+# get subsumed under a HyperSchema node linked via :SPECIALIZES.
+HYPER_SCHEMA_COHESION_THRESHOLD: float = 0.7
+
+# Minimum number of property keys whose values differ for an R3 pair to
+# qualify. concept §13 says "systematisch unterschiedliche Property-Werte"
+# — at least one differing key keeps us out of pure-duplicate territory.
+HYPER_SCHEMA_MIN_PROPERTY_DIFF: int = 1
