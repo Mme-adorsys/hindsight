@@ -16,17 +16,17 @@ Im alten Modell gab es nur Engram-Embeddings in Qdrant. Schemas hatten kein Embe
 
 ## Akzeptanzkriterien
 
-- [ ] Alle Engram-Punkte in Qdrant haben `payload.kind = "engram"` (Migration für Bestand)
-- [ ] Neue Funktion `upsert_schema_centroid(schema_id, centroid_vector, schema_meta)` schreibt mit `payload.kind = "schema"`
-- [ ] Such-Wrapper akzeptiert optionalen Filter `kind ∈ {"engram", "schema", None}` für Recall- und C2-Use-Cases
-- [ ] Helper-Funktion `compute_centroid(embeddings: List[Vector]) -> Vector` (numpy.mean, normalisiert)
-- [ ] Unit-Tests für Schreibpfad + Filter-Search
+- [x] Alle Engram-Punkte in Qdrant haben `payload.kind = "engram"` (Migration `scripts/dev/migrate_qdrant_kind_payload.py`)
+- [x] Neue Funktion `upsert_schema_centroid(schema_id, centroid_vector, schema_meta)` schreibt mit `payload.kind = "schema"`
+- [x] `search_similar` akzeptiert optionalen Filter `kind ∈ {"engram", "schema", None}`
+- [x] Helper-Funktion `compute_centroid(embeddings)` mit `numpy.mean` + L2-Normalisierung
+- [x] Unit-Tests für Schreibpfad + Filter-Search
 
 ## Tasks
 
-- [ ] **T1 — Migration Qdrant-Payload:** Skript `scripts/migrate_qdrant_kind_payload.py` setzt `kind="engram"` auf allen bestehenden Punkten (idempotent, batch).
-- [ ] **T2 — Engram-Schreibpfad anpassen:** In `engine/retain/...` wird beim Upsert eines Engram-Embeddings explizit `payload.kind = "engram"` mitgeschrieben.
-- [ ] **T3 — Schema-Centroid-Schreibpfad:** Neue Funktion `qdrant_client.upsert_schema_centroid(schema_id, vector, schema_meta_dict)` mit `payload = {kind: "schema", schema_id, description_short, ...}`.
-- [ ] **T4 — Centroid-Compute-Helper:** `engine/schema/centroid.py::compute_centroid(embeddings)` mit numpy.mean + L2-Normalisierung.
-- [ ] **T5 — Such-Wrapper Erweiterung:** `qdrant_client.search(query_vector, kind=None, limit=k, filter=...)` mit optionalem Filter auf `payload.kind`.
-- [ ] **T6 — Unit-Tests:** Centroid-Berechnung (gegen Hand-Beispiel). Upsert + Filter-Search (kind="schema" liefert nur Schemas). Migration-Smoke-Test.
+- [x] **T1 — Migration Qdrant-Payload:** `scripts/dev/migrate_qdrant_kind_payload.py` (Story-Pfad `scripts/...` → tatsächlich unter `scripts/dev/` neben `seed_bank.py`/`reset_bank.py`). Idempotent: scrollt alle Punkte, setzt `kind="engram"` nur dort wo weder `engram` noch `schema` gesetzt ist; `--dry-run`-Modus, env-Defaults für Qdrant-URL/Key/Collection.
+- [x] **T2 — Engram-Schreibpfad:** `qdrant_client.upsert_point` und `batch_upsert` forcieren `kind="engram"` (Caller kann nicht mehr überschreiben — Story-03-Invariant). Damit bleiben bestehende Caller in `engine/engram_storage.py` ohne Diff kompatibel; legacy `'neocortex'`-Schreiber in `consolidation/` sind nach Story 02 ohnehin tot.
+- [x] **T3 — Schema-Centroid-Schreibpfad:** Neue `qdrant_client.upsert_schema_centroid(schema_id, centroid, schema_meta)` schreibt `kind="schema"` + `schema_id`; Caller-Override beider Felder wird ignoriert.
+- [x] **T4 — Centroid-Compute-Helper:** `engine/schema/centroid.py::compute_centroid(embeddings)` mit `numpy.mean` + L2-Normalisierung. Wirft `ValueError` bei leerem Input oder Zero-Vector (degenerate cancel-out).
+- [x] **T5 — Such-Wrapper Erweiterung:** `qdrant_client.search_similar(..., kind=None)` plus private `_build_filter` staticmethod, die einen optionalen Caller-Filter mit einer optionalen `kind`-`FieldCondition` über die `must`-Liste komponiert (kein Replace).
+- [x] **T6 — Unit-Tests:** `tests/test_schema_centroid.py` mit 17 Unit-Tests: 5 für `compute_centroid` (orthogonale Vektoren, kollabierte, Single-Vector, Empty-Error, Zero-Vector-Error), 2 für Engram-Upsert-Forcierung, 3 für `upsert_schema_centroid`, 3 für `search_similar`-Filter-Komposition, 4 für Migration-Smoke-Test (skip already tagged, stamp unkinded, dry-run no-write, missing collection short-circuit).
