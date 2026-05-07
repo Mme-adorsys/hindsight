@@ -31,10 +31,13 @@ from uuid import UUID, uuid4
 
 from ..schema.centroid import compute_centroid
 from ..schema.models import HyperSchemaModel, SchemaModel
-from ..schema.schema_repository import create_schema, link_specialization, list_active_schemas
+from ..schema.schema_repository import archive_schema, create_schema, link_specialization, list_active_schemas
 from .constants import (
+    C3_CYCLE_PERIOD_DAYS,
     HYPER_SCHEMA_COHESION_THRESHOLD,
     HYPER_SCHEMA_MIN_PROPERTY_DIFF,
+    R5_EVIDENCE_THRESHOLD,
+    R5_K_CYCLES,
 )
 
 if TYPE_CHECKING:
@@ -399,5 +402,107 @@ async def run_r3_hyper_schema(
         report.pairs_above_cosine,
         report.pairs_with_property_diff,
         report.hyper_schemas_created,
+    )
+    return report
+
+
+# ---------------------------------------------------------------------------
+# R5 — Schema Death (Story 14)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class R5Report:
+    """Per-run summary surfaced by ``archive_dead_schemas``."""
+
+    bank_id: str
+    schemas_scanned: int = 0
+    archived: int = 0
+    archived_ids: list[UUID] = field(default_factory=list)
+
+
+def cycles_since_reinforced(
+    schema: SchemaModel,
+    *,
+    now: datetime | None = None,
+    cycle_period_days: int = C3_CYCLE_PERIOD_DAYS,
+) -> int:
+    """Estimate how many C3 cycles a schema has gone without reinforcement.
+
+    Schemas don't carry a per-bank C3-cycle counter today; we derive the
+    cycle count from wallclock days since ``last_reinforced_at`` divided
+    by the C3 period. ``last_reinforced_at`` defaults to ``created_at``
+    on a fresh schema (Story 09), so this works from birth onwards.
+    """
+    if schema.last_reinforced_at is None:
+        return 0
+    reference = now or datetime.now(timezone.utc)
+    delta = reference - schema.last_reinforced_at
+    days = max(0, int(delta.total_seconds() // (24 * 3600)))
+    return days // max(1, cycle_period_days)
+
+
+async def archive_dead_schemas(
+    bank_id: str,
+    *,
+    neo4j: "Neo4jEngineClient",
+    k_cycles: int = R5_K_CYCLES,
+    evidence_threshold: int = R5_EVIDENCE_THRESHOLD,
+    cycle_period_days: int = C3_CYCLE_PERIOD_DAYS,
+    now: datetime | None = None,
+    limit: int = 500,
+) -> R5Report:
+    """Archive schemas that satisfy the R5 death gate (concept §13).
+
+    Death triggers when **both** are true:
+        - ``cycles_since_reinforced > k_cycles`` (long inactive)
+        - ``evidence_count < evidence_threshold`` (thin support)
+
+    Bootstrap defaults are intentionally lenient (K=8 ≈ 2 months,
+    threshold=3) — early-life banks shouldn't lose schemas just because
+    they're triggered rarely. Once a system has dense banks the values
+    can be tightened toward concept-default K=4 / threshold=5.
+
+    Schemas are **archived** (status='archived'), not deleted: historical
+    recalls still find them; HybridRetriever (Story 15) excludes
+    archived from active search.
+    """
+    schemas = await list_active_schemas(neo4j, label="Schema", limit=limit)
+    schema_models: list[SchemaModel] = [s for s in schemas if isinstance(s, SchemaModel)]
+    report = R5Report(bank_id=bank_id, schemas_scanned=len(schema_models))
+
+    for schema in schema_models:
+        cycles = cycles_since_reinforced(schema, now=now, cycle_period_days=cycle_period_days)
+        if cycles <= k_cycles:
+            continue
+        if int(schema.evidence_count or 0) >= evidence_threshold:
+            continue
+        try:
+            await archive_schema(neo4j, schema.id, label="Schema")
+        except Exception as exc:
+            logger.warning(
+                "archive_dead_schemas failed bank=%s schema_id=%s reason=%s",
+                bank_id,
+                schema.id,
+                exc.__class__.__name__,
+            )
+            continue
+        report.archived += 1
+        report.archived_ids.append(schema.id)
+        logger.info(
+            "archive_dead_schemas archived bank=%s schema_id=%s cycles=%d evidence=%d",
+            bank_id,
+            schema.id,
+            cycles,
+            schema.evidence_count or 0,
+        )
+
+    logger.info(
+        "archive_dead_schemas bank=%s scanned=%d archived=%d (k=%d, threshold=%d)",
+        bank_id,
+        report.schemas_scanned,
+        report.archived,
+        k_cycles,
+        evidence_threshold,
     )
     return report

@@ -8,7 +8,7 @@ property-diff comparison and union logic are exercised end-to-end.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -16,17 +16,23 @@ import pytest
 from hindsight_api.engine.consolidation.c3_schema_restructure import (
     HyperSchemaCandidate,
     R3Report,
+    R5Report,
     _cosine,
     _differing_property_keys,
     _merge_property,
     _union_properties,
+    archive_dead_schemas,
     create_hyper_schema,
+    cycles_since_reinforced,
     find_hyper_schema_candidates,
     run_r3_hyper_schema,
 )
 from hindsight_api.engine.consolidation.constants import (
+    C3_CYCLE_PERIOD_DAYS,
     HYPER_SCHEMA_COHESION_THRESHOLD,
     HYPER_SCHEMA_MIN_PROPERTY_DIFF,
+    R5_EVIDENCE_THRESHOLD,
+    R5_K_CYCLES,
 )
 from hindsight_api.engine.schema.models import HyperSchemaModel, SchemaModel
 
@@ -396,3 +402,180 @@ class TestRunR3HyperSchema:
             report = await run_r3_hyper_schema("bank-A", neo4j=MagicMock(), qdrant=MagicMock())
         assert report.hyper_schemas_created == 0
         assert len(report.candidates) == 1  # detected, just not minted
+
+
+# ---------------------------------------------------------------------------
+# Story 14 — R5 Schema Death
+# ---------------------------------------------------------------------------
+
+
+def _aged_schema(*, days_since_reinforced: int, evidence_count: int) -> SchemaModel:
+    """Synthesise a schema with a controllable last_reinforced_at age."""
+    now = datetime(2026, 5, 7, tzinfo=timezone.utc)
+    return SchemaModel(
+        id=uuid.uuid4(),
+        description="aged",
+        properties={"evidence_count": evidence_count},
+        centroid_qdrant_id=None,
+        evidence_engram_ids=[],
+        evidence_count=evidence_count,
+        cycles_survived=2,
+        status="active",
+        created_at=now - timedelta(days=days_since_reinforced + 30),
+        last_reinforced_at=now - timedelta(days=days_since_reinforced),
+    )
+
+
+_NOW = datetime(2026, 5, 7, tzinfo=timezone.utc)
+
+
+class TestR5Constants:
+    def test_bootstrap_defaults_more_lenient_than_concept(self):
+        # Concept-default per §13: K=4, threshold=5. Bootstrap is K=8, threshold=3 —
+        # both axes more permissive (longer life, harder to die from thin support).
+        assert R5_K_CYCLES > 4
+        assert R5_EVIDENCE_THRESHOLD < 5
+        assert C3_CYCLE_PERIOD_DAYS == 7
+
+
+class TestCyclesSinceReinforced:
+    def test_zero_when_just_reinforced(self):
+        schema = _aged_schema(days_since_reinforced=0, evidence_count=1)
+        assert cycles_since_reinforced(schema, now=_NOW) == 0
+
+    def test_one_cycle_after_seven_days(self):
+        schema = _aged_schema(days_since_reinforced=7, evidence_count=1)
+        assert cycles_since_reinforced(schema, now=_NOW) == 1
+
+    def test_eight_cycles_after_fifty_six_days(self):
+        # 8 cycles × 7 days = 56 days
+        schema = _aged_schema(days_since_reinforced=56, evidence_count=1)
+        assert cycles_since_reinforced(schema, now=_NOW) == 8
+
+    def test_no_last_reinforced_at_returns_zero(self):
+        schema = _aged_schema(days_since_reinforced=100, evidence_count=1)
+        # Override directly so we hit the None branch.
+        schema_no_reinforced = SchemaModel(
+            id=schema.id,
+            description=schema.description,
+            properties=schema.properties,
+            centroid_qdrant_id=None,
+            evidence_engram_ids=[],
+            evidence_count=1,
+            cycles_survived=1,
+            status="active",
+            created_at=schema.created_at,
+            last_reinforced_at=None,
+        )
+        assert cycles_since_reinforced(schema_no_reinforced, now=_NOW) == 0
+
+
+class TestArchiveDeadSchemas:
+    async def test_dead_schema_archived(self):
+        # 9 cycles old (63 days), evidence_count=1 → both gates trigger.
+        dead = _aged_schema(days_since_reinforced=63, evidence_count=1)
+        with (
+            patch(
+                "hindsight_api.engine.consolidation.c3_schema_restructure.list_active_schemas",
+                new=AsyncMock(return_value=[dead]),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.c3_schema_restructure.archive_schema",
+                new=AsyncMock(),
+            ) as archive_mock,
+        ):
+            report = await archive_dead_schemas("bank-A", neo4j=MagicMock(), now=_NOW)
+        assert isinstance(report, R5Report)
+        assert report.archived == 1
+        assert dead.id in report.archived_ids
+        archive_mock.assert_awaited_once()
+        assert archive_mock.await_args.kwargs["label"] == "Schema"
+
+    async def test_evidence_above_threshold_protects(self):
+        # Old schema but evidence_count >= R5_EVIDENCE_THRESHOLD → stays alive.
+        protected = _aged_schema(days_since_reinforced=200, evidence_count=R5_EVIDENCE_THRESHOLD)
+        with (
+            patch(
+                "hindsight_api.engine.consolidation.c3_schema_restructure.list_active_schemas",
+                new=AsyncMock(return_value=[protected]),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.c3_schema_restructure.archive_schema",
+                new=AsyncMock(),
+            ) as archive_mock,
+        ):
+            report = await archive_dead_schemas("bank-A", neo4j=MagicMock(), now=_NOW)
+        assert report.archived == 0
+        archive_mock.assert_not_called()
+
+    async def test_fresh_schema_retained_even_with_thin_evidence(self):
+        # 1 cycle old + evidence_count=0 → cycles gate fails → not archived.
+        fresh = _aged_schema(days_since_reinforced=7, evidence_count=0)
+        with (
+            patch(
+                "hindsight_api.engine.consolidation.c3_schema_restructure.list_active_schemas",
+                new=AsyncMock(return_value=[fresh]),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.c3_schema_restructure.archive_schema",
+                new=AsyncMock(),
+            ) as archive_mock,
+        ):
+            report = await archive_dead_schemas("bank-A", neo4j=MagicMock(), now=_NOW)
+        assert report.archived == 0
+        archive_mock.assert_not_called()
+
+    async def test_archive_failure_skips_individual_does_not_abort(self):
+        dead_a = _aged_schema(days_since_reinforced=200, evidence_count=1)
+        dead_b = _aged_schema(days_since_reinforced=200, evidence_count=1)
+
+        async def _archive(neo4j, schema_id, *, label):
+            if schema_id == dead_a.id:
+                raise RuntimeError("transient")
+
+        with (
+            patch(
+                "hindsight_api.engine.consolidation.c3_schema_restructure.list_active_schemas",
+                new=AsyncMock(return_value=[dead_a, dead_b]),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.c3_schema_restructure.archive_schema",
+                new=_archive,
+            ),
+        ):
+            report = await archive_dead_schemas("bank-A", neo4j=MagicMock(), now=_NOW)
+        # Only dead_b counted as archived; dead_a's failure was logged.
+        assert report.archived == 1
+        assert dead_b.id in report.archived_ids
+        assert dead_a.id not in report.archived_ids
+
+    async def test_explicit_overrides_match_concept_default(self):
+        # Override to concept defaults (K=4, threshold=5) — same schema,
+        # different gate. 35 days = 5 cycles > 4, evidence=4 < 5 → archived.
+        schema = _aged_schema(days_since_reinforced=35, evidence_count=4)
+        with (
+            patch(
+                "hindsight_api.engine.consolidation.c3_schema_restructure.list_active_schemas",
+                new=AsyncMock(return_value=[schema]),
+            ),
+            patch(
+                "hindsight_api.engine.consolidation.c3_schema_restructure.archive_schema",
+                new=AsyncMock(),
+            ),
+        ):
+            report = await archive_dead_schemas(
+                "bank-A",
+                neo4j=MagicMock(),
+                k_cycles=4,
+                evidence_threshold=5,
+                now=_NOW,
+            )
+        assert report.archived == 1
+
+    async def test_empty_bank_returns_zero_report(self):
+        with patch(
+            "hindsight_api.engine.consolidation.c3_schema_restructure.list_active_schemas",
+            new=AsyncMock(return_value=[]),
+        ):
+            report = await archive_dead_schemas("bank-A", neo4j=MagicMock(), now=_NOW)
+        assert report == R5Report(bank_id="bank-A", schemas_scanned=0, archived=0, archived_ids=[])

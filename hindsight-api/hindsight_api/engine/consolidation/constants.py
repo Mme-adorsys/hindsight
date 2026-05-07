@@ -52,3 +52,17 @@ HYPER_SCHEMA_COHESION_THRESHOLD: float = 0.7
 # qualify. concept §13 says "systematisch unterschiedliche Property-Werte"
 # — at least one differing key keeps us out of pure-duplicate territory.
 HYPER_SCHEMA_MIN_PROPERTY_DIFF: int = 1
+
+# concept §13 R5 — Schema Death gate. A schema gets archived when both:
+#   - cycles_since_last_reinforced > R5_K_CYCLES, AND
+#   - evidence_count < R5_EVIDENCE_THRESHOLD
+# Concept-default is K=4 cycles + threshold=5 (≈ 28 days at 7-day C3 cadence).
+# We ship a more conservative bootstrap pair so a dim early-life bank
+# doesn't kill schemas that are simply rarely triggered. Once a system has
+# dense banks the values can be tightened toward the concept default.
+R5_K_CYCLES: int = 8
+R5_EVIDENCE_THRESHOLD: int = 3
+
+# concept §13 frequency table: C3 runs every 7 days. Used by R5 to convert
+# cycles-without-reinforcement into a wallclock window.
+C3_CYCLE_PERIOD_DAYS: int = 7
