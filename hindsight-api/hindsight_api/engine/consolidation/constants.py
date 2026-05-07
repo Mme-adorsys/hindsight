@@ -30,3 +30,15 @@ SCHEMA_TOP_N_EVIDENCE: int = 5
 # vector-search recall would be drowned out by stronger neighbours anyway.
 # Drift guard in tests/test_c2_decay.py.
 BUFFER_ARCHIVE_COMPOSITE_THRESHOLD: float = 0.05
+
+# concept §13 R4 (incremental, Story 12). When a freshly retained engram lands
+# within SCHEMA_MATCH_THRESHOLD cosine of an existing schema centroid, R4 fires
+# immediately at retain time instead of waiting for the next C2 batch run
+# (Tse et al. 2007 — schema-consistent consolidation in hours, not weeks).
+R4_INCREMENTAL_ENABLED: bool = True
+
+# Whether the incremental R4 reinforcement re-aggregates the schema's
+# properties on every single-engram hit. False by default — one new engram
+# barely shifts a multi-engram aggregation, and the property re-aggregation
+# costs an extra PG round-trip. Batch R4 in C2 (Story 10) refreshes properly.
+R4_INCREMENTAL_PROPERTY_REFRESH: bool = False

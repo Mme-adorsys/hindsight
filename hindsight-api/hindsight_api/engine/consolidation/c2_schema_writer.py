@@ -338,6 +338,97 @@ async def _fetch_schema_centroid(qdrant: "QdrantEngineClient", schema: SchemaMod
     return list(point["vector"])
 
 
+async def reinforce_schema_single_engram(
+    schema: SchemaModel,
+    bank_id: str,
+    *,
+    engram_id: str,
+    embedding: list[float],
+    neo4j: "Neo4jEngineClient",
+    qdrant: "QdrantEngineClient",
+    pool: "asyncpg.Pool",
+    refresh_properties: bool | None = None,
+) -> SchemaModel:
+    """Single-engram R4 reinforcement (Epic 25 Story 12, retain-time path).
+
+    Lighter than :func:`reinforce_schema` because the input is exactly one
+    engram, not a cluster:
+
+    - ``evidence_count += 1``
+    - Top-N reshuffle: append the new engram and re-pick the strongest
+      ``SCHEMA_TOP_N_EVIDENCE`` from PG (so a stronger newcomer can knock
+      a weaker incumbent out)
+    - Centroid: weighted mean with new engram weight = 1
+    - ``last_reinforced_at = now``, ``cycles_survived += 1``
+    - Property refresh defaults off (R4_INCREMENTAL_PROPERTY_REFRESH);
+      one engram barely moves the aggregation, batch R4 (Story 10)
+      handles it properly.
+    """
+    from .constants import R4_INCREMENTAL_PROPERTY_REFRESH
+
+    do_refresh = R4_INCREMENTAL_PROPERTY_REFRESH if refresh_properties is None else refresh_properties
+
+    candidate_ids = [str(eid) for eid in schema.evidence_engram_ids] + [engram_id]
+    new_top_n = await select_top_n_evidence(pool, candidate_ids)
+    new_evidence_count = int(schema.evidence_count) + 1
+
+    old_centroid = await _fetch_schema_centroid(qdrant, schema)
+    if old_centroid is None or int(schema.evidence_count) <= 0:
+        new_centroid = list(embedding)
+    else:
+        new_centroid = weighted_centroid(
+            old_centroid=old_centroid,
+            old_weight=int(schema.evidence_count),
+            new_centroid=list(embedding),
+            new_weight=1,
+        )
+
+    if do_refresh:
+        refresh_tags = await _fetch_member_tags(pool, new_top_n)
+        new_properties = aggregate_properties(refresh_tags) if refresh_tags else dict(schema.properties)
+    else:
+        new_properties = dict(schema.properties)
+
+    now = datetime.now(timezone.utc)
+    updated = SchemaModel(
+        id=schema.id,
+        description=schema.description,
+        properties=new_properties,
+        centroid_qdrant_id=schema.centroid_qdrant_id or schema.id,
+        evidence_engram_ids=new_top_n,
+        evidence_count=new_evidence_count,
+        cycles_survived=int(schema.cycles_survived) + 1,
+        status=schema.status or "active",
+        created_at=schema.created_at,
+        last_reinforced_at=now,
+    )
+
+    await update_schema(neo4j, schema.id, updated.to_neo4j_props(), label="Schema")
+
+    try:
+        await qdrant.upsert_schema_centroid(
+            schema_id=str(schema.id),
+            centroid=new_centroid,
+            schema_meta={"bank_id": bank_id, "description_short": _short(updated.description)},
+        )
+    except Exception:
+        logger.warning(
+            "reinforce_schema_single_engram qdrant centroid refresh failed bank=%s schema_id=%s — neo4j stays updated",
+            bank_id,
+            schema.id,
+        )
+
+    logger.info(
+        "reinforce_schema_single_engram bank=%s schema_id=%s engram_id=%s evidence_count=%d→%d",
+        bank_id,
+        schema.id,
+        engram_id,
+        schema.evidence_count,
+        new_evidence_count,
+    )
+    return updated
+
+
 async def reinforce_matched(
     reinforcement: tuple["MatchedForReinforcement", ...],
     bank_id: str,
