@@ -17,12 +17,19 @@ import pytest
 
 from hindsight_api.engine.consolidation.c2_pattern_recognition import (
     COHESION_THRESHOLD,
+    DOMINANT_TAGS_TOP_N,
+    MATURATION_MIN_CYCLES,
     ClusterCandidate,
     DetectionStats,
+    MaturedClusterCandidate,
+    _dominant_tags,
     _l2_normalise,
     _mean_pairwise_cosine,
     detect_clusters,
+    filter_matured,
+    mature_clusters,
 )
+from hindsight_api.engine.consolidation.cluster_fingerprint_repository import FingerprintMatch
 
 
 def _unit(theta: float, dim: int = 8) -> list[float]:
@@ -216,3 +223,153 @@ def test_threshold_constant_matches_concept(threshold):
     # concept §13 R1 fixes the cohesion floor at 0.75; tightening it without
     # also touching the concept doc would cause silent drift.
     assert threshold == 0.75
+
+
+# ---------------------------------------------------------------------------
+# Story 05 — R2 maturation
+# ---------------------------------------------------------------------------
+
+
+def _candidate(*, tags: tuple[tuple[str, ...], ...] = ()) -> ClusterCandidate:
+    """Build a synthetic candidate for maturation tests."""
+    member_embeddings = ((1.0, 0.0), (0.99, 0.01), (0.98, 0.02))
+    return ClusterCandidate(
+        engram_ids=tuple(str(uuid.uuid4()) for _ in range(3)),
+        member_embeddings=member_embeddings,
+        cohesion=0.9,
+        member_tags=tags or (("a",), ("b",), ("c",)),
+    )
+
+
+class TestDominantTags:
+    def test_top_n_by_frequency(self):
+        member_tags = (
+            ("work", "ml"),
+            ("work", "ml", "deploy"),
+            ("ml", "deploy"),
+        )
+        # 'ml' x3, 'work' x2, 'deploy' x2
+        result = _dominant_tags(member_tags, top_n=2)
+        assert result[0] == "ml"
+        assert "work" in result or "deploy" in result
+
+    def test_top_n_default_caps_at_concept_constant(self):
+        assert DOMINANT_TAGS_TOP_N == 5
+
+    def test_empty_member_tags_yields_empty_tuple(self):
+        assert _dominant_tags(((), (), ())) == ()
+
+
+class TestMatureClusters:
+    async def test_first_run_yields_cycles_one_not_mature(self):
+        cand = _candidate()
+        pool = AsyncMock()
+        new_id = uuid.uuid4()
+        match_outcome = FingerprintMatch(
+            fingerprint_id=new_id,
+            cycles_survived=1,
+            matched_existing=False,
+            cosine=None,
+        )
+        with patch(
+            "hindsight_api.engine.consolidation.c2_pattern_recognition.match_or_create",
+            new=AsyncMock(return_value=match_outcome),
+        ) as mocked:
+            matured = await mature_clusters([cand], "bank-A", pool)
+
+        assert len(matured) == 1
+        result = matured[0]
+        assert isinstance(result, MaturedClusterCandidate)
+        assert result.cycles_survived == 1
+        assert result.matched_existing is False
+        assert result.is_mature is False
+        assert result.fingerprint_id == new_id
+        # Repository was called with the bank, the computed centroid, and the
+        # dominant-tag rollup (which here is just ['a','b','c'] in some order).
+        args, _ = mocked.await_args
+        assert args[1] == "bank-A"
+        assert isinstance(args[2], list)
+        assert len(args[2]) == 2  # centroid is 2-d in the synthetic candidate
+        assert sorted(args[3]) == ["a", "b", "c"]
+
+    async def test_second_run_match_marks_mature(self):
+        cand = _candidate()
+        pool = AsyncMock()
+        existing_id = uuid.uuid4()
+        match_outcome = FingerprintMatch(
+            fingerprint_id=existing_id,
+            cycles_survived=2,
+            matched_existing=True,
+            cosine=0.91,
+        )
+        with patch(
+            "hindsight_api.engine.consolidation.c2_pattern_recognition.match_or_create",
+            new=AsyncMock(return_value=match_outcome),
+        ):
+            matured = await mature_clusters([cand], "bank-A", pool)
+
+        result = matured[0]
+        assert result.matched_existing is True
+        assert result.cycles_survived == 2
+        assert result.is_mature is True
+
+    async def test_filter_matured_keeps_only_min_cycles(self):
+        c1 = MaturedClusterCandidate(
+            engram_ids=("e1",),
+            centroid=(1.0,),
+            dominant_tags=(),
+            cycles_survived=1,
+            fingerprint_id=uuid.uuid4(),
+            matched_existing=False,
+            cohesion=0.9,
+        )
+        c2 = MaturedClusterCandidate(
+            engram_ids=("e2",),
+            centroid=(1.0,),
+            dominant_tags=(),
+            cycles_survived=2,
+            fingerprint_id=uuid.uuid4(),
+            matched_existing=True,
+            cohesion=0.95,
+        )
+        c3 = MaturedClusterCandidate(
+            engram_ids=("e3",),
+            centroid=(1.0,),
+            dominant_tags=(),
+            cycles_survived=4,
+            fingerprint_id=uuid.uuid4(),
+            matched_existing=True,
+            cohesion=0.88,
+        )
+        kept = filter_matured([c1, c2, c3])
+        assert kept == [c2, c3]
+
+    async def test_centroid_is_l2_normalised(self):
+        cand = _candidate()
+        pool = AsyncMock()
+        captured: dict = {}
+
+        async def _fake(_pool, bank_id, centroid, tags):
+            captured["centroid"] = centroid
+            captured["bank_id"] = bank_id
+            captured["tags"] = tags
+            return FingerprintMatch(
+                fingerprint_id=uuid.uuid4(),
+                cycles_survived=1,
+                matched_existing=False,
+                cosine=None,
+            )
+
+        with patch(
+            "hindsight_api.engine.consolidation.c2_pattern_recognition.match_or_create",
+            new=_fake,
+        ):
+            await mature_clusters([cand], "bank-A", pool)
+
+        norm = math.sqrt(sum(x * x for x in captured["centroid"]))
+        assert math.isclose(norm, 1.0, rel_tol=1e-6)
+
+
+def test_maturation_min_cycles_locked():
+    # concept §13 R2 fixes survival threshold at 2 cycles.
+    assert MATURATION_MIN_CYCLES == 2

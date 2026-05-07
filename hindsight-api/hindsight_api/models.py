@@ -465,6 +465,39 @@ class NCRRun(Base):
     )
 
 
+class C2ClusterFingerprint(Base):
+    """
+    Per-bank fingerprint of a C2 cluster candidate (Epic 25 Story 05, R2).
+
+    Stores the centroid + dominant tags of a cluster found in one C2 run so
+    the next run can match it via cosine ≥ 0.85. Cluster maturity in concept
+    §13 R2 is "survived ≥ 2 C2 cycles"; ``cycles_survived`` tracks exactly
+    that. Stale fingerprints (``last_seen_at`` > 7d) are pruned by the
+    repository — schemas live in Neo4j, this table is hippocampal scratch.
+    """
+
+    __tablename__ = "c2_cluster_fingerprints"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    bank_id: Mapped[str] = mapped_column(Text, ForeignKey("banks.bank_id", ondelete="CASCADE"), nullable=False)
+    centroid = mapped_column(Vector(EMBEDDING_DIMENSION), nullable=False)
+    dominant_tags: Mapped[list] = mapped_column(JSONB, nullable=False, server_default=sql_text("'[]'::jsonb"))
+    cycles_survived: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
+    last_seen_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_c2_cluster_fingerprints_bank", "bank_id"),
+        Index("idx_c2_cluster_fingerprints_last_seen", "last_seen_at"),
+        Index(
+            "idx_c2_cluster_fingerprints_centroid",
+            "centroid",
+            postgresql_using="hnsw",
+            postgresql_ops={"centroid": "vector_cosine_ops"},
+        ),
+    )
+
+
 class RetainTrace(Base):
     """
     One PipelineTracer snapshot persisted from retain_batch (Phase B, Item B3).

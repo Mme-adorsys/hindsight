@@ -19,12 +19,16 @@ bank-scoped), Qdrant only delivers vectors for those ids.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 import numpy as np
 
 from ..engram_dictionary import filter_entries
+from ..schema.centroid import compute_centroid
+from .cluster_fingerprint_repository import match_or_create
 
 if TYPE_CHECKING:
     import asyncpg
@@ -35,6 +39,14 @@ logger = logging.getLogger(__name__)
 
 MIN_CLUSTER_SIZE: int = 3
 COHESION_THRESHOLD: float = 0.75
+# concept §13 R2 — a cluster must survive two C2 cycles before it can become
+# a schema. Tightening this without also touching the concept doc would
+# silently invert "filter noise" semantics.
+MATURATION_MIN_CYCLES: int = 2
+# Top-N tag rollup for the cluster fingerprint. Mirrors the Top-N=5 evidence
+# array on Schema nodes (concept §4.2) — keeps the fingerprint comparable
+# in size to the eventual schema row.
+DOMINANT_TAGS_TOP_N: int = 5
 # Fetch limit when scrolling buffer engrams. Banks beyond this size get a
 # warning; the caller can split work into multiple C2 runs by sub-bank.
 DEFAULT_BANK_SCAN_LIMIT: int = 10_000
@@ -45,17 +57,40 @@ class ClusterCandidate:
     """Cluster of buffer engrams emitted by R1 detection.
 
     ``cohesion`` is the mean pairwise cosine similarity over all member
-    embeddings — a single number per candidate. Story 05 uses it as a
-    fingerprint feature alongside the centroid.
+    embeddings — a single number per candidate. ``member_tags`` mirrors
+    ``member_embeddings`` index-by-index so the R2 step (Story 05) can
+    compute dominant tags without re-querying PostgreSQL.
     """
 
     engram_ids: tuple[str, ...]
     member_embeddings: tuple[tuple[float, ...], ...]
     cohesion: float
+    member_tags: tuple[tuple[str, ...], ...] = ()
 
     @property
     def size(self) -> int:
         return len(self.engram_ids)
+
+
+@dataclass(frozen=True)
+class MaturedClusterCandidate:
+    """R1 candidate enriched with R2 fingerprint outcome (concept §13 R2).
+
+    A candidate becomes a schema seed only once ``cycles_survived >= 2``
+    (``MATURATION_MIN_CYCLES``) — see ``filter_matured``.
+    """
+
+    engram_ids: tuple[str, ...]
+    centroid: tuple[float, ...]
+    dominant_tags: tuple[str, ...]
+    cycles_survived: int
+    fingerprint_id: UUID
+    matched_existing: bool
+    cohesion: float
+
+    @property
+    def is_mature(self) -> bool:
+        return self.cycles_survived >= MATURATION_MIN_CYCLES
 
 
 @dataclass
@@ -152,6 +187,7 @@ async def detect_clusters(
         return []
 
     engram_ids = [str(e["engram_id"]) for e in entries]
+    tags_by_id: dict[str, tuple[str, ...]] = {str(e["engram_id"]): tuple(e.get("tags") or ()) for e in entries}
     points = await qdrant.retrieve_many(engram_ids)
     by_id = {p["engram_id"]: p["vector"] for p in points if p.get("vector") is not None}
 
@@ -187,11 +223,13 @@ async def detect_clusters(
             continue
         member_ids = tuple(aligned_ids[i] for i in member_indices)
         member_tuple = tuple(tuple(float(x) for x in member_vecs[j]) for j in range(len(member_indices)))
+        member_tags = tuple(tags_by_id.get(eid, ()) for eid in member_ids)
         candidates.append(
             ClusterCandidate(
                 engram_ids=member_ids,
                 member_embeddings=member_tuple,
                 cohesion=cohesion,
+                member_tags=member_tags,
             )
         )
         stats.cluster_details.append(
@@ -201,6 +239,62 @@ async def detect_clusters(
     stats.candidates = len(candidates)
     _log_stats(stats)
     return candidates
+
+
+def _dominant_tags(member_tags: tuple[tuple[str, ...], ...], top_n: int = DOMINANT_TAGS_TOP_N) -> tuple[str, ...]:
+    """Return the ``top_n`` most-frequent tags across cluster members.
+
+    Ties are broken by Counter's insertion order (CPython detail), which is
+    stable enough for fingerprint matching — what matters is the multiset,
+    not the precise ordering across runs.
+    """
+    counts: Counter[str] = Counter()
+    for tags in member_tags:
+        counts.update(tags)
+    return tuple(tag for tag, _ in counts.most_common(top_n))
+
+
+async def mature_clusters(
+    candidates: list[ClusterCandidate],
+    bank_id: str,
+    pool: "asyncpg.Pool",
+) -> list[MaturedClusterCandidate]:
+    """Run R2 maturation: fingerprint-match each candidate, increment cycles.
+
+    Each candidate's centroid is matched against bank-scoped fingerprints in
+    PostgreSQL via ``cluster_fingerprint_repository.match_or_create``. The
+    return preserves input order; downstream stories get
+    ``cycles_survived`` and the originating ``fingerprint_id`` for free.
+    """
+    matured: list[MaturedClusterCandidate] = []
+    for cand in candidates:
+        centroid = compute_centroid([list(vec) for vec in cand.member_embeddings])
+        tags = _dominant_tags(cand.member_tags)
+        outcome = await match_or_create(pool, bank_id, centroid, list(tags))
+        matured.append(
+            MaturedClusterCandidate(
+                engram_ids=cand.engram_ids,
+                centroid=tuple(centroid),
+                dominant_tags=tags,
+                cycles_survived=outcome.cycles_survived,
+                fingerprint_id=outcome.fingerprint_id,
+                matched_existing=outcome.matched_existing,
+                cohesion=cand.cohesion,
+            )
+        )
+    logger.info(
+        "C2 R2 mature_clusters bank=%s candidates=%d matched=%d new=%d",
+        bank_id,
+        len(matured),
+        sum(1 for m in matured if m.matched_existing),
+        sum(1 for m in matured if not m.matched_existing),
+    )
+    return matured
+
+
+def filter_matured(candidates: list[MaturedClusterCandidate]) -> list[MaturedClusterCandidate]:
+    """Keep only candidates that survived ≥ ``MATURATION_MIN_CYCLES`` cycles."""
+    return [c for c in candidates if c.is_mature]
 
 
 def _log_stats(stats: DetectionStats) -> None:
