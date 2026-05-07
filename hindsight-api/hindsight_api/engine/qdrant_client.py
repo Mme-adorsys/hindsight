@@ -310,6 +310,41 @@ class QdrantEngineClient:
         except UnexpectedResponse:
             return None
 
+    async def retrieve_many(self, engram_ids: list[str]) -> list[dict[str, Any]]:
+        """
+        Batch-retrieve points by id with vectors (Epic 25 Story 04 — C2 cluster
+        detection feeds these into HDBSCAN).
+
+        Args:
+            engram_ids: List of UUID strings.
+
+        Returns:
+            List of dicts ``{engram_id, vector, payload}``. Missing ids are
+            silently skipped — Qdrant returns only what it has.
+        """
+        client = self._require_client()
+        if not engram_ids:
+            return []
+        point_ids = [str(uuid.UUID(eid)) for eid in engram_ids]
+
+        async def _retrieve():
+            results = await client.retrieve(
+                collection_name=self._collection,
+                ids=point_ids,
+                with_vectors=True,
+                with_payload=True,
+            )
+            return [
+                {
+                    "engram_id": p.payload.get("engram_id", str(p.id)),
+                    "vector": p.vector,
+                    "payload": p.payload,
+                }
+                for p in results
+            ]
+
+        return await _retry_with_backoff(_retrieve)
+
     async def delete_by_id(self, engram_id: str) -> None:
         """Delete a point from the collection by engram_id."""
         client = self._require_client()
