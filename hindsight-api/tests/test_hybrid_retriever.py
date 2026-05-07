@@ -13,8 +13,10 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from hindsight_api.engine.response_models import RetrievalMode
 from hindsight_api.engine.schema.models import HyperSchemaModel, SchemaModel
 from hindsight_api.engine.search.hybrid_retriever import HybridRetriever, RetrievalHit
+from hindsight_api.engine.session.mode_config import MODE_PROFILES
 
 
 def _engram_payload(engram_id: UUID, **extra: Any) -> dict[str, Any]:
@@ -255,6 +257,80 @@ class TestSchemaEnrichment:
 # ---------------------------------------------------------------------------
 # Mixed hits — Story 15 acceptance criterion 6c
 # ---------------------------------------------------------------------------
+
+
+class TestModeWeighting:
+    """Story 17 — Mode-abhängige Schema/Engram-Gewichtung."""
+
+    def test_mode_profile_drift_guard(self):
+        """Spec values pinned: regression alarm if anyone tweaks blindly."""
+        p = MODE_PROFILES[RetrievalMode.PRECISION]
+        e = MODE_PROFILES[RetrievalMode.EXPLORATION]
+        a = MODE_PROFILES[RetrievalMode.ANALOGY]
+        v = MODE_PROFILES[RetrievalMode.VALIDATION]
+        assert (p.w_schema, p.w_engram) == (1.2, 0.9)
+        assert (e.w_schema, e.w_engram) == (0.8, 1.2)
+        assert (a.w_schema, a.w_engram) == (1.1, 1.0)
+        assert (v.w_schema, v.w_engram) == (1.0, 1.0)
+
+    @pytest.mark.asyncio
+    async def test_precision_promotes_schema_above_tied_engram(self):
+        engram_id = uuid4()
+        schema_id = uuid4()
+        # Equal raw scores — Precision (1.2 vs 0.9) must put schema first.
+        raw = [
+            {"engram_id": str(engram_id), "score": 0.80, "payload": _engram_payload(engram_id)},
+            {"engram_id": str(schema_id), "score": 0.80, "payload": _schema_payload(schema_id)},
+        ]
+        retriever = HybridRetriever(qdrant=_make_qdrant(raw))
+        hits = await retriever.retrieve([0.0] * 384, "agent-1", mode=RetrievalMode.PRECISION)
+        assert [h.kind for h in hits] == ["schema", "engram"]
+        assert hits[0].score == pytest.approx(0.80 * 1.2)
+        assert hits[1].score == pytest.approx(0.80 * 0.9)
+
+    @pytest.mark.asyncio
+    async def test_exploration_promotes_engram_above_tied_schema(self):
+        engram_id = uuid4()
+        schema_id = uuid4()
+        raw = [
+            {"engram_id": str(schema_id), "score": 0.80, "payload": _schema_payload(schema_id)},
+            {"engram_id": str(engram_id), "score": 0.80, "payload": _engram_payload(engram_id)},
+        ]
+        retriever = HybridRetriever(qdrant=_make_qdrant(raw))
+        hits = await retriever.retrieve([0.0] * 384, "agent-1", mode=RetrievalMode.EXPLORATION)
+        assert [h.kind for h in hits] == ["engram", "schema"]
+        assert hits[0].score == pytest.approx(0.80 * 1.2)
+        assert hits[1].score == pytest.approx(0.80 * 0.8)
+
+    @pytest.mark.asyncio
+    async def test_validation_neutral_keeps_qdrant_order(self):
+        engram_id = uuid4()
+        schema_id = uuid4()
+        raw = [
+            {"engram_id": str(engram_id), "score": 0.91, "payload": _engram_payload(engram_id)},
+            {"engram_id": str(schema_id), "score": 0.85, "payload": _schema_payload(schema_id)},
+        ]
+        retriever = HybridRetriever(qdrant=_make_qdrant(raw))
+        hits = await retriever.retrieve([0.0] * 384, "agent-1", mode=RetrievalMode.VALIDATION)
+        # Validation has 1.0/1.0 — top-ranked engram stays first.
+        assert [h.kind for h in hits] == ["engram", "schema"]
+        assert hits[0].score == pytest.approx(0.91)
+
+    @pytest.mark.asyncio
+    async def test_re_sort_picks_winner_after_weighting(self):
+        """Schema with lower raw score can overtake engram under Precision."""
+        engram_id = uuid4()
+        schema_id = uuid4()
+        # raw engram 0.95, raw schema 0.85.
+        # Precision: engram=0.855, schema=1.02 → schema wins.
+        raw = [
+            {"engram_id": str(engram_id), "score": 0.95, "payload": _engram_payload(engram_id)},
+            {"engram_id": str(schema_id), "score": 0.85, "payload": _schema_payload(schema_id)},
+        ]
+        retriever = HybridRetriever(qdrant=_make_qdrant(raw))
+        hits = await retriever.retrieve([0.0] * 384, "agent-1", mode=RetrievalMode.PRECISION)
+        assert hits[0].kind == "schema"
+        assert hits[0].score > hits[1].score
 
 
 class TestMixedHits:

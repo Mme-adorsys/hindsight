@@ -140,6 +140,18 @@ class ModeConfig:
     scoring_weights: ScoringWeights
     """Mode-specific weights for the 6-term scoring formula."""
 
+    # ------------------------------------------------------------------
+    # Hybrid Retriever — Schema vs Engram re-weighting (Epic 25 Story 17)
+    # ------------------------------------------------------------------
+    # Multiplied onto the raw Qdrant cosine score per RetrievalHit kind,
+    # then the hit list is re-sorted by the weighted score. Defaults are
+    # bias multipliers, not probabilities — they don't have to sum to a
+    # constant. Concept §7 (Mode → cognitive strategy): Precision prefers
+    # the cortex generalisation (Schema-Allgemeinheit), Exploration
+    # prefers the buffer episodes (Engram-Spezifik).
+    w_schema: float = 1.0
+    w_engram: float = 1.0
+
     def with_overrides(self, **kwargs: object) -> "ModeConfig":
         """
         Return a new ModeConfig with the specified fields replaced.
@@ -227,6 +239,8 @@ MODE_PROFILES: dict[RetrievalMode, ModeConfig] = {
         construction_style="conservative",
         reconsolidation_level="minimal",
         scoring_weights=_WEIGHTS_PRECISION,
+        w_schema=1.2,
+        w_engram=0.9,
     ),
     RetrievalMode.EXPLORATION: ModeConfig(
         strength_pre_filter=0.0,
@@ -236,6 +250,8 @@ MODE_PROFILES: dict[RetrievalMode, ModeConfig] = {
         construction_style="creative",
         reconsolidation_level="moderate",
         scoring_weights=_WEIGHTS_EXPLORATION,
+        w_schema=0.8,
+        w_engram=1.2,
     ),
     RetrievalMode.ANALOGY: ModeConfig(
         strength_pre_filter=0.05,
@@ -245,6 +261,8 @@ MODE_PROFILES: dict[RetrievalMode, ModeConfig] = {
         construction_style="cross_domain",
         reconsolidation_level="schema_update",
         scoring_weights=_WEIGHTS_ANALOGY,
+        w_schema=1.1,
+        w_engram=1.0,
     ),
     RetrievalMode.VALIDATION: ModeConfig(
         strength_pre_filter=0.1,
@@ -254,6 +272,8 @@ MODE_PROFILES: dict[RetrievalMode, ModeConfig] = {
         construction_style="evidence_based",
         reconsolidation_level="aggressive",
         scoring_weights=_WEIGHTS_VALIDATION,
+        w_schema=1.0,
+        w_engram=1.0,
     ),
 }
 

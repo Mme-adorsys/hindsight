@@ -16,19 +16,19 @@ Beide Treffertypen kommen aus derselben Vektor-Search (Story 15) mit Cosine-Scor
 
 ## Akzeptanzkriterien
 
-- [ ] In `mode_config.py` neue Felder `w_schema: float`, `w_engram: float` pro Mode
-- [ ] Default-Werte:
-  - Precision: `w_schema=1.2`, `w_engram=0.9`
-  - Exploration: `w_schema=0.8`, `w_engram=1.2`
-  - Analogy: `w_schema=1.1`, `w_engram=1.0`
-  - Validation: `w_schema=1.0`, `w_engram=1.0`
-- [ ] Im HybridRetriever wird der finale Score multipliziert: `final_score = base_score × (w_schema if hit.kind=="schema" else w_engram)`
-- [ ] Top-K wird nach finalem Score sortiert (Re-Ranking)
-- [ ] Unit-Tests + Integration-Test
+- [x] In `mode_config.py` neue Felder `w_schema: float = 1.0`, `w_engram: float = 1.0` auf `ModeConfig` (frozen dataclass — additive, keine Breaking-Change für bestehende Konstruktoraufrufe).
+- [x] Default-Werte verbatim aus Spec:
+  - Precision: `w_schema=1.2`, `w_engram=0.9` (Schema-Allgemeinheit dominiert)
+  - Exploration: `w_schema=0.8`, `w_engram=1.2` (Engram-Spezifik dominiert)
+  - Analogy: `w_schema=1.1`, `w_engram=1.0` (leichte Schema-Neigung)
+  - Validation: `w_schema=1.0`, `w_engram=1.0` (neutral)
+- [x] `HybridRetriever.retrieve(..., mode=...)` multipliziert nach Enrichment den Score pro Hit-Kind und sortiert in-place absteigend (Stable-Sort — bei Ties bleibt Qdrant-Reihenfolge).
+- [x] `mode=None`-Aufrufe verhalten sich identisch zur Story-15-Baseline (kein Re-Sort).
+- [x] 5 neue Unit-Tests (drift-guard, Precision-Schema-Promotion, Exploration-Engram-Promotion, Validation-neutral, Re-Sort-Overtake); Integration-Test verschoben auf Block E (Story 19/20 E2E).
 
 ## Tasks
 
-- [ ] **T1 — Mode-Config-Erweiterung:** In `mode_config.py` neue Felder. Pro Mode-Default-Werte oben.
-- [ ] **T2 — Re-Ranking im HybridRetriever:** In `hybrid_retriever.py::retrieve()` nach Qdrant-Search → Score-Modifikation pro Hit, dann Re-Sort.
-- [ ] **T3 — Konfigurierbarkeit:** Gewichte überschreibbar pro Bank (analog zu anderen Mode-Settings).
-- [ ] **T4 — Unit-Tests:** (a) Im Precision-Mode wird ein gleichscored Schema vor einem gleichscored Engram zurückgegeben. (b) Im Exploration-Mode umgekehrt. (c) Re-Sort funktioniert korrekt nach Score-Modifikation.
+- [x] **T1 — Mode-Config-Erweiterung:** Felder `w_schema`/`w_engram` mit Default 1.0 hinzugefügt; per-Mode-Werte verbatim aus Spec; existing `with_overrides()` deckt Per-Bank-Overrides ab (additive Felder werden vom dataclasses.replace automatisch unterstützt).
+- [x] **T2 — Re-Ranking im HybridRetriever:** `retrieve()` nimmt optional `mode: RetrievalMode | None`; static `_apply_mode_weighting` macht `score *= w_kind` und ein stable `list.sort(reverse=True)`. Unbekannte Modes fallen still auf 1.0/1.0 zurück und sortieren nur — keine harten Fehler.
+- [x] **T3 — Konfigurierbarkeit:** Per-Bank-Overrides laufen über die bestehende `ModeConfig.with_overrides`-Schiene; SessionLayer reicht den Mode an die Retrieve-Schicht weiter, kein neuer Pfad nötig. Nach Block-E-Verdrahtung kann eine Bank `MODE_PROFILES[Mode].with_overrides(w_schema=...)` setzen.
+- [x] **T4 — Unit-Tests:** 5 Tests in `tests/test_hybrid_retriever.py::TestModeWeighting` — drift-guard pinnt alle 4 Spec-Werte; Precision/Exploration zeigen Promotion bei gleichem Raw-Score; Validation hält Qdrant-Ordnung; Re-Sort beweist Overtake (Schema 0.85·1.2=1.02 > Engram 0.95·0.9=0.855).

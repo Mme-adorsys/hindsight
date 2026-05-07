@@ -33,7 +33,9 @@ from pydantic import BaseModel, Field
 
 from ..db_utils import acquire_with_retry
 from ..qdrant_client import QdrantEngineClient
+from ..response_models import RetrievalMode
 from ..schema.schema_repository import get_schema as get_schema_node
+from ..session.mode_config import MODE_PROFILES
 from ..utils import fq_table
 
 logger = logging.getLogger(__name__)
@@ -100,6 +102,7 @@ class HybridRetriever:
         *,
         k: int = 10,
         tags: list[str] | None = None,
+        mode: RetrievalMode | None = None,
     ) -> list[RetrievalHit]:
         """Run one vector search across both kinds, then enrich per kind.
 
@@ -109,7 +112,11 @@ class HybridRetriever:
             k: top-K hits to return.
             tags: optional Qdrant payload filter — applied to engram hits and,
                 if a schema centroid carries the same tag rollup, also to
-                schemas. Story 17 will rework this with mode awareness.
+                schemas.
+            mode: optional ``RetrievalMode``. When set, the raw cosine score
+                is multiplied by ``w_schema``/``w_engram`` from the mode's
+                profile (Story 17), and the hit list is re-sorted by the
+                resulting weighted score before being returned.
         """
         must_filters: list[dict[str, Any]] = [{"key": "bank_id", "match": {"value": bank_id}}]
         if tags:
@@ -154,7 +161,26 @@ class HybridRetriever:
 
         await self._enrich_engrams(hits, engram_ids, bank_id)
         await self._enrich_schemas(hits, schema_payloads)
+
+        if mode is not None:
+            self._apply_mode_weighting(hits, mode)
         return hits
+
+    @staticmethod
+    def _apply_mode_weighting(hits: list[RetrievalHit], mode: RetrievalMode) -> None:
+        """Multiply each hit's score by the mode's per-kind bias and re-sort.
+
+        In-place to keep callers' references valid. Stable sort means ties
+        preserve the Qdrant order — useful for tests and reproducibility.
+        Unknown modes silently fall back to (1.0, 1.0) and only re-sort.
+        """
+        profile = MODE_PROFILES.get(mode)
+        w_schema = profile.w_schema if profile is not None else 1.0
+        w_engram = profile.w_engram if profile is not None else 1.0
+        for hit in hits:
+            mult = w_schema if hit.kind == "schema" else w_engram
+            hit.score = hit.score * mult
+        hits.sort(key=lambda h: h.score, reverse=True)
 
     # ------------------------------------------------------------------ internals
 
