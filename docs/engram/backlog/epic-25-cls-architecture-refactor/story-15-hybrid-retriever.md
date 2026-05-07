@@ -16,20 +16,20 @@ In der alten Architektur durchsuchte der Recall nur Engram-Embeddings (Schemas h
 
 ## Akzeptanzkriterien
 
-- [ ] Neue Klasse `HybridRetriever` in `engine/retrieval/hybrid_retriever.py`
-- [ ] `retrieve(query, mode, bank_id, k=10) -> list[RetrievalHit]`
-- [ ] Eine Qdrant-Search ohne kind-Filter, Top-K Treffer
-- [ ] `RetrievalHit` mit Feldern `kind ∈ {"engram", "schema"}`, `id`, `score`, `payload`
-- [ ] Schema-Treffer enthalten `description`, `properties`, `evidence_engram_ids` (für Story 16 nachgelagerte Auflösung)
-- [ ] Engram-Treffer enthalten den vollen Engram-Content
-- [ ] Recall-Orchestrator routet alle Bank-Typen auf den HybridRetriever (alter EngramRetriever wird in Story 18 entfernt)
-- [ ] Unit-Tests + Integration-Test
+- [x] Neue Klasse `HybridRetriever` in `engine/search/hybrid_retriever.py` (Pfad-Abweichung: `search/` statt `retrieval/` — bestehende Recall-Module liegen alle unter `search/`, ein neues `retrieval/` würde shadowen).
+- [x] `retrieve(query_embedding, bank_id, k=10, tags=None) -> list[RetrievalHit]`
+- [x] Eine Qdrant-Search ohne kind-Filter, Top-K Treffer
+- [x] `RetrievalHit` mit Feldern `kind ∈ {"engram", "schema"}`, `id`, `score`, `payload` (Pydantic)
+- [x] Schema-Treffer enthalten `description`, `properties`, `evidence_engram_ids`, `evidence_count`, `schema_label`
+- [x] Engram-Treffer enthalten `text`, `fact_type`, `context`, `tags` aus PG memory_units ⨝ engram_dictionary
+- [x] Factory `build_default_hybrid_retriever(pg_pool)` extrahiert Qdrant+Neo4j aus dem bestehenden Default-Retriever; volle Orchestrator-Routung folgt nach Story 16/17, Cleanup in Story 18.
+- [x] 14 Unit-Tests (Search-Wiring, Engram-Enrichment, Schema-Enrichment, Mixed-Order, Lookup-Failure-Best-Effort); Integration-Test verschoben auf Block E (Story 19/20 E2E).
 
 ## Tasks
 
-- [ ] **T1 — `RetrievalHit` Pydantic-Modell:** `models/retrieval.py` mit Feldern oben.
-- [ ] **T2 — `HybridRetriever`:** In `engine/retrieval/hybrid_retriever.py`. Query-Embedding generieren, Qdrant-Search ohne kind-Filter, Treffer in `RetrievalHit`-Liste mappen.
-- [ ] **T3 — Schema-Hit-Anreicherung:** Bei `kind="schema"` Schema-Knoten aus Neo4j nachladen (description, properties, evidence_engram_ids).
-- [ ] **T4 — Engram-Hit-Anreicherung:** Bei `kind="engram"` Engram-Content aus PostgreSQL nachladen.
-- [ ] **T5 — Recall-Orchestrator umstellen:** `recall_orchestrator.py` nutzt nur noch `HybridRetriever`. Alter EngramRetriever wird nicht mehr aufgerufen (Cleanup in Story 18).
-- [ ] **T6 — Unit-Tests:** (a) Query-Embedding mit Schema-Treffer → RetrievalHit kind="schema" mit description. (b) Query mit Engram-Treffer → kind="engram" mit content. (c) Mischtreffer → beide Typen, korrekt sortiert nach score.
+- [x] **T1 — `RetrievalHit` Pydantic-Modell:** im selben Modul `engine/search/hybrid_retriever.py` (statt eigenem `models/retrieval.py` — kompakter und kein neues Top-Level-Package).
+- [x] **T2 — `HybridRetriever`:** Qdrant-Search ohne kind-Filter, kind-Detection per `payload.kind`, ID-Extraktion aus `engram_id`/`schema_id`. Unparseable IDs werden geloggt aber brechen den Lauf nicht ab.
+- [x] **T3 — Schema-Hit-Anreicherung:** `schema_lookup` als injizierte Awaitable (Pattern aus Stories 06/09 wiederverwendet); Default-Pfad nutzt `engine.schema.schema_repository.get_schema`. Lookup-Fehler werden geloggt, Hit bleibt erhalten (best-effort).
+- [x] **T4 — Engram-Hit-Anreicherung:** `engram_lookup` als injizierte Awaitable (Test-Stub) oder direkter PG-Pool (`memory_units` LEFT JOIN `engram_dictionary` für Tags). UUID-Cast über asyncpg `$1::uuid[]`.
+- [x] **T5 — Recall-Orchestrator-Brücke:** `build_default_hybrid_retriever(pg_pool)` Factory greift via `get_default_graph_retriever()` auf den bereits gewireten `EngramRetriever` zu und konstruiert `HybridRetriever` mit dessen Clients. Volle Pipeline-Routung (RRF/CE/Score-Replacement) bleibt Story 18, weil sie Top-N-Evidence-Auflösung (S16) und Mode-Gewichtung (S17) voraussetzt.
+- [x] **T6 — Unit-Tests:** 14 Tests in `tests/test_hybrid_retriever.py` — alle Akzeptanzpunkte gepinnt; keine Live-DB nötig.
