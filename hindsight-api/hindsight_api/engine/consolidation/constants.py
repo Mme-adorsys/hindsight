@@ -66,3 +66,13 @@ R5_EVIDENCE_THRESHOLD: int = 3
 # concept §13 frequency table: C3 runs every 7 days. Used by R5 to convert
 # cycles-without-reinforcement into a wallclock window.
 C3_CYCLE_PERIOD_DAYS: int = 7
+
+# Story 16 — Recall Top-N Evidence-Auflösung. When a Schema hit comes back
+# from the HybridRetriever, this many evidence_engram_ids (preserved in the
+# strength-descending order C2 baked in via `select_top_n_evidence`) get
+# resolved to full engram rows for the Reflect/Constructive payload.
+# Lower than SCHEMA_TOP_N_EVIDENCE=5 on purpose — at write time we record 5
+# pointers as audit trail; at recall time 3 are usually enough for the LLM
+# to ground its answer, and saving two rows per schema hit adds up across
+# the per-recall budget. Drift guard in tests/test_evidence_resolver.py.
+RECALL_DEFAULT_EVIDENCE_N: int = 3
