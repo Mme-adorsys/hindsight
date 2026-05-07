@@ -16,22 +16,22 @@ R4 ("Reinforcement/Growth") läuft sowohl batch in C2 (für Cluster-Treffer) als
 
 ## Akzeptanzkriterien
 
-- [ ] Neue Funktion `reinforce_schema(schema, cluster) -> Schema`
-- [ ] Schritte:
-  1. `evidence_count += len(cluster.engram_ids)`
-  2. Top-N-Liste neu berechnen: alte Top-N + neue Cluster-Engrams → wieder Top-N nach Composite-Score
-  3. Neuer Centroid: laufender Mittelwert über alte (gewichtet mit altem evidence_count) + neue (gewichtet mit cluster_size)
-  4. Properties verfeinern: `aggregate_properties(top_n_engrams_post_update)` (Refresh anhand der aktuellen Top-N)
-  5. `last_reinforced_at = now`
-  6. `cycles_survived++` (optional — wenn der Schema-Status getrackt werden soll)
-- [ ] Persistierung: Neo4j-Update + Qdrant-Centroid-Upsert (atomar)
-- [ ] Unit-Tests + Integration-Test
+- [x] `reinforce_schema(matched, bank_id, *, neo4j, qdrant, pool) -> SchemaModel` (MatchedForReinforcement aus Story 06 statt Argumenten-Salat)
+- [x] Schritte 1-5+6: evidence_count += cluster_size, Top-N refresh, weighted_centroid, properties re-aggregation, last_reinforced_at=now, cycles_survived+=1
+- [x] Persistierung: Neo4j `update_schema` first, dann Qdrant centroid; Qdrant-Fail wird geloggt aber NICHT rolled back (idempotent — nächster R4-Match korrigiert)
+- [x] 11 neue Unit-Tests + Integration-Test verschoben auf Block E (Story 19/20 E2E)
 
 ## Tasks
 
-- [ ] **T1 — `reinforce_schema()`:** In `engine/consolidation/c2_schema_writer.py`.
-- [ ] **T2 — Centroid-Mittelwert:** Helper `weighted_centroid(old_centroid, old_count, new_centroid, new_count) -> Vector` (laufender Mittelwert).
-- [ ] **T3 — Property-Refresh:** Nach Top-N-Update werden die Properties neu aggregiert — über den **aktuellen** Top-N-Engram-Satz, nicht historisch.
-- [ ] **T4 — Atomarität:** Wie Story 09 — Try/Except mit Rollback-Pfad bei Qdrant-Failure.
-- [ ] **T5 — Pipeline-Integration:** In `c2_pattern_recognition.py` Reinforcement-Pfad ruft `reinforce_schema()`.
-- [ ] **T6 — Unit-Tests:** (a) Bestehendes Schema mit 8 Evidence + Cluster mit 3 → evidence_count=11, Top-5 enthält die 5 stärksten aus 11. (b) Centroid bewegt sich in Richtung neuer Cluster, gewichtet. (c) Property-Refresh greift bei dominantem-Wert-Wechsel.
+- [x] **T1 — `reinforce_schema()`:** In `engine/consolidation/c2_schema_writer.py`. Signatur nimmt komplettes `MatchedForReinforcement` (cluster + schema + cosine).
+- [x] **T2 — `weighted_centroid(old, old_w, new, new_w)`:** L2-renormalisierter Mittelwert. Validiert non-negative Weights, total > 0, equal Dimensionen, kein Zero-Vector.
+- [x] **T3 — Property-Refresh:** Neuer Helper `_fetch_member_tags(pool, ids)` lädt Tags der neuen Top-N aus PG; `aggregate_properties` läuft drüber. **Aktueller** Top-N-Snapshot, kein historisches Merge.
+- [x] **T4 — Atomarität (anders als Story 09):** Update-Saga statt Create-Saga. Neo4j-Update ist idempotent — Qdrant-Centroid-Refresh-Failure wird nur geloggt, kein Archive (das Schema bleibt valid, Centroid wird beim nächsten R4-Match aufholen). Schema-Death (Story 14) ist nicht unsere Sache hier.
+- [x] **T5 — Pipeline-Integration:** `reinforce_matched(reinforcement, bank_id, *, neo4j, qdrant, pool)` als sequenzieller best-effort Wrapper.
+- [x] **T6 — Unit-Tests:** 11 neue Tests in `tests/test_c2_schema_writer.py`: 5 für `weighted_centroid` (Unit-Blend, gewichtetes Dominanz, Negative-Weight-Error, Dim-Mismatch-Error, Zero-Total-Error), 4 für `reinforce_schema` (Happy-Path inkl. Property-Refresh-Wechsel coffee→tea, Qdrant-Lookup-Failure → Bootstrap, Qdrant-Centroid-Upsert-Failure → log-only, Empty-Cluster → no-op), 2 für Batch-Wrapper (best-effort partial failure, empty batch).
+
+## Implementation Notes
+
+- **Saga-Asymmetrie zu Story 09:** Story 09 macht Neo4j-First + Qdrant-Cleanup-on-Fail (archive). Story 10 macht Neo4j-First + Qdrant-Log-on-Fail (kein rollback). Warum: bei Update ist die Neo4j-Seite idempotent valid (Schema existiert, hat alte oder neue Properties — beides konsistent); bei Create wäre ein Halbzustand (Neo4j-Knoten ohne Qdrant-Centroid) ein Phantom für HybridRetriever. Reinforcement-Centroid-Drift heilt sich beim nächsten R4-Match selbst.
+- **Centroid-Lookup:** SchemaModel trägt nur `centroid_qdrant_id`, nicht den Vektor. `_fetch_schema_centroid` macht einen Qdrant-`get_by_id`-Roundtrip. Bei Lookup-Failure (Drift, Outage) wird mit dem neuen Cluster-Centroid bootstrappt — verhindert Crash, akzeptiert kleinen Quality-Loss.
+- **Property-Refresh-Granularität:** Nur die NEUEN Top-N werden re-aggregiert. Historische Engrams die aus der Top-N gefallen sind verlieren ihren Property-Beitrag — gewollt, weil die Top-N die "Kanonische Repräsentation" sind (concept §4.2 Indexing Theory).
