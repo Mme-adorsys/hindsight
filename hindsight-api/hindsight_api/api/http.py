@@ -16,10 +16,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query
 
 from hindsight_api.config import get_config
 from hindsight_api.engine.consolidation.consolidation1 import Consolidation1Service
-from hindsight_api.engine.consolidation.engram_schema_processor import EngramSchemaProcessor
-from hindsight_api.engine.consolidation.ncr_decay import DecayProcessor
 from hindsight_api.engine.consolidation.ncr_orchestrator import NCROrchestrator, NCRScheduler
-from hindsight_api.engine.consolidation.ncr_strengthen import StrengthenProcessor
 from hindsight_api.engine.engram_storage import EngramStorageService
 from hindsight_api.engine.neo4j_client import Neo4jEngineClient
 from hindsight_api.engine.qdrant_client import QdrantEngineClient
@@ -1341,37 +1338,27 @@ def create_app(
             )
             logging.info("EngramStorageService initialized")
 
-            # Wire NCR Scheduler (Epic 12, Story 05, T4)
+            # Wire NCR Scheduler — Epic 25 Story 18 cleaned up the legacy
+            # Decay/Strengthen/Schema processor classes; the orchestrator
+            # now composes the function-pipelines in c2_pattern_recognition,
+            # c2_schema_writer, c2_decay, and c3_schema_restructure directly.
+            # description_llm_caller stays None for now — schema_description
+            # falls back to the deterministic template path until the LLM
+            # adapter for the new prompt → text contract lands.
             if _config.ncr_enabled:
                 _consolidation = Consolidation1Service(pool=memory._pool, storage_service=memory.engram_storage)
-                _decay = DecayProcessor(pool=memory._pool, storage_service=memory.engram_storage, qdrant=qdrant)
-                _strengthen = StrengthenProcessor(pool=memory._pool, storage_service=memory.engram_storage)
-                _schema_llm = memory._ctx.llm_registry.get_llm("retain", "schema_abstraction")
-
-                async def _schema_embed_fn(text: str) -> list[float]:
-                    return memory.embeddings.encode([text])[0]
-
-                _schema = EngramSchemaProcessor(
-                    neo4j_client=neo4j,
-                    qdrant_client=qdrant,
-                    pool=memory._pool,
-                    llm=_schema_llm,
-                    embed_fn=_schema_embed_fn,
-                )
                 _promotion_llm = memory._ctx.llm_registry.get_llm("retain", "conflict_resolution")
                 _orchestrator = NCROrchestrator(
                     pool=memory._pool,
                     consolidation=_consolidation,
-                    decay=_decay,
-                    strengthen=_strengthen,
-                    schema=_schema,
+                    qdrant_client=qdrant,
+                    neo4j_client=neo4j,
+                    description_llm_caller=None,
                     # Phase 4: Shared Bank Promotion (B3/B5 + B2 Conflict Resolution)
                     # shared_bank_id=None → Phase 4 skipped (default when HINDSIGHT_API_NCR_SHARED_BANK_ID not set)
                     shared_bank_id=_config.ncr_shared_bank_id,
                     agent_bank_ids=None,  # Cross-agent convergence check skipped until dynamic lookup is wired
-                    qdrant_client=qdrant,
-                    neo4j_client=neo4j,
-                    llm=_promotion_llm,
+                    promotion_llm=_promotion_llm,
                 )
                 app.state.ncr_orchestrator = _orchestrator
                 memory._ncr_orchestrator = _orchestrator  # for C1 session-end trigger
@@ -2821,8 +2808,8 @@ def _register_routes(app: FastAPI):
             "Runs NCR phases for the given bank. Use the `phase` query parameter to "
             "run individual phases:\n\n"
             "- **c1** — Working Memory → Buffer (no cooldown)\n"
-            "- **c2** — Decay + Strengthen, Buffer → Neocortex (1h cooldown)\n"
-            "- **c3** — Schema Compression in Neocortex (6h cooldown)\n"
+            "- **c2** — Pattern Recognition (HDBSCAN → schema reinforce/create) + Buffer Decay Re-Eval (1h cooldown)\n"
+            "- **c3** — Schema Restructure (R3 hyper-schema + R5 schema death) (6h cooldown)\n"
             "- **shared** — Shared Bank Promotion (1h cooldown)\n"
             "- *omit* — all phases (1h cooldown)\n\n"
             "Returns `503` if NCR is not enabled, `429` if triggered too recently, "

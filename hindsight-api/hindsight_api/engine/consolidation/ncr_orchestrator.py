@@ -1,22 +1,28 @@
-"""
-NCR Orchestrator — Nightly Consolidation Run.
+"""NCR Orchestrator — Nightly Consolidation Run (Epic 25 3-phase shape).
 
 Three independent consolidation phases with separate triggers and schedules:
 
-  C1 (Working → Buffer)     — runs at session end, no cooldown
-  C2 (Decay + Strengthen)   — runs periodically (default 24h), 1h cooldown
-  C3 (Schema Compression)   — runs periodically (default 168h/7d), 6h cooldown
+  C1 (Working → Buffer)            — runs at session end, no cooldown
+  C2 (Pattern Recognition + Decay) — runs periodically (default 24h), 1h cooldown
+  C3 (Schema Restructure R3 + R5)  — runs periodically (default 168h/7d), 6h cooldown
 
 Each phase can be triggered independently via the ``phases`` parameter.
-When ``phases`` is None, all phases run (backward compatibility).
+When ``phases`` is None, all phases run.
 
 Biological mapping:
   C1 = Sharp-Wave Ripples during quiet wakefulness (post-session replay)
-  C2 = SWS slow-wave decay + strengthening (daily memory triage)
-  C3 = REM schema compression (weekly structural reorganisation)
-  Ref: concept.md ch. 12 — Nightly Consolidation Run (NCR)
+  C2 = SWS slow-wave decay + cluster→schema pattern recognition (R1–R4)
+  C3 = REM-like schema restructuring (R3 hyper-schema + R5 schema death)
+  Ref: concept.md §12 (NCR) + §13 (R1–R5)
 
-Epic 12, Story 05 (original); refactored for phase independence.
+Epic 25 Story 18 retired the legacy 5-phase shape (C1, C2a Decay,
+C2b Strengthen, C3 SchemaCompression, Shared) along with its
+``DecayProcessor`` / ``StrengthenProcessor`` / ``SchemaProcessor`` classes.
+Engrams no longer live in a ``neocortex`` layer (Story 02), so the buffer→
+neocortex promotion phase no longer exists. Schema-emergence is now a
+function-composition pipeline in :mod:`c2_pattern_recognition` /
+:mod:`c2_schema_writer` / :mod:`c2_decay`; schema-restructuring is in
+:mod:`c3_schema_restructure`.
 """
 
 from __future__ import annotations
@@ -26,22 +32,39 @@ import json
 import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import asyncpg
 
-from hindsight_api.engine import engram_dictionary as dict_repo
+from hindsight_api.engine.consolidation.c2_decay import DecayReport, decay_reevaluate_buffer
+from hindsight_api.engine.consolidation.c2_pattern_recognition import (
+    attach_descriptions,
+    detect_clusters,
+    filter_matured,
+    mature_clusters,
+    partition_for_consolidation,
+    prepare_creation_payloads,
+)
+from hindsight_api.engine.consolidation.c2_schema_writer import (
+    persist_creation_payloads,
+    reinforce_matched,
+)
+from hindsight_api.engine.consolidation.c3_schema_restructure import (
+    R3Report,
+    R5Report,
+    archive_dead_schemas,
+    run_r3_hyper_schema,
+)
 from hindsight_api.engine.consolidation.consolidation1 import Consolidation1Service, ConsolidationResult
 from hindsight_api.engine.consolidation.multi_bank_promoter import PromotionResult, promote_batch
-from hindsight_api.engine.consolidation.ncr_decay import DecayProcessor, DecayResult
-from hindsight_api.engine.consolidation.ncr_strengthen import StrengthenProcessor, StrengthenResult
-from hindsight_api.engine.consolidation.schema_processor import SchemaProcessor, SchemaResult
 from hindsight_api.engine.db_utils import acquire_with_retry
+from hindsight_api.engine.schema.schema_repository import get_schema as get_schema_node
 from hindsight_api.engine.tracer import PipelineTracer
 from hindsight_api.engine.utils import fq_table
 
 if TYPE_CHECKING:
-    from hindsight_api.engine.engram_storage import EngramStorageInterface
+    from hindsight_api.engine.consolidation.schema_description import DescriptionLLMCaller
+    from hindsight_api.engine.neo4j_client import Neo4jEngineClient
     from hindsight_api.engine.qdrant_client import QdrantEngineClient
 
 logger = logging.getLogger(__name__)
@@ -62,7 +85,33 @@ def _ncr_lock_id(bank_id: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Report
+# C2 phase report — bundles the pipeline + decay sub-reports
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class C2Report:
+    """Composite report for a C2 run (R1 detection → R4 reinforce/create + decay)."""
+
+    bank_id: str
+    candidates_detected: int = 0
+    matured: int = 0
+    reinforced: int = 0
+    created: int = 0
+    decay: DecayReport | None = None
+
+
+@dataclass
+class C3Report:
+    """Composite report for a C3 run (R3 hyper-schema + R5 schema death)."""
+
+    bank_id: str
+    r3: R3Report | None = None
+    r5: R5Report | None = None
+
+
+# ---------------------------------------------------------------------------
+# NCR Report
 # ---------------------------------------------------------------------------
 
 
@@ -76,19 +125,10 @@ class NCRReport:
         completed_at: UTC timestamp when the run finished (None if still running).
         phases_requested: Which phases were requested (None = all).
         consolidation: Result from C1 (Working → Buffer).
-        phase1:       Result from C2/Decay.
-        phase2:       Result from C2/Strengthen (Buffer → Neocortex).
-        phase3:       Result from C3/Schema Compression.
+        c2:           Composite C2 report (pattern-recognition + decay).
+        c3:           Composite C3 report (R3 hyper-schema + R5 schema death).
+        promotion:    Optional shared-bank promotion result (Epic 14 B5).
         errors:       Phase-level error messages (phase failures, lock conflicts).
-        reactivated_count: Engrams brought back from archive to an active
-            layer during this run. Epic 24 Story 06 surfaces the field;
-            Story 05 is the one that actually fills it.
-        downgraded_count: Buffer Engrams demoted back to Working Memory
-            during this run. Same story: surfaced in 06, populated in 05.
-        composite_distribution: Histogram of composite scores observed during
-            the Decay phase. Six buckets (``<0.1``, ``0.1-0.3``, ``0.3-0.5``,
-            ``0.5-0.7``, ``0.7-1.0``, ``>1.0``). Copied from
-            ``DecayResult.composite_distribution`` after phase1 runs.
     """
 
     bank_id: str
@@ -96,12 +136,13 @@ class NCRReport:
     completed_at: datetime | None = None
     phases_requested: list[str] | None = None
     consolidation: ConsolidationResult | None = None
-    phase1: DecayResult | None = None
-    phase2: StrengthenResult | None = None
-    phase3: SchemaResult | None = None
-    promotion: PromotionResult | None = None  # Phase 4: Shared Bank Promotion (Epic 14 B5)
+    c2: C2Report | None = None
+    c3: C3Report | None = None
+    promotion: PromotionResult | None = None
     errors: list[str] = field(default_factory=list)
-    # Epic 24 Story 06 additions — Story 05 wires up reactivate/downgrade.
+    # Story 18 dropped buffer→neocortex promotion. The reactivate/downgrade
+    # counters from Epic 24 stay surfaced here for back-compat with the
+    # NCR-runs dashboard but are now sourced from the decay sub-report.
     reactivated_count: int = 0
     downgraded_count: int = 0
     composite_distribution: dict[str, int] = field(default_factory=dict)
@@ -114,52 +155,155 @@ class NCRReport:
 
 
 # ---------------------------------------------------------------------------
+# C2 + C3 phase runners — pure async functions, no class state
+# ---------------------------------------------------------------------------
+
+
+async def run_c2_phase(
+    bank_id: str,
+    *,
+    pool: asyncpg.Pool,
+    qdrant: "QdrantEngineClient",
+    neo4j: "Neo4jEngineClient",
+    llm_caller: "DescriptionLLMCaller | None" = None,
+) -> C2Report:
+    """End-to-end C2: R1 detect → R2 mature → R4 reinforce/create + decay re-eval.
+
+    Best-effort throughout — sub-step failures are logged via the underlying
+    helpers and surface as zero counts in the report, never as raised
+    exceptions. Decay re-eval runs unconditionally even if pattern
+    recognition produced nothing — buffer engrams should still be re-scored.
+    """
+    report = C2Report(bank_id=bank_id)
+
+    # --- R1: HDBSCAN cluster detection ---
+    try:
+        candidates = await detect_clusters(bank_id, pool=pool, qdrant=qdrant)
+        report.candidates_detected = len(candidates)
+    except Exception as exc:
+        logger.warning("[NCR/C2] detect_clusters failed bank=%s: %s", bank_id, exc)
+        candidates = []
+
+    # --- R2: Maturation — fingerprint store cycles ≥ 2 ---
+    if candidates:
+        try:
+            matured_all = await mature_clusters(candidates, pool=pool, bank_id=bank_id)
+            matured = filter_matured(matured_all)
+            report.matured = len(matured)
+        except Exception as exc:
+            logger.warning("[NCR/C2] mature_clusters failed bank=%s: %s", bank_id, exc)
+            matured = []
+    else:
+        matured = []
+
+    # --- Schema lookup is injected as an awaitable so we keep partition
+    # decoupled from the Neo4j client (Stories 06/09 pattern). ---
+    async def _schema_lookup(schema_id, label="Schema"):
+        return await get_schema_node(neo4j, schema_id, label=label)
+
+    # --- R4 split: reinforce existing schemas, create new ones for the rest ---
+    if matured:
+        try:
+            plan = await partition_for_consolidation(
+                matured,
+                bank_id=bank_id,
+                qdrant=qdrant,
+                schema_lookup=_schema_lookup,
+            )
+        except Exception as exc:
+            logger.warning("[NCR/C2] partition_for_consolidation failed bank=%s: %s", bank_id, exc)
+            plan = None
+
+        if plan is not None:
+            if plan.reinforcement:
+                try:
+                    reinforced = await reinforce_matched(
+                        plan.reinforcement, bank_id=bank_id, neo4j=neo4j, qdrant=qdrant, pool=pool
+                    )
+                    report.reinforced = len(reinforced)
+                except Exception as exc:
+                    logger.warning("[NCR/C2] reinforce_matched failed bank=%s: %s", bank_id, exc)
+
+            if plan.creation:
+                try:
+                    payloads = prepare_creation_payloads(plan.creation)
+                    payloads = await attach_descriptions(payloads, llm_caller=llm_caller)
+                    created = await persist_creation_payloads(
+                        payloads, bank_id=bank_id, neo4j=neo4j, qdrant=qdrant, pool=pool
+                    )
+                    report.created = len(created)
+                except Exception as exc:
+                    logger.warning("[NCR/C2] schema-creation pipeline failed bank=%s: %s", bank_id, exc)
+
+    # --- Buffer-engram decay re-evaluation (always runs) ---
+    try:
+        report.decay = await decay_reevaluate_buffer(bank_id, pool=pool)
+    except Exception as exc:
+        logger.warning("[NCR/C2] decay_reevaluate_buffer failed bank=%s: %s", bank_id, exc)
+
+    logger.info(
+        "[NCR/C2] bank=%s candidates=%d matured=%d reinforced=%d created=%d decay=%s",
+        bank_id,
+        report.candidates_detected,
+        report.matured,
+        report.reinforced,
+        report.created,
+        f"archived={report.decay.archived}" if report.decay else "skipped",
+    )
+    return report
+
+
+async def run_c3_phase(
+    bank_id: str,
+    *,
+    qdrant: "QdrantEngineClient",
+    neo4j: "Neo4jEngineClient",
+) -> C3Report:
+    """End-to-end C3: R3 hyper-schema bildung + R5 schema death.
+
+    Sub-step failures are logged but don't abort each other — R5 still runs
+    if R3 raises and vice versa.
+    """
+    report = C3Report(bank_id=bank_id)
+    try:
+        report.r3 = await run_r3_hyper_schema(bank_id, neo4j=neo4j, qdrant=qdrant)
+    except Exception as exc:
+        logger.warning("[NCR/C3] run_r3_hyper_schema failed bank=%s: %s", bank_id, exc)
+    try:
+        report.r5 = await archive_dead_schemas(bank_id, neo4j=neo4j)
+    except Exception as exc:
+        logger.warning("[NCR/C3] archive_dead_schemas failed bank=%s: %s", bank_id, exc)
+    return report
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
 
 
 class NCROrchestrator:
-    """
-    Orchestrates NCR phases for a single bank.
-
-    Phases can be run independently or together:
-        C1: Working Memory → Buffer (Consolidation 1)
-        C2: Decay (Phase 1) + Strengthen (Phase 2, Buffer → Neocortex)
-        C3: Schema Compression (Phase 3)
-        Shared: Shared Bank Promotion (Phase 4, optional)
-
-    Each phase runs inside its own try/except so a failure in one phase does
-    not prevent subsequent phases from running.
-
-    Advisory locking:
-        A PostgreSQL advisory lock prevents parallel NCR runs on the same bank.
-        If the lock cannot be acquired (another run is active), the method
-        returns immediately with an error in the report.
-    """
+    """Runs C1/C2/C3 (+ optional shared promotion) for one bank with advisory locking."""
 
     def __init__(
         self,
         pool: asyncpg.Pool,
         consolidation: Consolidation1Service,
-        decay: DecayProcessor,
-        strengthen: StrengthenProcessor,
-        schema: SchemaProcessor,
+        qdrant_client: "QdrantEngineClient",
+        neo4j_client: "Neo4jEngineClient",
+        *,
+        description_llm_caller: "DescriptionLLMCaller | None" = None,
         shared_bank_id: str | None = None,
         agent_bank_ids: list[str] | None = None,
-        qdrant_client=None,
-        neo4j_client=None,
-        llm=None,
+        promotion_llm=None,
     ) -> None:
         self._pool = pool
         self._consolidation = consolidation
-        self._decay = decay
-        self._strengthen = strengthen
-        self._schema = schema
-        self._shared_bank_id = shared_bank_id
-        self._agent_bank_ids = agent_bank_ids or []
         self._qdrant_client = qdrant_client
         self._neo4j_client = neo4j_client
-        self._llm = llm
+        self._description_llm_caller = description_llm_caller
+        self._shared_bank_id = shared_bank_id
+        self._agent_bank_ids = agent_bank_ids or []
+        self._promotion_llm = promotion_llm
 
     async def run(
         self,
@@ -167,18 +311,12 @@ class NCROrchestrator:
         trigger: Literal["manual", "scheduled", "session_end"] = "manual",
         phases: set[str] | None = None,
     ) -> NCRReport:
-        """
-        Run selected NCR phases for a bank.
+        """Run selected phases for ``bank_id``. ``phases=None`` means all."""
+        if phases is not None:
+            unknown = phases - VALID_PHASES
+            if unknown:
+                raise ValueError(f"Unknown phases: {sorted(unknown)}; valid={sorted(VALID_PHASES)}")
 
-        Args:
-            bank_id: The memory bank to process.
-            trigger: What initiated this run (manual/scheduled/session_end).
-            phases: Which phases to run. None = all phases.
-                    Valid values: {"c1", "c2", "c3", "shared"}
-
-        Returns:
-            NCRReport with results from requested phases.
-        """
         report = NCRReport(
             bank_id=bank_id,
             started_at=datetime.now(timezone.utc),
@@ -227,29 +365,156 @@ class NCROrchestrator:
 
         return report
 
+    async def _run_phases(
+        self,
+        bank_id: str,
+        report: NCRReport,
+        phases: set[str] | None = None,
+        tracer: PipelineTracer | None = None,
+    ) -> None:
+        """Run requested phases. None = all phases."""
+        _tracer = tracer if tracer is not None else PipelineTracer(pipeline="ncr", bank_id=bank_id, enabled=False)
+        run_all = phases is None
+        _phases = phases or set()
+
+        # ── C1: Working Memory → Buffer ────────────────────────────
+        if run_all or "c1" in _phases:
+            try:
+                with _tracer.step("c1_consolidation") as _s:
+                    report.consolidation = await self._consolidation.run(bank_id)
+                    _s.set_output(asdict(report.consolidation))
+                    _s.set_rationale(
+                        f"promoted {report.consolidation.consolidated} engrams "
+                        f"Working → Buffer (recall-driven + saliency boost)"
+                    )
+                    logger.info(
+                        "[NCR] C1 done: promoted=%d skipped=%d archived=%d",
+                        report.consolidation.consolidated,
+                        report.consolidation.skipped,
+                        report.consolidation.archived,
+                    )
+            except Exception as exc:
+                msg = f"C1/Consolidation failed: {exc}"
+                logger.error("[NCR] %s", msg)
+                report.errors.append(msg)
+
+        # ── C2: Pattern Recognition + Decay Re-Evaluation ─────────
+        if run_all or "c2" in _phases:
+            try:
+                with _tracer.step("c2_pattern_decay") as _s:
+                    report.c2 = await run_c2_phase(
+                        bank_id,
+                        pool=self._pool,
+                        qdrant=self._qdrant_client,
+                        neo4j=self._neo4j_client,
+                        llm_caller=self._description_llm_caller,
+                    )
+                    _s.set_output(asdict(report.c2))
+                    _s.set_rationale(
+                        f"R1/2/4 detected={report.c2.candidates_detected} matured={report.c2.matured} "
+                        f"reinforced={report.c2.reinforced} created={report.c2.created}; "
+                        f"decay archived={report.c2.decay.archived if report.c2.decay else 0}"
+                    )
+                    if report.c2.decay is not None:
+                        # Surface decay archive count at the top level — the
+                        # NCR-runs dashboard reads this without reaching
+                        # into the C2 sub-report.
+                        report.composite_distribution = {
+                            "archived": report.c2.decay.archived,
+                            "retained": report.c2.decay.retained,
+                        }
+            except Exception as exc:
+                msg = f"C2 failed: {exc}"
+                logger.error("[NCR] %s", msg)
+                report.errors.append(msg)
+
+        # ── C3: Schema Restructure (R3 hyper-schema + R5 schema death) ──
+        if run_all or "c3" in _phases:
+            try:
+                with _tracer.step("c3_schema_restructure") as _s:
+                    report.c3 = await run_c3_phase(
+                        bank_id,
+                        qdrant=self._qdrant_client,
+                        neo4j=self._neo4j_client,
+                    )
+                    _s.set_output(asdict(report.c3))
+                    _s.set_rationale(
+                        f"R3 hyper-schemas={report.c3.r3.hyper_schemas_created if report.c3.r3 else 0}; "
+                        f"R5 archived={len(report.c3.r5.archived_ids) if report.c3.r5 else 0}"
+                    )
+            except Exception as exc:
+                msg = f"C3 failed: {exc}"
+                logger.error("[NCR] %s", msg)
+                report.errors.append(msg)
+
+        # ── Shared Bank Promotion (optional) ──────────────────────
+        if (run_all or "shared" in _phases) and self._shared_bank_id and self._qdrant_client:
+            try:
+                with _tracer.step("shared_promotion") as _s:
+                    _s.set_input({"shared_bank_id": self._shared_bank_id})
+                    report.promotion = await promote_batch(
+                        pool=self._pool,
+                        qdrant_client=self._qdrant_client,
+                        neo4j_client=self._neo4j_client,
+                        bank_id=bank_id,
+                        shared_bank_id=self._shared_bank_id,
+                        agent_bank_ids=self._agent_bank_ids,
+                        llm=self._promotion_llm,
+                    )
+                    _s.set_output(asdict(report.promotion))
+                    _s.set_rationale(
+                        f"{report.promotion.promoted} engrams met shared-bank promotion criteria, "
+                        f"{report.promotion.reinforced} reinforced existing shared engrams"
+                    )
+                    logger.info(
+                        "[NCR] Shared/Promotion done: promoted=%d reinforced=%d",
+                        report.promotion.promoted,
+                        report.promotion.reinforced,
+                    )
+            except Exception as exc:
+                msg = f"Shared/Promotion failed: {exc}"
+                logger.error("[NCR] %s", msg)
+                report.errors.append(msg)
+        elif not (run_all or "shared" in _phases):
+            pass  # phase not requested
+        else:
+            _tracer.record_step(
+                name="shared_promotion",
+                duration_ms=0.0,
+                status="skipped",
+                rationale="no shared_bank_id or qdrant_client configured — Shared phase disabled",
+            )
+
     async def _persist_report(
         self,
         report: NCRReport,
         trigger: str,
         trace_data: dict | None = None,
     ) -> None:
-        """Persist an NCRReport to the ``ncr_runs`` table."""
+        """Persist an NCRReport to the ``ncr_runs`` table.
 
-        def _phase_to_json(phase) -> str | None:
-            if phase is None:
+        Schema is unchanged from Epic 12 — we map the new C2/C3 composite
+        reports onto the legacy column names: ``decay_stats`` carries the
+        full C2 bundle (pattern + decay), ``schema_stats`` carries the full
+        C3 bundle (R3 + R5). ``strengthen_stats`` is permanently NULL —
+        buffer→neocortex promotion no longer exists (Epic 25 Story 02).
+        """
+
+        def _to_json(payload: Any) -> str | None:
+            if payload is None:
                 return None
             try:
-                return json.dumps(asdict(phase), default=str)
+                return json.dumps(asdict(payload) if hasattr(payload, "__dataclass_fields__") else payload, default=str)
             except Exception as exc:
-                logger.warning("[NCR] failed to serialise phase for persistence: %s", exc)
+                logger.warning("[NCR] failed to serialise payload for persistence: %s", exc)
                 return None
 
         try:
-            consolidation_json = _phase_to_json(report.consolidation)
-            decay_json = _phase_to_json(report.phase1)
-            strengthen_json = _phase_to_json(report.phase2)
-            schema_json = _phase_to_json(report.phase3)
-            promotion_json = _phase_to_json(report.promotion)
+            consolidation_json = _to_json(report.consolidation)
+            decay_json = _to_json(report.c2)
+            strengthen_json = None  # legacy column kept; no Strengthen phase
+            schema_json = _to_json(report.c3)
+            promotion_json = _to_json(report.promotion)
             errors_json = json.dumps(report.errors) if report.errors else None
             trace_json = json.dumps(trace_data, default=str) if trace_data else None
 
@@ -288,173 +553,18 @@ class NCROrchestrator:
                 exc,
             )
 
-    async def _run_phases(
-        self,
-        bank_id: str,
-        report: NCRReport,
-        phases: set[str] | None = None,
-        tracer: PipelineTracer | None = None,
-    ) -> None:
-        """Run requested phases. None = all phases."""
-        _tracer = tracer if tracer is not None else PipelineTracer(pipeline="ncr", bank_id=bank_id, enabled=False)
-        run_all = phases is None
-        _phases = phases or set()  # empty set when None (run_all handles the logic)
-
-        # ── C1: Working Memory → Buffer ────────────────────────────
-        if run_all or "c1" in _phases:
-            try:
-                with _tracer.step("c1_consolidation") as _s:
-                    report.consolidation = await self._consolidation.run(bank_id)
-                    _s.set_output(asdict(report.consolidation))
-                    _s.set_rationale(
-                        f"promoted {report.consolidation.consolidated} engrams "
-                        f"Working → Buffer (recall-driven + saliency boost)"
-                    )
-                    logger.info(
-                        "[NCR] C1 done: promoted=%d skipped=%d archived=%d",
-                        report.consolidation.consolidated,
-                        report.consolidation.skipped,
-                        report.consolidation.archived,
-                    )
-            except Exception as exc:
-                msg = f"C1/Consolidation failed: {exc}"
-                logger.error("[NCR] %s", msg)
-                report.errors.append(msg)
-
-        # ── C2: Decay + Strengthen (Buffer → Neocortex) ───────────
-        if run_all or "c2" in _phases:
-            # Phase 1: Decay
-            try:
-                with _tracer.step("c2_decay") as _s:
-                    report.phase1 = await self._decay.process(bank_id)
-                    # Epic 24 Story 06: surface the composite histogram at the
-                    # top level so the NCR dashboard can render it without
-                    # reaching into phase1 internals.
-                    report.composite_distribution = dict(report.phase1.composite_distribution)
-                    # Epic 24 Story 05: expose reactivation totals on the report.
-                    report.reactivated_count = report.phase1.reactivated_count
-                    _s.set_output(asdict(report.phase1))
-                    _s.set_rationale(
-                        f"{report.phase1.decayed} engrams recomputed (composite = thalamus × decay), "
-                        f"{report.phase1.archived} archived below threshold, "
-                        f"{report.phase1.reactivated_count} reactivated from archive"
-                    )
-                    logger.info(
-                        "[NCR] C2/Decay done: archived=%d decayed=%d reactivated=%d",
-                        report.phase1.archived,
-                        report.phase1.decayed,
-                        report.phase1.reactivated_count,
-                    )
-            except Exception as exc:
-                msg = f"C2/Decay failed: {exc}"
-                logger.error("[NCR] %s", msg)
-                report.errors.append(msg)
-
-            # Phase 2: Strengthen
-            try:
-                with _tracer.step("c2_strengthen") as _s:
-                    report.phase2 = await self._strengthen.process(bank_id)
-                    # Epic 24 Story 05: expose downgrade totals on the report.
-                    report.downgraded_count = report.phase2.downgraded
-                    _s.set_output(asdict(report.phase2))
-                    _s.set_rationale(
-                        f"{report.phase2.promoted} engrams promoted to neocortex "
-                        f"(composite ≥ tag threshold, hard gates, karenz), "
-                        f"{report.phase2.downgraded} downgraded buffer → working"
-                    )
-                    logger.info(
-                        "[NCR] C2/Strengthen done: promoted=%d downgraded=%d",
-                        report.phase2.promoted,
-                        report.phase2.downgraded,
-                    )
-            except Exception as exc:
-                msg = f"C2/Strengthen failed: {exc}"
-                logger.error("[NCR] %s", msg)
-                report.errors.append(msg)
-
-        # ── C3: Schema Compression ────────────────────────────────
-        if run_all or "c3" in _phases:
-            try:
-                with _tracer.step("c3_schema") as _s:
-                    neocortex_entries = await dict_repo.filter_entries(
-                        self._pool, bank_id, layer="neocortex", status="active", limit=10000
-                    )
-                    _s.set_input({"neocortex_count": len(neocortex_entries)})
-                    report.phase3 = await self._schema.process(bank_id, engrams=neocortex_entries)  # type: ignore[arg-type]
-                    _s.set_output(asdict(report.phase3))
-                    _s.set_rationale(
-                        f"Game-of-Life schema rules: {report.phase3.created} created, "
-                        f"{getattr(report.phase3, 'strengthened', 0)} strengthened, "
-                        f"{getattr(report.phase3, 'deleted', 0)} deleted"
-                    )
-                    logger.info(
-                        "[NCR] C3/Schema done: neocortex_count=%d created=%d",
-                        len(neocortex_entries),
-                        report.phase3.created,
-                    )
-            except Exception as exc:
-                msg = f"C3/Schema failed: {exc}"
-                logger.error("[NCR] %s", msg)
-                report.errors.append(msg)
-
-        # ── Shared Bank Promotion (optional) ──────────────────────
-        if (run_all or "shared" in _phases) and self._shared_bank_id and self._qdrant_client:
-            try:
-                with _tracer.step("shared_promotion") as _s:
-                    _s.set_input({"shared_bank_id": self._shared_bank_id})
-                    report.promotion = await promote_batch(
-                        pool=self._pool,
-                        qdrant_client=self._qdrant_client,
-                        neo4j_client=self._neo4j_client,
-                        bank_id=bank_id,
-                        shared_bank_id=self._shared_bank_id,
-                        agent_bank_ids=self._agent_bank_ids,
-                        llm=self._llm,
-                    )
-                    _s.set_output(asdict(report.promotion))
-                    _s.set_rationale(
-                        f"{report.promotion.promoted} engrams met shared-bank promotion criteria, "
-                        f"{report.promotion.reinforced} reinforced existing shared engrams"
-                    )
-                    logger.info(
-                        "[NCR] Shared/Promotion done: promoted=%d reinforced=%d",
-                        report.promotion.promoted,
-                        report.promotion.reinforced,
-                    )
-            except Exception as exc:
-                msg = f"Shared/Promotion failed: {exc}"
-                logger.error("[NCR] %s", msg)
-                report.errors.append(msg)
-        elif not (run_all or "shared" in _phases):
-            pass  # phase not requested
-        else:
-            _tracer.record_step(
-                name="shared_promotion",
-                duration_ms=0.0,
-                status="skipped",
-                rationale="no shared_bank_id or qdrant_client configured — Shared phase disabled",
-            )
-
 
 # ---------------------------------------------------------------------------
-# Scheduler
+# Scheduler — unchanged from Epic 12 (3-phase shape happy path)
 # ---------------------------------------------------------------------------
 
 
 class NCRScheduler:
-    """
-    Periodic background scheduler for C2 and C3 phases.
+    """Periodic background scheduler for C2 and C3 phases.
 
     C1 does not need a scheduler — it is triggered at session end.
-    C2 (Decay + Strengthen) runs at ``c2_interval_hours`` (default 24h).
-    C3 (Schema Compression) runs at ``c3_interval_hours`` (default 168h / 7 days).
-
-    Args:
-        orchestrator:      NCROrchestrator to call each cycle.
-        bank_ids:          List of bank IDs to process on each cycle.
-        c2_interval_hours: C2 cycle interval in hours (default 24).
-        c3_interval_hours: C3 cycle interval in hours (default 168 = 7 days).
-        enabled:           If False, the scheduler loop exits immediately.
+    C2 (Pattern Recognition + Decay) runs at ``c2_interval_hours`` (default 24h).
+    C3 (Schema Restructure) runs at ``c3_interval_hours`` (default 168h / 7 days).
     """
 
     def __init__(
