@@ -5,6 +5,7 @@ Schemas live exclusively in the cortex layer (Neo4j) as standalone
 Engrams reference schemas indirectly via Top-N evidence_engram_ids.
 """
 
+from .centroid import compute_centroid
 from .models import HyperSchemaModel, SchemaModel
 from .schema_repository import (
     archive_schema,
@@ -20,6 +21,7 @@ __all__ = [
     "HyperSchemaModel",
     "SchemaModel",
     "archive_schema",
+    "compute_centroid",
     "create_schema",
     "get_schema",
     "link_specialization",

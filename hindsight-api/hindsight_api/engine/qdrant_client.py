@@ -120,8 +120,10 @@ class QdrantEngineClient:
                     distance=qdrant_models.Distance.COSINE,
                 ),
             )
-            # Payload indexes for efficient filtering
-            for field_name in ("engram_id", "bank_id", "tags", "source"):
+            # Payload indexes for efficient filtering. `kind` distinguishes
+            # engram embeddings from schema centroids (Epic 25 Story 03);
+            # `schema_id` is set on schema-centroid points instead of engram_id.
+            for field_name in ("engram_id", "schema_id", "bank_id", "tags", "source", "kind"):
                 await client.create_payload_index(
                     collection_name=self._collection,
                     field_name=field_name,
@@ -138,15 +140,20 @@ class QdrantEngineClient:
         payload: dict[str, Any],
     ) -> None:
         """
-        Insert or update a single point in the engrams collection.
+        Insert or update a single engram point in the collection.
 
         Args:
             engram_id: UUID string used as both the Qdrant point ID and payload field.
             embedding: 384-dim float vector.
-            payload: Arbitrary metadata (text, tags, source, etc.).
+            payload: Arbitrary metadata (text, tags, source, etc.). Epic 25 Story 03:
+                `kind="engram"` is injected if the caller does not set it explicitly,
+                so the schema-centroid filter on the recall side stays clean.
         """
         client = self._require_client()
         point_id = str(uuid.UUID(engram_id))  # Validate UUID format
+        # Story 03 invariant: engram points are pinned to kind="engram" — caller
+        # cannot override (use upsert_schema_centroid for schema centroids).
+        merged_payload = {**payload, "engram_id": engram_id, "kind": "engram"}
 
         async def _upsert():
             await client.upsert(
@@ -155,7 +162,48 @@ class QdrantEngineClient:
                     qdrant_models.PointStruct(
                         id=point_id,
                         vector=embedding,
-                        payload={"engram_id": engram_id, **payload},
+                        payload=merged_payload,
+                    )
+                ],
+            )
+
+        await _retry_with_backoff(_upsert)
+
+    async def upsert_schema_centroid(
+        self,
+        schema_id: str,
+        centroid: list[float],
+        schema_meta: dict[str, Any] | None = None,
+    ) -> None:
+        """
+        Insert or update a schema centroid point (Epic 25 Story 03).
+
+        Schemas live alongside engrams in the same collection; recall fans out
+        a single vector search across both populations. The point id is the
+        schema_id (matches Neo4j `:Schema {id}.centroid_qdrant_id`).
+
+        Args:
+            schema_id: UUID string of the cortex schema node.
+            centroid: 384-dim L2-normalised mean of evidence engram embeddings
+                (see ``engine.schema.centroid.compute_centroid``).
+            schema_meta: optional payload extras — typically a short description
+                and tag rollup for visual debugging. ``kind`` and ``schema_id``
+                are managed here and override caller-supplied values.
+        """
+        client = self._require_client()
+        point_id = str(uuid.UUID(schema_id))
+        meta = dict(schema_meta or {})
+        meta["kind"] = "schema"
+        meta["schema_id"] = schema_id
+
+        async def _upsert():
+            await client.upsert(
+                collection_name=self._collection,
+                points=[
+                    qdrant_models.PointStruct(
+                        id=point_id,
+                        vector=centroid,
+                        payload=meta,
                     )
                 ],
             )
@@ -167,6 +215,7 @@ class QdrantEngineClient:
         embedding: list[float],
         limit: int = 10,
         filters: dict[str, Any] | None = None,
+        kind: str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Search for similar vectors by cosine distance.
@@ -175,12 +224,15 @@ class QdrantEngineClient:
             embedding: Query vector (384-dim).
             limit: Maximum number of results.
             filters: Optional Qdrant filter dict (passed as Filter model).
+            kind: Optional payload-kind filter — Epic 25 Story 03. ``"engram"``
+                restricts hits to engram embeddings, ``"schema"`` to schema
+                centroids, ``None`` (default) returns mixed hits.
 
         Returns:
             List of dicts with keys: engram_id, score, payload.
         """
         client = self._require_client()
-        qdrant_filter = qdrant_models.Filter(**filters) if filters else None
+        qdrant_filter = self._build_filter(filters, kind)
 
         async def _search():
             response = await client.query_points(
@@ -200,6 +252,32 @@ class QdrantEngineClient:
             ]
 
         return await _retry_with_backoff(_search)
+
+    @staticmethod
+    def _build_filter(
+        filters: dict[str, Any] | None,
+        kind: str | None,
+    ) -> qdrant_models.Filter | None:
+        """Compose an optional caller filter with an optional ``kind`` filter.
+
+        Both arguments may be None, one, or both. When ``kind`` is set we add
+        a ``FieldCondition(key="kind", match=MatchValue(value=kind))`` to the
+        ``must`` list — composing rather than replacing so callers retain
+        their bank/tag filters.
+        """
+        if filters is None and kind is None:
+            return None
+
+        base: dict[str, Any] = dict(filters) if filters else {}
+        if kind is not None:
+            kind_condition = qdrant_models.FieldCondition(
+                key="kind",
+                match=qdrant_models.MatchValue(value=kind),
+            )
+            existing_must = list(base.get("must") or [])
+            existing_must.append(kind_condition)
+            base["must"] = existing_must
+        return qdrant_models.Filter(**base)
 
     async def get_by_id(self, engram_id: str) -> dict[str, Any] | None:
         """
@@ -269,17 +347,20 @@ class QdrantEngineClient:
 
     async def batch_upsert(self, points: list[dict[str, Any]]) -> None:
         """
-        Insert or update multiple points in a single request.
+        Insert or update multiple engram points in a single request.
 
         Args:
             points: List of dicts with keys: engram_id, embedding, payload.
+                Epic 25 Story 03: ``kind="engram"`` is injected into each
+                payload by default. Schema centroids should go through
+                ``upsert_schema_centroid`` instead.
         """
         client = self._require_client()
         qdrant_points = [
             qdrant_models.PointStruct(
                 id=str(uuid.UUID(p["engram_id"])),
                 vector=p["embedding"],
-                payload={"engram_id": p["engram_id"], **p.get("payload", {})},
+                payload={**p.get("payload", {}), "engram_id": p["engram_id"], "kind": "engram"},
             )
             for p in points
         ]
