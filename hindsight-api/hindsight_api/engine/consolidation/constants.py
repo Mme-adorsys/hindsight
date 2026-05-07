@@ -16,3 +16,10 @@ from __future__ import annotations
 # (cluster→schema rather than cluster→cluster), so the constants stay
 # separate. Drift guard in tests/test_c2_schema_match.py.
 SCHEMA_MATCH_THRESHOLD: float = 0.85
+
+# concept §4.2 — schema.evidence_engram_ids is the Top-N strongest cluster
+# members (Indexing Theory à la Teyler & DiScenna 1986). N=5 keeps the cortex
+# pointer-array small enough to round-trip cheaply and avoids stamping every
+# noisy member into the schema's audit trail. Drift guard in
+# tests/test_c2_schema_writer.py.
+SCHEMA_TOP_N_EVIDENCE: int = 5

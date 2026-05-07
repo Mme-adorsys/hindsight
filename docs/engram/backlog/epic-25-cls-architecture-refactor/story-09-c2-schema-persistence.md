@@ -16,18 +16,24 @@ Wenn ein Cluster nicht gematcht hat (Story 06 Creation-Pfad) und Properties + De
 
 ## Akzeptanzkriterien
 
-- [ ] Neue Funktion `persist_new_schema(cluster, properties, description, centroid) -> Schema`
-- [ ] Top-N Auswahl: aus den Cluster-Engrams die N=5 mit höchstem Composite-Score als `evidence_engram_ids`
-- [ ] Schema-Knoten in Neo4j angelegt mit allen Feldern (id, description, properties, evidence_engram_ids, evidence_count, centroid_qdrant_id, created_at=now, last_reinforced_at=now, cycles_survived=1, status="active")
-- [ ] Centroid in Qdrant geschrieben mit `payload = {kind: "schema", schema_id, bank_id, description_short}`
-- [ ] Atomarität: Bei Qdrant-Failure → Neo4j-Rollback (Saga-Pattern oder explizites Cleanup)
-- [ ] Unit-Tests + Integration-Test
+- [x] `persist_new_schema(payload, bank_id, *, neo4j, qdrant, pool) -> SchemaModel` (CreationPayload aus Story 07/08 statt Argumenten-Salat)
+- [x] Top-N=5 Auswahl per `select_top_n_evidence(pool, ids)` — sortiert nach `engram_dictionary.strength` (= Composite-Score seit Epic 24 Story 03)
+- [x] Schema-Knoten in Neo4j komplett befüllt; `created_at = last_reinforced_at = now`, `cycles_survived=1`, `status="active"`, `centroid_qdrant_id = schema_id`
+- [x] Centroid in Qdrant via `upsert_schema_centroid` (kind="schema" + schema_id forced; bank_id + description_short im meta)
+- [x] Atomarität: Neo4j-First, bei Qdrant-Failure → `archive_schema(neo4j, id)` Saga-Cleanup (kein hard delete — R5 Schema Death Story 14 ist die kanonische Removal-Stelle)
+- [x] 11 Unit-Tests; Integration-Test verschoben auf Block E (Story 19/20 E2E)
 
 ## Tasks
 
-- [ ] **T1 — Top-N Selector:** Helper `select_top_n_evidence(engrams, n=5) -> list[UUID]` sortiert nach Composite-Score (`thalamus_overall × decay`) und nimmt die Top-N.
-- [ ] **T2 — `persist_new_schema()`:** In `engine/consolidation/c2_schema_writer.py`. Schritte: schema_id generieren, Top-N auswählen, Schema-Pydantic-Modell bauen, `create_schema()` rufen, `upsert_schema_centroid()` rufen.
-- [ ] **T3 — Atomarität:** Bei Failure nach Neo4j-Insert aber vor Qdrant-Upsert → Try/Except mit Cleanup-Aufruf `archive_schema(id)` als Fallback.
-- [ ] **T4 — Konstante:** `SCHEMA_TOP_N_EVIDENCE = 5` in `engine/consolidation/constants.py`.
-- [ ] **T5 — Pipeline-Integration:** In `c2_pattern_recognition.py` Creation-Pfad ruft `persist_new_schema()`.
-- [ ] **T6 — Unit-Tests:** (a) Happy-Path → Schema-Knoten + Centroid erscheinen. (b) Qdrant-Failure → Neo4j-Knoten archived (kein Waisenkind). (c) Top-N-Auswahl korrekt sortiert.
+- [x] **T1 — Top-N Selector:** `select_top_n_evidence(pool, engram_ids, n=SCHEMA_TOP_N_EVIDENCE)` — async, fragt PG via `engram_dictionary.strength` ab, ORDER BY DESC + LIMIT n. UUIDs missing in PG werden silent gedropped (können zwischen R1 und persist archived worden sein).
+- [x] **T2 — `persist_new_schema`:** `engine/consolidation/c2_schema_writer.py`. Workflow: `uuid4` → Top-N → SchemaModel bauen → `create_schema(neo4j, model, label="Schema")` → `qdrant.upsert_schema_centroid(...)` → return.
+- [x] **T3 — Atomarität:** Try/Except um den Qdrant-Aufruf; bei Failure logging + `archive_schema(neo4j, schema_id, label="Schema")` als Fallback. Archive-Failure wird separat geloggt aber nicht reraised — primärer Exception fließt durch.
+- [x] **T4 — Konstante:** `SCHEMA_TOP_N_EVIDENCE = 5` in `engine/consolidation/constants.py` (concept §4.2 Top-N=5 Indexing-Theory-Pointer-Set).
+- [x] **T5 — Pipeline-Integration:** `persist_creation_payloads(payloads, bank_id, *, neo4j, qdrant, pool)` als sequenzieller Wrapper über `persist_new_schema`. Per-Payload-Failures werden geloggt aber brechen den Batch nicht ab (best-effort, konsistent mit anderen C2-Stages).
+- [x] **T6 — Unit-Tests:** `tests/test_c2_schema_writer.py` mit 11 Tests: 4 für `select_top_n_evidence` (sort-order, empty input, n=0, limit param), 4 für `persist_new_schema` (happy path, Qdrant-Failure → archive, Neo4j-Failure → propagate ohne Qdrant, evidence_count aus properties geerbt), 2 für Batch-Wrapper (best-effort partial failure, empty batch), 1 Drift-Guard auf `SCHEMA_TOP_N_EVIDENCE == 5`.
+
+## Implementation Notes
+
+- **Sequential persistence:** `persist_creation_payloads` läuft sequenziell statt `asyncio.gather`. Pro Bank ist das Schema-ID-Volumen klein und Neo4j+Qdrant Write-Contention ist real — Parallelism würde nur einen Thundering Herd auf den Cortex auslösen.
+- **Saga statt 2PC:** Wir machen kein echtes Distributed-Transaction-Protocol. Neo4j-First, Qdrant-Second; bei Qdrant-Fail wird der Neo4j-Knoten archiviert (`status="archived"`). HybridRetriever (Story 15) ignoriert archived-Schemas. R5 Schema Death (Story 14) macht die kanonische Hard-Removal später.
+- **Pfad-Abweichung:** Story T1 erwähnt "Cluster-Engrams" als Input zum Top-N-Selector — wir nehmen den Umweg über PG (engram_dictionary), weil dort die aktuellen Composite-Scores liegen. Im MaturedClusterCandidate steckt nur der Centroid + dominant_tags + member_tags.
