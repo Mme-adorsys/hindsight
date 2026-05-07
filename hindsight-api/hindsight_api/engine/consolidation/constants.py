@@ -23,3 +23,10 @@ SCHEMA_MATCH_THRESHOLD: float = 0.85
 # noisy member into the schema's audit trail. Drift guard in
 # tests/test_c2_schema_writer.py.
 SCHEMA_TOP_N_EVIDENCE: int = 5
+
+# concept §13 — buffer engrams whose composite score (thalamus_overall × decay)
+# falls below this threshold get archived during the C2 decay-reevaluation
+# pass (Story 11). Below 0.05 the engram is effectively forgotten — its
+# vector-search recall would be drowned out by stronger neighbours anyway.
+# Drift guard in tests/test_c2_decay.py.
+BUFFER_ARCHIVE_COMPOSITE_THRESHOLD: float = 0.05

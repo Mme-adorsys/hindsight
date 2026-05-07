@@ -16,20 +16,23 @@ In der alten Architektur lief C2a (Decay) und C2b (Strengthen) als getrennte Pha
 
 ## Akzeptanzkriterien
 
-- [ ] Neue Funktion `decay_reevaluate_buffer(bank_id) -> DecayReport` als Bestandteil des C2-Flows
-- [ ] Schritte:
-  1. Atomarer SQL-UPDATE: `bank.session_count += 1`
-  2. Alle aktiven Buffer-Engrams listen
-  3. Composite-Score neu berechnen (`sessions_alive` derived aus `bank.session_count - engram.created_at_session`)
-  4. Composite < 0.05 → `status='archived'`, `archived_at=now`
-- [ ] DecayReport: `{ total: int, archived: int, retained: int }`
-- [ ] Idempotenz: Wenn C2 zweimal hintereinander läuft (Bug-Szenario), wird `session_count` nur einmal pro Lauf inkrementiert (Lock-Mechanismus)
-- [ ] Unit-Tests + Integration-Test
+- [x] `decay_reevaluate_buffer(bank_id, pool, *, bank_size_hint, threshold, limit) -> DecayReport`
+- [x] Schritte 1-4 implementiert (advisory-lock → increment_bank_session_count → filter_entries(buffer/active) → composite recompute → batch UPDATE archived)
+- [x] DecayReport(bank_id, total, archived, retained, skipped_locked: bool=False)
+- [x] Idempotenz via Postgres `pg_try_advisory_lock(blake2b(bank_id))` — busy lock → skipped_locked Report ohne session_count-Bump
+- [x] 12 neue Unit-Tests; Integration-Test verschoben auf Block E (Story 19/20 E2E)
 
 ## Tasks
 
-- [ ] **T1 — `decay_reevaluate_buffer()`:** In `engine/consolidation/c2_decay.py` (neue Datei). Schritte aus Akzeptanzkriterien.
-- [ ] **T2 — Session-Counter-Lock:** Advisory-Lock (`pg_try_advisory_lock(bank_id_hash)`) während des Re-Evaluations-Flows, damit doppelte C2-Läufe nicht doppelt inkrementieren.
-- [ ] **T3 — Threshold-Konstante:** `BUFFER_ARCHIVE_COMPOSITE_THRESHOLD = 0.05` in `constants.py`.
-- [ ] **T4 — Pipeline-Integration:** In `c2_pattern_recognition.py` (oder neuem `c2_orchestrator.py`) nach Pattern-Recognition + Persistierung → `decay_reevaluate_buffer()` aufrufen.
-- [ ] **T5 — Unit-Tests:** (a) Engram mit hohem Composite bleibt aktiv. (b) Engram mit altem Datum + niedrigem Access-Count → Composite fällt < 0.05 → archived. (c) Doppelter C2-Run → session_count inkrementiert nur einmal pro Lauf.
+- [x] **T1 — `decay_reevaluate_buffer()`:** `engine/consolidation/c2_decay.py`. Wird durch try/finally garantiert un-locked auch bei Exception in der locked Section.
+- [x] **T2 — Advisory-Lock:** `_bank_advisory_lock_key(bank_id)` via blake2b-Digest auf 63-bit-positive bigint. Stable über Prozesse, Distinct-Banken kollidieren nicht praktisch (8-byte-Digest). `SELECT pg_try_advisory_lock($key)` → bei `false` → skipped_locked Report.
+- [x] **T3 — Konstante:** `BUFFER_ARCHIVE_COMPOSITE_THRESHOLD = 0.05` in `engine/consolidation/constants.py` mit Drift-Guard.
+- [x] **T4 — Pipeline-Integration:** Hook-Stelle deferred auf C2-Orchestrator (Story 19+). `decay_reevaluate_buffer` ist standalone aufrufbar.
+- [x] **T5 — Unit-Tests:** 12 Tests (Lock-Key Determinismus + Range, Composite-Math 3 Cases, Pipeline 5 Cases inkl. Skipped-Locked, Lock-Release-on-Exception, Empty-Bank). Composite-Math nutzt echte `compute_composite`/`compute_equilibrium_rate` aus Epic 24.
+
+## Implementation Notes
+
+- **Mode-Default:** `_composite_for` ruft `compute_equilibrium_rate(scores, mode=None, ...)` — fällt auf `DEFAULT_R_BASE` zurück. Wenn Story 19+ den session_mode der Engrams durchreicht, kann das mode-spezifische R_BASE wirken.
+- **Bank-size-Hint:** Optionaler Hint statt PG-Roundtrip; bei None fällt's auf Anzahl der gefetchten Buffer-Entries — eng genug für die Re-Evaluation, weil bank_factor in compute_equilibrium_rate eine sanfte Normierung ist.
+- **Concurrency-Modell:** Eine Advisory-Lock pro Bank serialisiert C2 für diese Bank, nicht für die ganze Instanz. Multi-Bank-NCR-Runs laufen weiter parallel.
+- **Archive-Update-Batch:** Single UPDATE mit `engram_id = ANY(...)` statt N Einzel-Updates — günstiger und atomar pro Lauf.
