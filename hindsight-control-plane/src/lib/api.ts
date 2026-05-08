@@ -425,7 +425,11 @@ export class ControlPlaneClient {
    */
   async listSchemas(
     bankId: string,
-    opts?: { limit?: number; offset?: number; sortBy?: "last_reinforced_at" | "evidence_count" | "cycles_survived" }
+    opts?: {
+      limit?: number;
+      offset?: number;
+      sortBy?: "last_reinforced_at" | "evidence_count" | "cycles_survived";
+    }
   ) {
     const qs = new URLSearchParams({ bank_id: bankId });
     if (opts?.limit !== undefined) qs.set("limit", String(opts.limit));

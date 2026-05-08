@@ -38,7 +38,10 @@ import cytoscape from "cytoscape";
 // Confidence-tier badge
 // ---------------------------------------------------------------------------
 
-const TIER_CONFIG: Record<string, { label: string; bg: string; text: string; Icon?: typeof ShieldCheck }> = {
+const TIER_CONFIG: Record<
+  string,
+  { label: string; bg: string; text: string; Icon?: typeof ShieldCheck }
+> = {
   agent_local: {
     label: "Agent-local",
     bg: "bg-slate-100 dark:bg-slate-800",
@@ -268,7 +271,10 @@ function PropertyValue({ value }: { value: unknown }) {
     const v = value as { min?: number; max?: number; mean?: number };
     return (
       <span className="text-xs font-mono text-muted-foreground">
-        {v.mean?.toFixed(2)} <span className="opacity-60">({v.min}–{v.max})</span>
+        {v.mean?.toFixed(2)}{" "}
+        <span className="opacity-60">
+          ({v.min}–{v.max})
+        </span>
       </span>
     );
   }
@@ -406,8 +412,8 @@ export function SchemaExplorerView() {
               No schemas have emerged yet
             </h3>
             <p className="text-muted-foreground text-sm max-w-md mx-auto">
-              Schemas form after C2 cycles cluster repeatedly co-activated buffer engrams and
-              R4 mints a stable :Schema node. Run C2 a few times to see them surface.
+              Schemas form after C2 cycles cluster repeatedly co-activated buffer engrams and R4
+              mints a stable :Schema node. Run C2 a few times to see them surface.
             </p>
           </div>
         </CardContent>
@@ -476,7 +482,9 @@ export function SchemaExplorerView() {
                   className={`cursor-pointer ${selectedId === s.id ? "bg-accent" : ""}`}
                   onClick={() => setSelectedId(s.id)}
                 >
-                  <TableCell className="font-medium">{truncate(s.description, 60) || s.id}</TableCell>
+                  <TableCell className="font-medium">
+                    {truncate(s.description, 60) || s.id}
+                  </TableCell>
                   <TableCell>{s.evidence_count}</TableCell>
                   <TableCell>{s.cycles_survived}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">
@@ -581,7 +589,9 @@ export function SchemaExplorerView() {
                     </ul>
                   )}
                   <div>
-                    <h4 className="text-sm font-medium text-muted-foreground mt-4 mb-2">Mini-graph</h4>
+                    <h4 className="text-sm font-medium text-muted-foreground mt-4 mb-2">
+                      Mini-graph
+                    </h4>
                     <SchemaGraph schema={detail} evidence={evidence} />
                   </div>
                 </div>
