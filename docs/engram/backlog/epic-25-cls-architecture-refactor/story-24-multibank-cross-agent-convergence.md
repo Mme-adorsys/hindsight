@@ -15,21 +15,18 @@ Wenn Agent A ein Schema "Coffee-Meeting" hat und Agent B unabhängig ein sehr ä
 
 ## Akzeptanzkriterien
 
-- [ ] Vor jeder Schema-Promotion (Story 23) wird in der Shared Bank gesucht: gibt es bereits ein ähnliches Schema (Cosine ≥ 0.85)?
-- [ ] Match → **Shared-Schema verstärken** statt neu anlegen:
-  - `evidence_count += incoming.evidence_count`
-  - `cross_agent_count++` (neues Feld am Shared-Schema)
-  - `source_bank_ids` Array um neue source_bank_id ergänzen
-  - Centroid laufender Mittelwert
-- [ ] Kein Match → neues Shared-Schema (Story 23 Pfad)
-- [ ] Cross-agent-Konfidenz: Schemas mit `cross_agent_count ≥ 2` bekommen `confidence_tier="cross_agent_validated"` als Property
-- [ ] Unit-Tests + Integration-Test
+- [x] `match_existing_shared_schema` (Qdrant `kind=schema` + `bank_id=shared` Filter, Cosine ≥ 0.85) läuft in `promote_schemas_batch` vor jedem `promote_schema_to_shared`-Aufruf.
+- [x] Match → `reinforce_shared_schema`-Pfad: `evidence_count` Summe, `cross_agent_count++`, `source_bank_ids` extend (dedup), Centroid running-mean via existierendes `weighted_centroid`, `last_reinforced_at=now`.
+- [x] Kein Match → bestehender Story-23 Create-Pfad (initialisiert `cross_agent_count=1`, `source_bank_ids=[source]`, `confidence_tier="agent_local"`).
+- [x] `confidence_tier` upgrades automatisch zu `cross_agent_validated` sobald ≥ 2 distinct source banks beteiligt sind. Re-Promotes vom selben Agent (dedup-Pfad) lassen den Tier unverändert; `evidence_count` summiert sich aber trotzdem (Audit-Wert).
+- [x] `SchemaPromotionResult` um `reinforced`/`reinforced_ids` erweitert; create- und reinforce-Pfade werden sauber separat gezählt.
+- [x] 22 Unit-Tests grün (13 Story 23 + 9 Story 24); Integration-Test verschoben auf Block-G-Wiring.
 
 ## Tasks
 
-- [ ] **T1 — Shared-Schema-Felder:** `cross_agent_count: Integer = 1`, `source_bank_ids: list[UUID]`, `confidence_tier: Enum["agent_local", "cross_agent_validated"]` als Properties am Shared-Schema.
-- [ ] **T2 — Match-vor-Promotion:** In `schema_promoter.py::promote_schema_to_shared()` zuerst `match_existing_shared_schema(centroid, threshold=0.85)` aufrufen. Bei Match → Reinforcement-Pfad, sonst Neuanlage.
-- [ ] **T3 — Konvergenz-Reinforcement-Pfad:** Helper `reinforce_shared_schema(shared_schema, incoming_schema, source_bank_id)`.
-- [ ] **T4 — Konfidenz-Tier-Update:** Bei `cross_agent_count >= 2` → `confidence_tier="cross_agent_validated"` setzen.
-- [ ] **T5 — Konstante:** `CROSS_AGENT_MATCH_THRESHOLD = 0.85` in `constants.py`.
-- [ ] **T6 — Unit-Tests:** (a) Erstmaliger Schema-Promote → cross_agent_count=1, agent_local. (b) Zweiter ähnlicher Schema-Promote → cross_agent_count=2, cross_agent_validated. (c) Unähnliches Schema von Agent B → neues Shared-Schema, kein Merge.
+- [x] **T1 — Shared-Schema-Felder:** Riding on `properties` JSON statt eigene Neo4j-Properties — `source_bank_ids: list[str]`, `cross_agent_count: int`, `confidence_tier: "agent_local"|"cross_agent_validated"`. Spart eine Schema-Migration; `_serialise_props_for_neo4j` aus Story 01 macht den Round-Trip.
+- [x] **T2 — Match-vor-Promotion:** `promote_schemas_batch` ruft jetzt `match_existing_shared_schema` vor `promote_schema_to_shared`. Bei Match → reinforce-Pfad mit `result.reinforced++`, sonst Story-23 create-Pfad mit `result.promoted++`.
+- [x] **T3 — Konvergenz-Reinforcement-Pfad:** Neuer Helper `reinforce_shared_schema(existing, incoming, *, source_bank_id, ...)`. Centroid-Merge weighted_centroid(old × len(prior_sources), incoming × 1) + L2-renorm.
+- [x] **T4 — Konfidenz-Tier-Update:** Implizit über `_PROP_CONFIDENCE_TIER` Konstante; gesetzt sobald `cross_agent_count >= 2`.
+- [x] **T5 — Konstante:** `CROSS_AGENT_MATCH_THRESHOLD = 0.85` in `engine/consolidation/constants.py` mit Drift-Guard.
+- [x] **T6 — Unit-Tests:** 9 neue Tests — Const-Pin, 4× match_existing_shared_schema (above-threshold / below-threshold / qdrant-fail / empty-centroid-short-circuit), 3× reinforce_shared_schema (first-external-upgrades-tier / same-source-dedup / centroid-running-mean), 1× batch match-promotes-via-reinforce-path.

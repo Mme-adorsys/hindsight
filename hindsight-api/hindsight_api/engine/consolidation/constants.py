@@ -105,3 +105,13 @@ MAX_SCHEMA_DRIFTS_PER_DAY: int = 5
 SHARED_PROMOTION_MIN_EVIDENCE: int = 10
 SHARED_PROMOTION_MIN_CYCLES: int = 3
 SHARED_PROMOTION_MAX_DAYS_INACTIVE: int = 7
+
+# Story 24 — Cross-agent schema convergence. When an Agent-Bank schema
+# arrives at the Shared Bank with a centroid within this cosine of an
+# existing Shared-Bank schema, the two converge into one (running-mean
+# centroid, evidence_count summed, cross_agent_count++, confidence_tier
+# upgraded to "cross_agent_validated" once ≥ 2 sources). Same numeric
+# value as the C2 SCHEMA_MATCH_THRESHOLD because the geometric question
+# is identical (same-cluster vs different-cluster), but the constants
+# stay separate so Multi-Bank can be tightened independently of C2.
+CROSS_AGENT_MATCH_THRESHOLD: float = 0.85

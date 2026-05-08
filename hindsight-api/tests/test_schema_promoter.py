@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 
 from hindsight_api.engine.consolidation.constants import (
+    CROSS_AGENT_MATCH_THRESHOLD,
     SHARED_PROMOTION_MAX_DAYS_INACTIVE,
     SHARED_PROMOTION_MIN_CYCLES,
     SHARED_PROMOTION_MIN_EVIDENCE,
@@ -17,8 +18,10 @@ from hindsight_api.engine.multi_bank.schema_promoter import (
     SchemaPromotionResult,
     _meets_criteria,
     find_schema_promotion_candidates,
+    match_existing_shared_schema,
     promote_schema_to_shared,
     promote_schemas_batch,
+    reinforce_shared_schema,
 )
 from hindsight_api.engine.schema.models import SchemaModel
 
@@ -292,3 +295,221 @@ class TestPromoteBatch:
         assert result.promoted == 1
         qdrant.get_by_id.assert_awaited_once()
         qdrant.upsert_schema_centroid.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Story 24 — Cross-agent convergence
+# ---------------------------------------------------------------------------
+
+
+def _shared_schema(*, sources: list[str] | None = None, evidence: int = 12) -> SchemaModel:
+    sources = sources or ["agent-a"]
+    return SchemaModel(
+        id=uuid4(),
+        description="ritual",
+        properties={
+            "format": "1on1",
+            "source_bank_ids": list(sources),
+            "cross_agent_count": len(sources),
+            "confidence_tier": "agent_local" if len(sources) < 2 else "cross_agent_validated",
+        },
+        centroid_qdrant_id=uuid4(),
+        evidence_engram_ids=[],
+        evidence_count=evidence,
+        cycles_survived=4,
+        last_reinforced_at=datetime.now(timezone.utc),
+    )
+
+
+class TestCrossAgentConstants:
+    def test_threshold_pinned(self):
+        assert CROSS_AGENT_MATCH_THRESHOLD == 0.85
+
+
+class TestMatchExistingSharedSchema:
+    @pytest.mark.asyncio
+    async def test_match_above_threshold_returns_schema(self, monkeypatch):
+        existing = _shared_schema()
+        qdrant = AsyncMock()
+        qdrant.search_similar = AsyncMock(
+            return_value=[
+                {
+                    "engram_id": str(existing.id),
+                    "score": 0.92,
+                    "payload": {"schema_id": str(existing.id), "kind": "schema"},
+                }
+            ]
+        )
+        import hindsight_api.engine.multi_bank.schema_promoter as mod
+
+        monkeypatch.setattr(mod, "get_schema", AsyncMock(return_value=existing))
+
+        out = await match_existing_shared_schema(
+            [1.0, 0.0, 0.0],
+            shared_bank_id="shared",
+            qdrant=qdrant,
+            neo4j=AsyncMock(),
+        )
+        assert out is not None
+        schema, score = out
+        assert schema.id == existing.id
+        assert score == pytest.approx(0.92)
+
+    @pytest.mark.asyncio
+    async def test_below_threshold_returns_none(self, monkeypatch):
+        qdrant = AsyncMock()
+        qdrant.search_similar = AsyncMock(
+            return_value=[
+                {"engram_id": str(uuid4()), "score": 0.6, "payload": {"schema_id": str(uuid4())}}
+            ]
+        )
+        import hindsight_api.engine.multi_bank.schema_promoter as mod
+
+        monkeypatch.setattr(mod, "get_schema", AsyncMock())
+
+        out = await match_existing_shared_schema(
+            [1.0, 0.0, 0.0],
+            shared_bank_id="shared",
+            qdrant=qdrant,
+            neo4j=AsyncMock(),
+        )
+        assert out is None
+
+    @pytest.mark.asyncio
+    async def test_qdrant_failure_returns_none(self):
+        qdrant = AsyncMock()
+        qdrant.search_similar = AsyncMock(side_effect=RuntimeError("qdrant down"))
+        out = await match_existing_shared_schema(
+            [1.0, 0.0, 0.0],
+            shared_bank_id="shared",
+            qdrant=qdrant,
+            neo4j=AsyncMock(),
+        )
+        assert out is None
+
+    @pytest.mark.asyncio
+    async def test_empty_centroid_short_circuits(self):
+        qdrant = AsyncMock()
+        qdrant.search_similar = AsyncMock()
+        out = await match_existing_shared_schema([], shared_bank_id="shared", qdrant=qdrant, neo4j=AsyncMock())
+        assert out is None
+        qdrant.search_similar.assert_not_called()
+
+
+class TestReinforceSharedSchema:
+    @pytest.mark.asyncio
+    async def test_first_external_source_upgrades_tier(self, monkeypatch):
+        existing = _shared_schema(sources=["agent-a"], evidence=10)
+        incoming = _strong_schema(evidence=4)
+        import hindsight_api.engine.multi_bank.schema_promoter as mod
+
+        update_mock = AsyncMock()
+        monkeypatch.setattr(mod, "update_schema", update_mock)
+
+        result = await reinforce_shared_schema(
+            existing,
+            incoming,
+            source_bank_id="agent-b",
+            shared_bank_id="shared",
+            neo4j=AsyncMock(),
+        )
+        update_mock.assert_awaited_once()
+        partial = update_mock.await_args.args[2]
+        assert partial["evidence_count"] == 14
+        # tier upgraded after the second source
+        assert "cross_agent_validated" in partial["properties_json"]
+        # local return value mirrors the same upgrade
+        assert result.properties["cross_agent_count"] == 2
+        assert result.properties["confidence_tier"] == "cross_agent_validated"
+        assert result.properties["source_bank_ids"] == ["agent-a", "agent-b"]
+
+    @pytest.mark.asyncio
+    async def test_same_source_does_not_double_count(self, monkeypatch):
+        existing = _shared_schema(sources=["agent-a"], evidence=10)
+        incoming = _strong_schema(evidence=4)
+        import hindsight_api.engine.multi_bank.schema_promoter as mod
+
+        monkeypatch.setattr(mod, "update_schema", AsyncMock())
+
+        result = await reinforce_shared_schema(
+            existing,
+            incoming,
+            source_bank_id="agent-a",  # same source as before
+            shared_bank_id="shared",
+            neo4j=AsyncMock(),
+        )
+        # cross_agent_count stays at 1 — same agent re-promoting doesn't count
+        assert result.properties["cross_agent_count"] == 1
+        assert result.properties["confidence_tier"] == "agent_local"
+        # evidence still accumulates (audit-only sum)
+        assert result.evidence_count == 14
+
+    @pytest.mark.asyncio
+    async def test_centroid_running_mean_persisted(self, monkeypatch):
+        existing = _shared_schema(sources=["agent-a"])
+        incoming = _strong_schema()
+        qdrant = AsyncMock()
+        qdrant.get_by_id = AsyncMock(return_value={"vector": [1.0, 0.0, 0.0], "payload": {}})
+        qdrant.upsert_schema_centroid = AsyncMock()
+
+        import hindsight_api.engine.multi_bank.schema_promoter as mod
+
+        monkeypatch.setattr(mod, "update_schema", AsyncMock())
+
+        await reinforce_shared_schema(
+            existing,
+            incoming,
+            source_bank_id="agent-b",
+            shared_bank_id="shared",
+            neo4j=AsyncMock(),
+            qdrant=qdrant,
+            incoming_centroid=[0.0, 1.0, 0.0],
+        )
+        qdrant.upsert_schema_centroid.assert_awaited_once()
+        kw = qdrant.upsert_schema_centroid.await_args.kwargs
+        assert kw["schema_id"] == str(existing.id)
+        # 1×(1,0,0) + 1×(0,1,0) → normalised → (~0.71, ~0.71, 0)
+        c = kw["centroid"]
+        assert c[0] == pytest.approx(0.7071, abs=0.01)
+        assert c[1] == pytest.approx(0.7071, abs=0.01)
+
+
+class TestBatchMatchVsCreate:
+    @pytest.mark.asyncio
+    async def test_match_promotes_via_reinforce_path(self, monkeypatch):
+        agent_schema = _strong_schema()
+        existing_shared = _shared_schema(sources=["agent-a"])
+        qdrant = AsyncMock()
+        qdrant.get_by_id = AsyncMock(return_value={"vector": [1.0, 0.0, 0.0]})
+        qdrant.search_similar = AsyncMock(
+            return_value=[
+                {
+                    "engram_id": str(existing_shared.id),
+                    "score": 0.95,
+                    "payload": {"schema_id": str(existing_shared.id)},
+                }
+            ]
+        )
+        qdrant.upsert_schema_centroid = AsyncMock()
+
+        import hindsight_api.engine.multi_bank.schema_promoter as mod
+
+        monkeypatch.setattr(mod, "list_active_schemas", AsyncMock(return_value=[agent_schema]))
+        monkeypatch.setattr(
+            mod,
+            "get_schema",
+            AsyncMock(return_value=existing_shared),
+        )
+        monkeypatch.setattr(mod, "update_schema", AsyncMock())
+        monkeypatch.setattr(mod, "create_schema", AsyncMock())  # must NOT be called
+
+        result = await promote_schemas_batch(
+            source_bank_id="agent-b",
+            shared_bank_id="shared",
+            neo4j=AsyncMock(),
+            qdrant=qdrant,
+        )
+        assert result.promoted == 0
+        assert result.reinforced == 1
+        assert result.reinforced_ids == [existing_shared.id]
+        mod.create_schema.assert_not_called()

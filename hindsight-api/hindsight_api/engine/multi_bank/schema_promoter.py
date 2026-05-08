@@ -31,19 +31,29 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
+from ..consolidation.c2_schema_writer import weighted_centroid
 from ..consolidation.constants import (
+    CROSS_AGENT_MATCH_THRESHOLD,
     SHARED_PROMOTION_MAX_DAYS_INACTIVE,
     SHARED_PROMOTION_MIN_CYCLES,
     SHARED_PROMOTION_MIN_EVIDENCE,
 )
 from ..schema.models import SchemaModel
-from ..schema.schema_repository import create_schema, list_active_schemas
+from ..schema.schema_repository import create_schema, get_schema, list_active_schemas, update_schema
 
 if TYPE_CHECKING:
     from ..neo4j_client import Neo4jEngineClient
     from ..qdrant_client import QdrantEngineClient
 
 logger = logging.getLogger(__name__)
+
+# Story 24 — Property keys we manage on Shared-side schemas. Kept in one
+# place so the create + reinforce paths stay in sync.
+_PROP_SOURCE_BANK_IDS = "source_bank_ids"
+_PROP_CROSS_AGENT_COUNT = "cross_agent_count"
+_PROP_CONFIDENCE_TIER = "confidence_tier"
+_TIER_AGENT_LOCAL = "agent_local"
+_TIER_CROSS_VALIDATED = "cross_agent_validated"
 
 
 @dataclass
@@ -54,10 +64,12 @@ class SchemaPromotionResult:
     shared_bank_id: str
     scanned: int = 0
     promoted: int = 0
+    reinforced: int = 0  # Story 24 — convergent matches with an existing Shared schema
     skipped_below_evidence: int = 0
     skipped_below_cycles: int = 0
     skipped_inactive: int = 0
     promoted_ids: list[_uuid_mod.UUID] = field(default_factory=list)
+    reinforced_ids: list[_uuid_mod.UUID] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
 
@@ -150,6 +162,12 @@ async def promote_schema_to_shared(
     promoted_props = dict(schema.properties)
     promoted_props["source_bank_id"] = source_bank_id
     promoted_props["promoted_from_schema_id"] = str(schema.id)
+    # Story 24 — initial cross-agent metadata. The list grows on later
+    # reinforce calls; the tier upgrades to "cross_agent_validated" once
+    # the second source bank arrives.
+    promoted_props[_PROP_SOURCE_BANK_IDS] = [source_bank_id]
+    promoted_props[_PROP_CROSS_AGENT_COUNT] = 1
+    promoted_props[_PROP_CONFIDENCE_TIER] = _TIER_AGENT_LOCAL
 
     copy = SchemaModel(
         id=new_id,
@@ -190,6 +208,154 @@ async def promote_schema_to_shared(
         schema.cycles_survived,
     )
     return copy
+
+
+async def match_existing_shared_schema(
+    centroid: list[float],
+    *,
+    shared_bank_id: str,
+    qdrant: "QdrantEngineClient",
+    neo4j: "Neo4jEngineClient",
+    threshold: float = CROSS_AGENT_MATCH_THRESHOLD,
+) -> tuple[SchemaModel, float] | None:
+    """Look for a Shared-Bank schema whose centroid is within ``threshold``.
+
+    Returns ``(schema, cosine)`` of the closest match, or ``None`` if none
+    qualify. Bank-scoped via Qdrant payload filter; ``kind=schema`` keeps
+    engram points out of the search. Best-effort — Qdrant errors are
+    logged as ``None`` so the caller falls back to the create path.
+    """
+    if not centroid:
+        return None
+    try:
+        hits = await qdrant.search_similar(
+            embedding=centroid,
+            limit=3,
+            filters={"must": [{"key": "bank_id", "match": {"value": shared_bank_id}}]},
+            kind="schema",
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logger.warning("[SchemaPromoter] match qdrant search failed: %s", exc.__class__.__name__)
+        return None
+    for hit in hits:
+        score = float(hit.get("score", 0.0))
+        if score < threshold:
+            continue
+        schema_id_raw = hit.get("payload", {}).get("schema_id") or hit.get("engram_id")
+        if not schema_id_raw:
+            continue
+        try:
+            sid = _uuid_mod.UUID(str(schema_id_raw))
+        except (TypeError, ValueError):
+            continue
+        try:
+            existing = await get_schema(neo4j, sid, label="Schema")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[SchemaPromoter] match get_schema failed: %s", exc.__class__.__name__)
+            continue
+        if existing is None or not isinstance(existing, SchemaModel):
+            continue
+        return existing, score
+    return None
+
+
+async def reinforce_shared_schema(
+    existing: SchemaModel,
+    incoming: SchemaModel,
+    *,
+    source_bank_id: str,
+    shared_bank_id: str,
+    neo4j: "Neo4jEngineClient",
+    qdrant: "QdrantEngineClient | None" = None,
+    incoming_centroid: list[float] | None = None,
+) -> SchemaModel:
+    """Merge an incoming agent-local schema into an existing Shared one.
+
+    Updates:
+        - ``evidence_count += incoming.evidence_count`` (audit-only sum)
+        - ``cross_agent_count++`` and ``source_bank_ids`` extended by the
+          new ``source_bank_id`` (deduplicated — re-promoting from the
+          same agent is a no-op on the counter)
+        - ``confidence_tier`` upgrades to ``cross_agent_validated`` once
+          two distinct source banks have contributed
+        - ``last_reinforced_at`` = now
+        - Centroid running mean (existing × cross_agent_count + incoming
+          × 1, L2-renormalised), persisted via ``upsert_schema_centroid``
+          when both ``qdrant`` and ``incoming_centroid`` are supplied
+    """
+    props = dict(existing.properties)
+
+    sources_raw = props.get(_PROP_SOURCE_BANK_IDS) or []
+    source_set = list(dict.fromkeys([*sources_raw, source_bank_id]))  # preserve order, dedup
+    new_count = len(source_set)
+    same_source = new_count == len(sources_raw)
+
+    props[_PROP_SOURCE_BANK_IDS] = source_set
+    props[_PROP_CROSS_AGENT_COUNT] = new_count
+    props[_PROP_CONFIDENCE_TIER] = (
+        _TIER_CROSS_VALIDATED if new_count >= 2 else _TIER_AGENT_LOCAL
+    )
+
+    now = datetime.now(timezone.utc)
+    partial = {
+        "properties_json": _serialise_props(props),
+        "evidence_count": int(existing.evidence_count) + int(incoming.evidence_count),
+        "last_reinforced_at": now.isoformat(),
+    }
+
+    await update_schema(neo4j, existing.id, partial, label="Schema")
+
+    if qdrant is not None and incoming_centroid is not None and existing.centroid_qdrant_id is not None:
+        try:
+            point = await qdrant.get_by_id(str(existing.centroid_qdrant_id))
+            old_centroid = list(point["vector"]) if point and point.get("vector") else None
+            if old_centroid:
+                # Existing centroid carries `cross_agent_count` agents'
+                # worth of evidence; the incoming schema is one new agent.
+                # Weight the running mean accordingly.
+                merged = weighted_centroid(
+                    old_centroid=old_centroid,
+                    old_weight=max(1, len(sources_raw)),
+                    new_centroid=incoming_centroid,
+                    new_weight=1,
+                )
+                payload = (point.get("payload") if point else {}) or {}
+                payload["bank_id"] = shared_bank_id
+                await qdrant.upsert_schema_centroid(
+                    schema_id=str(existing.id),
+                    centroid=merged,
+                    schema_meta=payload,
+                )
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.warning(
+                "[SchemaPromoter] cross-agent centroid merge failed schema=%s reason=%s",
+                existing.id,
+                exc.__class__.__name__,
+            )
+
+    logger.info(
+        "[SchemaPromoter] reinforced shared schema %s ← %s (source=%s sources_now=%d tier=%s%s)",
+        existing.id,
+        incoming.id,
+        source_bank_id,
+        new_count,
+        props[_PROP_CONFIDENCE_TIER],
+        " same-source-dedup" if same_source else "",
+    )
+    return existing.model_copy(
+        update={
+            "properties": props,
+            "evidence_count": partial["evidence_count"],
+            "last_reinforced_at": now,
+        }
+    )
+
+
+def _serialise_props(props: dict) -> str:
+    """Round-trip via the SchemaModel helper so the JSON shape stays canonical."""
+    from ..schema.models import _serialise_props_for_neo4j
+
+    return _serialise_props_for_neo4j(props)
 
 
 async def promote_schemas_batch(
@@ -240,6 +406,33 @@ async def promote_schemas_batch(
             if qdrant is not None and schema.centroid_qdrant_id is not None:
                 point = await qdrant.get_by_id(str(schema.centroid_qdrant_id))
                 centroid = list(point["vector"]) if point and point.get("vector") else None
+
+            # Story 24 — try cross-agent convergence first; fall back to
+            # the create path when no Shared schema sits within the
+            # cosine threshold.
+            match = None
+            if qdrant is not None and centroid is not None:
+                match = await match_existing_shared_schema(
+                    centroid,
+                    shared_bank_id=shared_bank_id,
+                    qdrant=qdrant,
+                    neo4j=neo4j,
+                )
+            if match is not None:
+                existing, _score = match
+                merged = await reinforce_shared_schema(
+                    existing,
+                    schema,
+                    source_bank_id=source_bank_id,
+                    shared_bank_id=shared_bank_id,
+                    neo4j=neo4j,
+                    qdrant=qdrant,
+                    incoming_centroid=centroid,
+                )
+                result.reinforced += 1
+                result.reinforced_ids.append(merged.id)
+                continue
+
             copy = await promote_schema_to_shared(
                 schema,
                 source_bank_id=source_bank_id,
@@ -257,10 +450,12 @@ async def promote_schemas_batch(
         result.promoted_ids.append(copy.id)
 
     logger.info(
-        "[SchemaPromoter] batch source=%s scanned=%d promoted=%d skipped(evid/cycles/inactive)=%d/%d/%d errors=%d",
+        "[SchemaPromoter] batch source=%s scanned=%d promoted=%d reinforced=%d "
+        "skipped(evid/cycles/inactive)=%d/%d/%d errors=%d",
         source_bank_id,
         result.scanned,
         result.promoted,
+        result.reinforced,
         result.skipped_below_evidence,
         result.skipped_below_cycles,
         result.skipped_inactive,
