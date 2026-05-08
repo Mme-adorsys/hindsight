@@ -56,8 +56,8 @@ from hindsight_api.engine.consolidation.c3_schema_restructure import (
     run_r3_hyper_schema,
 )
 from hindsight_api.engine.consolidation.consolidation1 import Consolidation1Service, ConsolidationResult
-from hindsight_api.engine.consolidation.multi_bank_promoter import PromotionResult, promote_batch
 from hindsight_api.engine.db_utils import acquire_with_retry
+from hindsight_api.engine.multi_bank.schema_promoter import SchemaPromotionResult, promote_schemas_batch
 from hindsight_api.engine.schema.schema_repository import get_schema as get_schema_node
 from hindsight_api.engine.tracer import PipelineTracer
 from hindsight_api.engine.utils import fq_table
@@ -138,7 +138,7 @@ class NCRReport:
     consolidation: ConsolidationResult | None = None
     c2: C2Report | None = None
     c3: C3Report | None = None
-    promotion: PromotionResult | None = None
+    promotion: SchemaPromotionResult | None = None
     errors: list[str] = field(default_factory=list)
     # Story 18 dropped buffer→neocortex promotion. The reactivate/downgrade
     # counters from Epic 24 stay surfaced here for back-compat with the
@@ -447,29 +447,30 @@ class NCROrchestrator:
                 logger.error("[NCR] %s", msg)
                 report.errors.append(msg)
 
-        # ── Shared Bank Promotion (optional) ──────────────────────
+        # ── Shared Bank Promotion (Story 26) ──────────────────────
+        # Schema-only path now: legacy engram-based promotion was retired
+        # in Story 26 once Story 02 made `layer='neocortex'` impossible.
         if (run_all or "shared" in _phases) and self._shared_bank_id and self._qdrant_client:
             try:
                 with _tracer.step("shared_promotion") as _s:
                     _s.set_input({"shared_bank_id": self._shared_bank_id})
-                    report.promotion = await promote_batch(
-                        pool=self._pool,
-                        qdrant_client=self._qdrant_client,
-                        neo4j_client=self._neo4j_client,
-                        bank_id=bank_id,
+                    report.promotion = await promote_schemas_batch(
+                        source_bank_id=bank_id,
                         shared_bank_id=self._shared_bank_id,
-                        agent_bank_ids=self._agent_bank_ids,
-                        llm=self._promotion_llm,
+                        neo4j=self._neo4j_client,
+                        qdrant=self._qdrant_client,
                     )
                     _s.set_output(asdict(report.promotion))
                     _s.set_rationale(
-                        f"{report.promotion.promoted} engrams met shared-bank promotion criteria, "
-                        f"{report.promotion.reinforced} reinforced existing shared engrams"
+                        f"{report.promotion.promoted} schemas promoted, "
+                        f"{report.promotion.reinforced} reinforced existing shared schemas, "
+                        f"{report.promotion.disputed} disputed forks"
                     )
                     logger.info(
-                        "[NCR] Shared/Promotion done: promoted=%d reinforced=%d",
+                        "[NCR] Shared/Promotion done: promoted=%d reinforced=%d disputed=%d",
                         report.promotion.promoted,
                         report.promotion.reinforced,
+                        report.promotion.disputed,
                     )
             except Exception as exc:
                 msg = f"Shared/Promotion failed: {exc}"
