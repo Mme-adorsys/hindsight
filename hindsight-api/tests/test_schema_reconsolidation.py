@@ -1,14 +1,20 @@
-"""Unit tests for Epic 25 Story 21 — schema reconsolidation."""
+"""Unit tests for Epic 25 Stories 21+22 — schema reconsolidation + drift throttle."""
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
 
-from hindsight_api.engine.consolidation.constants import SCHEMA_CENTROID_DRIFT_ALPHA
+from hindsight_api.engine.consolidation.constants import (
+    MAX_SCHEMA_DRIFTS_PER_DAY,
+    SCHEMA_CENTROID_DRIFT_ALPHA,
+)
 from hindsight_api.engine.reflect.schema_reconsolidation import (
+    _throttle_check,
     drift_centroid,
     reconsolidate_schema_hit,
 )
@@ -233,3 +239,176 @@ async def test_update_failure_logged_returns_none(monkeypatch, caplog):
         mode=RetrievalMode.PRECISION,
     )
     assert out is None
+
+
+# ---------------------------------------------------------------------------
+# Story 22 — Drift throttle + audit
+# ---------------------------------------------------------------------------
+
+
+def _wired_pg_pool():
+    conn = MagicMock()
+    conn.execute = AsyncMock()
+    pool = MagicMock()
+
+    @asynccontextmanager
+    async def _ctx(_pool):
+        yield conn
+
+    return pool, conn, _ctx
+
+
+def _drift_schema(*, drift_count: int = 0, last_drifted_at=None) -> SchemaModel:
+    return SchemaModel(
+        id=uuid4(),
+        description="ritual",
+        properties={"format": "1on1"},
+        evidence_count=8,
+        access_count=2,
+        drift_count=drift_count,
+        last_drifted_at=last_drifted_at,
+    )
+
+
+class TestThrottleCheck:
+    def test_constant_pinned_at_5(self):
+        assert MAX_SCHEMA_DRIFTS_PER_DAY == 5
+
+    def test_fresh_schema_allows_drift(self):
+        s = _drift_schema()
+        new_count, new_last, allowed = _throttle_check(s, now=datetime.now(timezone.utc))
+        assert allowed is True
+        assert new_count == 0
+        assert new_last is None
+
+    def test_below_cap_allows_drift(self):
+        now = datetime.now(timezone.utc)
+        s = _drift_schema(drift_count=4, last_drifted_at=now - timedelta(hours=2))
+        _, _, allowed = _throttle_check(s, now=now)
+        assert allowed is True
+
+    def test_at_cap_blocks_drift(self):
+        now = datetime.now(timezone.utc)
+        s = _drift_schema(drift_count=MAX_SCHEMA_DRIFTS_PER_DAY, last_drifted_at=now - timedelta(hours=2))
+        _, _, allowed = _throttle_check(s, now=now)
+        assert allowed is False
+
+    def test_window_rolls_after_24h(self):
+        now = datetime.now(timezone.utc)
+        s = _drift_schema(drift_count=MAX_SCHEMA_DRIFTS_PER_DAY, last_drifted_at=now - timedelta(days=2))
+        new_count, new_last, allowed = _throttle_check(s, now=now)
+        assert new_count == 0
+        assert new_last is None
+        assert allowed is True
+
+
+@pytest.mark.asyncio
+async def test_validation_drift_persists_audit_row(monkeypatch):
+    schema = _drift_schema()
+    qdrant = AsyncMock()
+    qdrant.get_by_id = AsyncMock(return_value={"vector": [1.0, 0.0, 0.0], "payload": {}})
+    qdrant.upsert_schema_centroid = AsyncMock()
+
+    import hindsight_api.engine.reflect.schema_reconsolidation as mod
+
+    monkeypatch.setattr(mod, "_get", AsyncMock(return_value=schema), raising=False)
+    monkeypatch.setattr(mod, "update_schema", AsyncMock(return_value=schema))
+
+    pool, conn, ctx = _wired_pg_pool()
+    monkeypatch.setattr(mod, "acquire_with_retry", ctx)
+
+    await reconsolidate_schema_hit(
+        _schema_hit(schema),
+        neo4j=AsyncMock(),
+        mode=RetrievalMode.VALIDATION,
+        query_embedding=[0.0, 1.0, 0.0],
+        prediction_error=True,
+        qdrant=qdrant,
+        pool=pool,
+        bank_id="bank-a",
+    )
+    conn.execute.assert_awaited_once()
+    args = conn.execute.await_args.args
+    sql, bank_arg, schema_arg, alpha_arg, hash_arg, mode_arg = args
+    assert "INSERT INTO" in sql
+    assert "schema_drift_events" in sql
+    assert bank_arg == "bank-a"
+    assert schema_arg == str(schema.id)
+    assert alpha_arg == pytest.approx(SCHEMA_CENTROID_DRIFT_ALPHA)
+    assert mode_arg == "validation"
+    assert hash_arg
+
+
+@pytest.mark.asyncio
+async def test_throttled_drift_skips_qdrant_and_audit(monkeypatch):
+    now = datetime.now(timezone.utc)
+    schema = _drift_schema(
+        drift_count=MAX_SCHEMA_DRIFTS_PER_DAY,
+        last_drifted_at=now - timedelta(hours=1),
+    )
+    qdrant = AsyncMock()
+    qdrant.get_by_id = AsyncMock()
+    qdrant.upsert_schema_centroid = AsyncMock()
+
+    import hindsight_api.engine.reflect.schema_reconsolidation as mod
+
+    monkeypatch.setattr(mod, "_get", AsyncMock(return_value=schema), raising=False)
+    upd = AsyncMock(return_value=schema)
+    monkeypatch.setattr(mod, "update_schema", upd)
+
+    pool, conn, ctx = _wired_pg_pool()
+    monkeypatch.setattr(mod, "acquire_with_retry", ctx)
+
+    await reconsolidate_schema_hit(
+        _schema_hit(schema),
+        neo4j=AsyncMock(),
+        mode=RetrievalMode.VALIDATION,
+        query_embedding=[0.0, 1.0, 0.0],
+        prediction_error=True,
+        qdrant=qdrant,
+        pool=pool,
+        bank_id="bank-a",
+    )
+
+    qdrant.upsert_schema_centroid.assert_not_called()
+    conn.execute.assert_not_called()
+    partial = upd.await_args.args[2]
+    assert "access_count" in partial
+    assert "drift_count" not in partial
+
+
+@pytest.mark.asyncio
+async def test_drift_after_24h_window_rolls_counter(monkeypatch):
+    now = datetime.now(timezone.utc)
+    schema = _drift_schema(
+        drift_count=MAX_SCHEMA_DRIFTS_PER_DAY,
+        last_drifted_at=now - timedelta(days=2),
+    )
+    qdrant = AsyncMock()
+    qdrant.get_by_id = AsyncMock(return_value={"vector": [1.0, 0.0, 0.0], "payload": {}})
+    qdrant.upsert_schema_centroid = AsyncMock()
+
+    import hindsight_api.engine.reflect.schema_reconsolidation as mod
+
+    monkeypatch.setattr(mod, "_get", AsyncMock(return_value=schema), raising=False)
+    upd = AsyncMock(return_value=schema)
+    monkeypatch.setattr(mod, "update_schema", upd)
+
+    pool, _conn, ctx = _wired_pg_pool()
+    monkeypatch.setattr(mod, "acquire_with_retry", ctx)
+
+    await reconsolidate_schema_hit(
+        _schema_hit(schema),
+        neo4j=AsyncMock(),
+        mode=RetrievalMode.VALIDATION,
+        query_embedding=[0.0, 1.0, 0.0],
+        prediction_error=True,
+        qdrant=qdrant,
+        pool=pool,
+        bank_id="bank-a",
+    )
+
+    qdrant.upsert_schema_centroid.assert_awaited_once()
+    partial = upd.await_args.args[2]
+    assert partial["drift_count"] == 1
+    assert partial["last_drifted_at"] is not None

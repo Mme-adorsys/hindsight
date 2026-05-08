@@ -84,3 +84,13 @@ RECALL_DEFAULT_EVIDENCE_N: int = 3
 # α=0.05 keeps a single recall from yanking the centroid more than ~3°,
 # matching the engram-side reconsolidation conservatism (concept §10).
 SCHEMA_CENTROID_DRIFT_ALPHA: float = 0.05
+
+# Story 22 — Schema-drift throttle. A single contrarian Recall must not
+# be able to cumulatively bend a schema centroid in one direction; cap
+# the number of Validation-mode drift events per rolling 24h window.
+# C2-side reinforce_schema resets ``drift_count`` back to zero when a
+# fresh cluster lands on the schema (the schema is "real" again so the
+# audit trail can start over). 5 drifts/day ≈ ~15° max angular drift
+# per day at α=0.05, which is roughly the engram-side reconsolidation
+# strength delta budget.
+MAX_SCHEMA_DRIFTS_PER_DAY: int = 5

@@ -88,6 +88,13 @@ class _SchemaBase(BaseModel):
     # is the wallclock equivalent. Persisted as Neo4j primitives.
     access_count: int = Field(default=0, ge=0)
     last_accessed: datetime | None = Field(default=None)
+    # Story 22 — Drift tracking. ``drift_count`` is incremented every time
+    # Validation-mode reconsolidation actually nudges the centroid; the
+    # rolling 24h window resets it back to zero (see throttle in
+    # reflect/schema_reconsolidation.py). ``last_drifted_at`` carries the
+    # wallclock of the most recent successful drift event.
+    drift_count: int = Field(default=0, ge=0)
+    last_drifted_at: datetime | None = Field(default=None)
 
     def to_neo4j_props(self) -> dict[str, Any]:
         """Serialise to Neo4j-compatible primitives.
@@ -109,6 +116,8 @@ class _SchemaBase(BaseModel):
             "last_reinforced_at": _to_iso(self.last_reinforced_at),
             "access_count": self.access_count,
             "last_accessed": _to_iso(self.last_accessed),
+            "drift_count": self.drift_count,
+            "last_drifted_at": _to_iso(self.last_drifted_at),
         }
 
     @classmethod
@@ -127,6 +136,8 @@ class _SchemaBase(BaseModel):
             last_reinforced_at=_from_iso(props.get("last_reinforced_at")),
             access_count=int(props.get("access_count", 0) or 0),
             last_accessed=_from_iso(props.get("last_accessed")),
+            drift_count=int(props.get("drift_count", 0) or 0),
+            last_drifted_at=_from_iso(props.get("last_drifted_at")),
         )
 
 

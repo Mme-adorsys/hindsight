@@ -59,7 +59,9 @@ async def create_schema(
         "    s.status = $status, "
         "    s.last_reinforced_at = $last_reinforced_at, "
         "    s.access_count = $access_count, "
-        "    s.last_accessed = $last_accessed "
+        "    s.last_accessed = $last_accessed, "
+        "    s.drift_count = $drift_count, "
+        "    s.last_drifted_at = $last_drifted_at "
         "ON CREATE SET s.created_at = $created_at "
         "RETURN properties(s) AS p"
     )

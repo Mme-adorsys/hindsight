@@ -286,6 +286,15 @@ async def reinforce_schema(
         status=schema.status or "active",
         created_at=schema.created_at,
         last_reinforced_at=now,
+        # Carry over recall-time counters so reinforcement doesn't blank
+        # the Story-21 reconsolidation state.
+        access_count=int(schema.access_count),
+        last_accessed=schema.last_accessed,
+        # Story 22 — fresh evidence makes the schema "real" again, so the
+        # drift budget resets. The next Validation-mode recall can start
+        # a new 24h window.
+        drift_count=0,
+        last_drifted_at=None,
     )
 
     await update_schema(neo4j, schema.id, updated.to_neo4j_props(), label="Schema")
@@ -401,6 +410,15 @@ async def reinforce_schema_single_engram(
         status=schema.status or "active",
         created_at=schema.created_at,
         last_reinforced_at=now,
+        # Carry over recall-time counters so reinforcement doesn't blank
+        # the Story-21 reconsolidation state.
+        access_count=int(schema.access_count),
+        last_accessed=schema.last_accessed,
+        # Story 22 — fresh evidence makes the schema "real" again, so the
+        # drift budget resets. The next Validation-mode recall can start
+        # a new 24h window.
+        drift_count=0,
+        last_drifted_at=None,
     )
 
     await update_schema(neo4j, schema.id, updated.to_neo4j_props(), label="Schema")
