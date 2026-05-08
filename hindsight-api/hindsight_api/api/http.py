@@ -1461,6 +1461,13 @@ def create_app(
         app.include_router(extension_router, prefix="/ext", tags=["Extension"])
         logging.info("HTTP extension router mounted at /ext/")
 
+    # Control Plane Schema-Explorer endpoints (Epic 25 Story 27).
+    from .cp_schemas import router as cp_schema_router
+
+    app.state.memory = memory  # cp_schemas resolves the pg pool from here
+    app.include_router(cp_schema_router)
+    logging.info("Control Plane Schema-Explorer router mounted at /v1/cp/")
+
     return app
 
 
