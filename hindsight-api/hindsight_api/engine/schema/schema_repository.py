@@ -157,6 +157,28 @@ async def link_specialization(
     )
 
 
+async def link_contradicts(
+    client: Any,
+    schema_a_id: UUID,
+    schema_b_id: UUID,
+) -> None:
+    """Create symmetric (:Schema)-[:CONTRADICTS]->(:Schema) edges (Story 25).
+
+    Two MERGEs in one query so the relationship is bidirectional — Multi-Bank
+    schemas with disputed properties point at each other as alternative
+    hypotheses, not as a parent/child pair. Idempotent via MERGE.
+    """
+    query = (
+        "MATCH (a:Schema {id: $a_id}), (b:Schema {id: $b_id}) "
+        "MERGE (a)-[:CONTRADICTS]->(b) "
+        "MERGE (b)-[:CONTRADICTS]->(a)"
+    )
+    await client.run_cypher(
+        query,
+        params={"a_id": str(schema_a_id), "b_id": str(schema_b_id)},
+    )
+
+
 async def materialize_schema_node(
     client: Any,
     model: _SchemaBase,

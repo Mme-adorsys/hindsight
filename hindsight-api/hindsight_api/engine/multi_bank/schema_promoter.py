@@ -39,7 +39,14 @@ from ..consolidation.constants import (
     SHARED_PROMOTION_MIN_EVIDENCE,
 )
 from ..schema.models import SchemaModel
-from ..schema.schema_repository import create_schema, get_schema, list_active_schemas, update_schema
+from ..schema.schema_repository import (
+    create_schema,
+    get_schema,
+    link_contradicts,
+    list_active_schemas,
+    update_schema,
+)
+from .property_diff import ConflictReport, detect_conflicts
 
 if TYPE_CHECKING:
     from ..neo4j_client import Neo4jEngineClient
@@ -52,8 +59,10 @@ logger = logging.getLogger(__name__)
 _PROP_SOURCE_BANK_IDS = "source_bank_ids"
 _PROP_CROSS_AGENT_COUNT = "cross_agent_count"
 _PROP_CONFIDENCE_TIER = "confidence_tier"
+_PROP_DISPUTED_KEYS = "disputed_keys"  # Story 25 — keys flagged in detect_conflicts
 _TIER_AGENT_LOCAL = "agent_local"
 _TIER_CROSS_VALIDATED = "cross_agent_validated"
+_TIER_DISPUTED = "cross_agent_disputed"  # Story 25
 
 
 @dataclass
@@ -65,11 +74,13 @@ class SchemaPromotionResult:
     scanned: int = 0
     promoted: int = 0
     reinforced: int = 0  # Story 24 — convergent matches with an existing Shared schema
+    disputed: int = 0  # Story 25 — conflicts detected; alternative hypothesis minted
     skipped_below_evidence: int = 0
     skipped_below_cycles: int = 0
     skipped_inactive: int = 0
     promoted_ids: list[_uuid_mod.UUID] = field(default_factory=list)
     reinforced_ids: list[_uuid_mod.UUID] = field(default_factory=list)
+    disputed_ids: list[_uuid_mod.UUID] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
 
@@ -292,9 +303,7 @@ async def reinforce_shared_schema(
 
     props[_PROP_SOURCE_BANK_IDS] = source_set
     props[_PROP_CROSS_AGENT_COUNT] = new_count
-    props[_PROP_CONFIDENCE_TIER] = (
-        _TIER_CROSS_VALIDATED if new_count >= 2 else _TIER_AGENT_LOCAL
-    )
+    props[_PROP_CONFIDENCE_TIER] = _TIER_CROSS_VALIDATED if new_count >= 2 else _TIER_AGENT_LOCAL
 
     now = datetime.now(timezone.utc)
     partial = {
@@ -356,6 +365,108 @@ def _serialise_props(props: dict) -> str:
     from ..schema.models import _serialise_props_for_neo4j
 
     return _serialise_props_for_neo4j(props)
+
+
+async def _mint_disputed_alternative(
+    *,
+    incoming: SchemaModel,
+    existing: SchemaModel,
+    conflicts: list[ConflictReport],
+    source_bank_id: str,
+    shared_bank_id: str,
+    neo4j: "Neo4jEngineClient",
+    qdrant: "QdrantEngineClient | None" = None,
+    qdrant_centroid: list[float] | None = None,
+) -> SchemaModel:
+    """Story 25 conflict path — fork instead of merge.
+
+    Mints a fresh Shared-Bank schema carrying the incoming agent's view of
+    the disputed slots, marks both schemas ``cross_agent_disputed``, and
+    links them via a symmetric :CONTRADICTS edge. Existing Shared schema
+    is not mutated beyond the tier flip — its evidence trail stays
+    intact, the alternative hypothesis lives next to it.
+    """
+    new_id = _uuid_mod.uuid4()
+    now = datetime.now(timezone.utc)
+    fork_props = dict(incoming.properties)
+    fork_props["source_bank_id"] = source_bank_id
+    fork_props["promoted_from_schema_id"] = str(incoming.id)
+    fork_props[_PROP_SOURCE_BANK_IDS] = [source_bank_id]
+    fork_props[_PROP_CROSS_AGENT_COUNT] = 1
+    fork_props[_PROP_CONFIDENCE_TIER] = _TIER_DISPUTED
+    fork_props[_PROP_DISPUTED_KEYS] = sorted({c.key for c in conflicts})
+
+    fork = SchemaModel(
+        id=new_id,
+        description=incoming.description,
+        properties=fork_props,
+        centroid_qdrant_id=new_id if qdrant_centroid else None,
+        evidence_engram_ids=[],
+        evidence_count=int(incoming.evidence_count),
+        cycles_survived=int(incoming.cycles_survived),
+        status="active",
+        created_at=now,
+        last_reinforced_at=now,
+    )
+    await create_schema(neo4j, fork, label="Schema")
+
+    # Flip the existing schema's tier so downstream consumers know it has
+    # a contested twin. ``disputed_keys`` mirror what the fork advertises.
+    existing_props = dict(existing.properties)
+    existing_props[_PROP_CONFIDENCE_TIER] = _TIER_DISPUTED
+    existing_props[_PROP_DISPUTED_KEYS] = sorted(
+        {*(existing_props.get(_PROP_DISPUTED_KEYS) or []), *(c.key for c in conflicts)}
+    )
+    try:
+        await update_schema(
+            neo4j,
+            existing.id,
+            {"properties_json": _serialise_props(existing_props)},
+            label="Schema",
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logger.warning(
+            "[SchemaPromoter] disputed-tier update failed for existing=%s reason=%s",
+            existing.id,
+            exc.__class__.__name__,
+        )
+
+    try:
+        await link_contradicts(neo4j, existing.id, fork.id)
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logger.warning(
+            "[SchemaPromoter] :CONTRADICTS edge failed %s↔%s reason=%s",
+            existing.id,
+            fork.id,
+            exc.__class__.__name__,
+        )
+
+    if qdrant is not None and qdrant_centroid is not None:
+        try:
+            await qdrant.upsert_schema_centroid(
+                schema_id=str(new_id),
+                centroid=qdrant_centroid,
+                schema_meta={
+                    "bank_id": shared_bank_id,
+                    "source_bank_id": source_bank_id,
+                    "confidence_tier": _TIER_DISPUTED,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[SchemaPromoter] disputed centroid upsert failed schema=%s reason=%s",
+                new_id,
+                exc.__class__.__name__,
+            )
+
+    logger.info(
+        "[SchemaPromoter] disputed fork existing=%s fork=%s source=%s keys=%s",
+        existing.id,
+        new_id,
+        source_bank_id,
+        fork_props[_PROP_DISPUTED_KEYS],
+    )
+    return fork
 
 
 async def promote_schemas_batch(
@@ -420,6 +531,27 @@ async def promote_schemas_batch(
                 )
             if match is not None:
                 existing, _score = match
+                # Story 25 — before merging, check whether the property
+                # sets actually agree. Categorical/numeric/scalar
+                # disagreement above the configured thresholds means the
+                # two banks describe different things; we mint a parallel
+                # "alternative hypothesis" instead of corrupting the
+                # existing shared schema.
+                conflicts = detect_conflicts(existing.properties, schema.properties)
+                if conflicts:
+                    fork = await _mint_disputed_alternative(
+                        incoming=schema,
+                        existing=existing,
+                        conflicts=conflicts,
+                        source_bank_id=source_bank_id,
+                        shared_bank_id=shared_bank_id,
+                        neo4j=neo4j,
+                        qdrant=qdrant,
+                        qdrant_centroid=centroid,
+                    )
+                    result.disputed += 1
+                    result.disputed_ids.append(fork.id)
+                    continue
                 merged = await reinforce_shared_schema(
                     existing,
                     schema,

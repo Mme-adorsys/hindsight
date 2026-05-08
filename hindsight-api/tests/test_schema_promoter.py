@@ -474,6 +474,135 @@ class TestReinforceSharedSchema:
         assert c[1] == pytest.approx(0.7071, abs=0.01)
 
 
+# ---------------------------------------------------------------------------
+# Story 25 — Property conflicts + :CONTRADICTS edge
+# ---------------------------------------------------------------------------
+
+
+class TestPropertyDiff:
+    def test_compatible_categorical_no_conflict(self):
+        from hindsight_api.engine.multi_bank.property_diff import detect_conflicts
+
+        a = {"tags": ["coffee", "morning", "1on1"]}
+        b = {"tags": ["coffee", "morning"]}
+        assert detect_conflicts(a, b) == []
+
+    def test_disjoint_categorical_flagged(self):
+        from hindsight_api.engine.multi_bank.property_diff import detect_conflicts
+
+        a = {"tags": ["coffee", "morning"]}
+        b = {"tags": ["beer", "evening"]}
+        conflicts = detect_conflicts(a, b)
+        assert len(conflicts) == 1
+        assert conflicts[0].key == "tags"
+        assert conflicts[0].kind == "categorical"
+
+    def test_numeric_envelope_within_range(self):
+        from hindsight_api.engine.multi_bank.property_diff import detect_conflicts
+
+        a = {"duration": {"min": 30, "max": 60, "mean": 45}}
+        b = {"duration": {"min": 25, "max": 55, "mean": 40}}
+        assert detect_conflicts(a, b) == []  # 5 < 0.5*30
+
+    def test_numeric_envelope_diverge(self):
+        from hindsight_api.engine.multi_bank.property_diff import detect_conflicts
+
+        a = {"duration": {"min": 30, "max": 60, "mean": 45}}
+        b = {"duration": {"min": 100, "max": 120, "mean": 110}}
+        conflicts = detect_conflicts(a, b)
+        assert any(c.kind == "numeric" and c.key == "duration" for c in conflicts)
+
+    def test_scalar_inequality_flagged(self):
+        from hindsight_api.engine.multi_bank.property_diff import detect_conflicts
+
+        conflicts = detect_conflicts({"mood": "productive"}, {"mood": "casual"})
+        assert len(conflicts) == 1
+        assert conflicts[0].kind == "scalar"
+
+    def test_bookkeeping_keys_skipped(self):
+        from hindsight_api.engine.multi_bank.property_diff import detect_conflicts
+
+        a = {"source_bank_id": "agent-a", "cross_agent_count": 1}
+        b = {"source_bank_id": "agent-b", "cross_agent_count": 2}
+        assert detect_conflicts(a, b) == []  # bookkeeping divergence is fine
+
+    def test_only_one_side_has_key_no_conflict(self):
+        from hindsight_api.engine.multi_bank.property_diff import detect_conflicts
+
+        assert detect_conflicts({"a": "x"}, {"b": "y"}) == []
+
+
+class TestDisputedFork:
+    @pytest.mark.asyncio
+    async def test_conflict_mints_alternative_and_links(self, monkeypatch):
+        # Existing shared schema describes mood=productive; incoming says casual.
+        existing = _shared_schema(sources=["agent-a"])
+        existing = existing.model_copy(update={"properties": {**existing.properties, "mood": "productive"}})
+        incoming = _strong_schema(evidence=12)
+        incoming = incoming.model_copy(update={"properties": {**incoming.properties, "mood": "casual"}})
+
+        qdrant = AsyncMock()
+        qdrant.get_by_id = AsyncMock(return_value={"vector": [1.0, 0.0, 0.0]})
+        qdrant.search_similar = AsyncMock(
+            return_value=[
+                {
+                    "engram_id": str(existing.id),
+                    "score": 0.95,
+                    "payload": {"schema_id": str(existing.id)},
+                }
+            ]
+        )
+        qdrant.upsert_schema_centroid = AsyncMock()
+
+        import hindsight_api.engine.multi_bank.schema_promoter as mod
+
+        monkeypatch.setattr(mod, "list_active_schemas", AsyncMock(return_value=[incoming]))
+        monkeypatch.setattr(mod, "get_schema", AsyncMock(return_value=existing))
+
+        # Capture create / update / link calls.
+        created: list = []
+        updates: list = []
+        links: list = []
+
+        async def _create(_neo4j, model, *, label="Schema"):
+            created.append(model)
+            return model
+
+        async def _update(_neo4j, _sid, partial, *, label="Schema"):
+            updates.append(partial)
+            return existing
+
+        async def _link(_neo4j, a, b):
+            links.append((a, b))
+
+        monkeypatch.setattr(mod, "create_schema", _create)
+        monkeypatch.setattr(mod, "update_schema", _update)
+        monkeypatch.setattr(mod, "link_contradicts", _link)
+
+        result = await promote_schemas_batch(
+            source_bank_id="agent-b",
+            shared_bank_id="shared",
+            neo4j=AsyncMock(),
+            qdrant=qdrant,
+        )
+
+        assert result.disputed == 1
+        assert result.reinforced == 0
+        assert result.promoted == 0
+
+        # Fork minted with disputed tier
+        assert len(created) == 1
+        fork = created[0]
+        assert fork.properties["confidence_tier"] == "cross_agent_disputed"
+        assert "mood" in fork.properties["disputed_keys"]
+        # Existing flipped to disputed via update
+        assert any(
+            "cross_agent_disputed" in (u.get("properties_json") or "") for u in updates
+        )
+        # Symmetric edge
+        assert links == [(existing.id, fork.id)]
+
+
 class TestBatchMatchVsCreate:
     @pytest.mark.asyncio
     async def test_match_promotes_via_reinforce_path(self, monkeypatch):
