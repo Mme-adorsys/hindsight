@@ -94,3 +94,14 @@ SCHEMA_CENTROID_DRIFT_ALPHA: float = 0.05
 # per day at α=0.05, which is roughly the engram-side reconsolidation
 # strength delta budget.
 MAX_SCHEMA_DRIFTS_PER_DAY: int = 5
+
+# Story 23 — Multi-Bank Schema-Promotion. Replaces the legacy engram-based
+# Shared-Bank promotion (Epic 14) with schema-level Sharing — generalised
+# patterns travel across agents, individual episodes do not. A schema
+# qualifies once it has accumulated enough evidence (10 buffer engrams),
+# survived enough C2 cycles to be considered stable (3 weeks at the
+# default 7-day cadence), and is still being reinforced (last touched
+# within the last 7 days). Drift guard in tests/test_schema_promoter.py.
+SHARED_PROMOTION_MIN_EVIDENCE: int = 10
+SHARED_PROMOTION_MIN_CYCLES: int = 3
+SHARED_PROMOTION_MAX_DAYS_INACTIVE: int = 7

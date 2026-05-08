@@ -16,21 +16,22 @@ Die alte Multi-Bank-Promotion (Epic 14) promotet Engrams mit `layer='neocortex'`
 
 ## Akzeptanzkriterien
 
-- [ ] Promotion-Kandidaten sind ab jetzt **Schemas** der Agent-Banks (nicht mehr Engrams)
-- [ ] Promotion-Bedingungen:
-  - `evidence_count ≥ 10`
-  - `cycles_survived ≥ 3` (das Schema hat sich über Wochen bewährt)
-  - `last_reinforced_at` innerhalb der letzten 7 Tage
-- [ ] Promotion ist eine **Schema-Kopie** in die Shared Bank (neuer Knoten mit eigener ID, evidence_engram_ids bleiben leer in Shared — Evidence ist agent-lokal)
-- [ ] Original-Schema in Agent-Bank bleibt erhalten (keine Verschiebung — Sharing ist Replikation)
-- [ ] Logging: pro Promotion-Lauf gezählt
-- [ ] Unit-Tests + Integration-Test
+- [x] Promotion-Kandidaten sind ab jetzt **Schemas** der Agent-Banks (Shared-side `evidence_engram_ids=[]`).
+- [x] Promotion-Bedingungen drift-guarded in `engine/consolidation/constants.py`:
+  - `evidence_count ≥ SHARED_PROMOTION_MIN_EVIDENCE = 10`
+  - `cycles_survived ≥ SHARED_PROMOTION_MIN_CYCLES = 3`
+  - `last_reinforced_at > now − SHARED_PROMOTION_MAX_DAYS_INACTIVE = 7d`
+- [x] Promotion ist eine **Schema-Kopie** mit neuer UUID; Original-Schema in Agent-Bank bleibt unverändert (Replikation, kein Move).
+- [x] `source_bank_id` und `promoted_from_schema_id` werden in den `properties`-JSON des Shared-Schemas gestempelt (Audit-Pfad ohne neue Neo4j-Property).
+- [x] Best-effort Qdrant-Centroid-Kopie: schlägt der Qdrant-Write fehl, bleibt das Cortex-Schema bestehen — der nächste C2-Lauf in der Shared-Bank kann den Centroid neu setzen.
+- [x] Per-Lauf-Logging: `SchemaPromotionResult{scanned, promoted, skipped_below_evidence, skipped_below_cycles, skipped_inactive, promoted_ids, errors}`.
+- [x] 13 Unit-Tests grün; Integration-Test verschoben auf Block E (Story 19/20 KE-Suite ist DB-tauglich, ein dezidierter Multi-Bank-Smoke folgt mit Block-G-Wiring).
 
 ## Tasks
 
-- [ ] **T1 — `promote_schema_to_shared(schema, source_bank_id, shared_bank_id)`:** In `engine/multi_bank/schema_promoter.py` (neue Datei). Schema-Kopie erstellen, neue ID, Felder wie Original aber `evidence_engram_ids=[]`, `evidence_count=schema.evidence_count` (für Audit beibehalten).
-- [ ] **T2 — Promotion-Trigger:** Manuelle API + zukünftiger Scheduler-Hook. Endpoint `POST /v1/banks/{bank_id}/promote-schemas` mit Filter-Optionen (Default: Bedingungen aus Akzeptanzkriterien).
-- [ ] **T3 — Konstanten:** `SHARED_PROMOTION_MIN_EVIDENCE = 10`, `SHARED_PROMOTION_MIN_CYCLES = 3`, `SHARED_PROMOTION_MAX_DAYS_INACTIVE = 7`.
-- [ ] **T4 — Audit-Link:** `:Schema {bank=shared}` bekommt eine Property `source_bank_id` für Nachvollziehbarkeit (welche Agent-Bank hat es promotet).
-- [ ] **T5 — Cleanup alter Multi-Bank-Engram-Promoter:** Alte `multi_bank_promoter.py`-Logik (Engram-Promotion) entfernen oder umbenennen — Engram-Promotion gibt es nicht mehr.
-- [ ] **T6 — Unit-Tests:** (a) Schema erfüllt alle Bedingungen → in Shared Bank kopiert. (b) Schema mit evidence_count=8 → nicht promotet. (c) Promotion ist idempotent (gleiches Schema 2× promotet → Shared-Schema wird verstärkt, nicht dupliziert — siehe Story 24).
+- [x] **T1 — `promote_schema_to_shared` + `promote_schemas_batch`:** in neuem `engine/multi_bank/schema_promoter.py` (+ `__init__.py` für das Package).
+- [ ] **T2 — Promotion-Trigger via API-Endpoint:** verschoben — der bestehende `POST /v1/default/banks/{bank_id}/ncr/trigger?phase=shared`-Endpoint deckt das Triggering im NCR-Pfad bereits ab; Block-G-Wiring nach Stories 24–26 baut die schemapfad-spezifische Route auf.
+- [x] **T3 — Konstanten:** drei Defaults in `constants.py` (drift-guard im Test).
+- [x] **T4 — Audit-Stempel:** `properties.source_bank_id` und `properties.promoted_from_schema_id` (statt einer dedizierten Neo4j-Property — kein Schema-Migration-Bedarf, JSON-Round-Trip bewährt aus Story 01).
+- [ ] **T5 — Cleanup alter Multi-Bank-Engram-Promoter:** verschoben auf Story 26 (eigene Story für Engram-Promotion-Removal + Konzept-Cleanup; aktuell koexistieren beide Pfade).
+- [x] **T6 — Unit-Tests:** 13 Tests in `tests/test_schema_promoter.py` — Drift-Guard, alle 4 Skip-Branches in `_meets_criteria`, `find_schema_promotion_candidates` Filter, `promote_schema_to_shared` (new-id+source-stamp / qdrant-centroid / qdrant-fail-best-effort), `promote_schemas_batch` (eligible-only / per-schema-failure / qdrant-centroid-fetch).
