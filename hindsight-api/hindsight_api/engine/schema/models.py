@@ -82,6 +82,12 @@ class _SchemaBase(BaseModel):
     status: str = Field(default="active", description="'active' or 'archived' (R5 Schema Death).")
     created_at: datetime = Field(default_factory=_utcnow)
     last_reinforced_at: datetime | None = Field(default=None)
+    # Story 21 — Recall reactivates the schema's representation. ``access_count``
+    # mirrors the engram-side counter (concept §4.1) so HybridRetriever
+    # reconsolidation has somewhere to write the recall hit; ``last_accessed``
+    # is the wallclock equivalent. Persisted as Neo4j primitives.
+    access_count: int = Field(default=0, ge=0)
+    last_accessed: datetime | None = Field(default=None)
 
     def to_neo4j_props(self) -> dict[str, Any]:
         """Serialise to Neo4j-compatible primitives.
@@ -101,6 +107,8 @@ class _SchemaBase(BaseModel):
             "status": self.status,
             "created_at": _to_iso(self.created_at),
             "last_reinforced_at": _to_iso(self.last_reinforced_at),
+            "access_count": self.access_count,
+            "last_accessed": _to_iso(self.last_accessed),
         }
 
     @classmethod
@@ -117,6 +125,8 @@ class _SchemaBase(BaseModel):
             status=props.get("status", "active") or "active",
             created_at=_from_iso(props.get("created_at")) or _utcnow(),
             last_reinforced_at=_from_iso(props.get("last_reinforced_at")),
+            access_count=int(props.get("access_count", 0) or 0),
+            last_accessed=_from_iso(props.get("last_accessed")),
         )
 
 

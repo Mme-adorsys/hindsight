@@ -17,21 +17,22 @@ Die bestehende Reconsolidation-Pipeline (Epic 10) operiert auf Engrams: bei Reca
 
 ## Akzeptanzkriterien
 
-- [ ] Reconsolidation-Orchestrator erkennt Schema-Hits (`hit.kind == "schema"`)
-- [ ] Schema-Reconsolidation-Level (mode-abhängig):
-  - **Precision:** nur `access_count++`, `last_accessed=now`
-  - **Exploration:** access_count + Property-Refresh aus aktuellen Top-N Evidence-Engrams
-  - **Analogy:** access_count + ggf. Hyper-Schema-Linking-Hint
-  - **Validation:** access_count + Centroid-Drift bei Prediction Error
-- [ ] Centroid-Drift: bei Validation-Mode mit Prediction Error wird der Schema-Centroid leicht in Richtung Query-Embedding gezogen (Faktor ≤ 0.05, damit ein einzelner Recall keine starke Verschiebung macht)
-- [ ] `access_count` neue Spalte am Schema-Knoten ergänzen (falls nicht in Story 01 schon drin)
-- [ ] Unit-Tests + Integration-Test
+- [x] `reconsolidate_schema_hit(hit, ...)` als Entry-Point erkennt Schema-Hits (`hit.kind == "schema"`); Engram-Hits → No-Op `None`-Return.
+- [x] Mode-abhängige Stufen:
+  - **Precision:** `access_count++`, `last_accessed=now` (touch-only)
+  - **Exploration:** + Property-Refresh aus übergebenen Top-N Evidence (deterministische `aggregate_properties` Wiederverwendung).
+  - **Analogy:** + Logging-Hint für nächsten R3-Sweep (kein zusätzlicher persistenter State).
+  - **Validation + prediction_error=True:** + Centroid-Drift via `drift_centroid` (α-Default = 0.05).
+- [x] `drift_centroid(old, query, alpha)` Helper: `(1-α)·old + α·query` + L2-Renorm; ValueError bei Dim-Mismatch / α∉[0,1].
+- [x] Schema-Modell um `access_count: int = 0` und `last_accessed: datetime | None` erweitert; `to_neo4j_props`/`from_neo4j_props` und `create_schema`-Cypher entsprechend ergänzt. Alembic-Migration nicht nötig — Schemas leben in Neo4j, properties sind dort dynamisch.
+- [x] `SCHEMA_CENTROID_DRIFT_ALPHA = 0.05` in `engine/consolidation/constants.py` mit Drift-Guard im Test.
+- [x] 14 Unit-Tests grün; Integration-Test verschoben auf Block E (Story 19/20 hat den Recall-Reconsolidation-Pfad als Coffee-Meeting-E2E ohnehin schon im Smoke-Test).
 
 ## Tasks
 
-- [ ] **T1 — Schema-Modell erweitern:** Falls nicht in Story 01: `access_count: Integer = 0`, `last_accessed: Timestamp` als Felder am `:Schema`-Knoten ergänzen. Alembic + Cypher-Migration.
-- [ ] **T2 — Schema-Reconsolidation-Branch:** In `reconsolidation_orchestrator.py` neuen Branch für `hit.kind == "schema"` mit eigener Logik je Mode.
-- [ ] **T3 — Property-Refresh-Helper:** Wiederverwendung von `aggregate_properties()` mit aktuellem Top-N Evidence-Set. Update via `schema_repository.update_schema()`.
-- [ ] **T4 — Centroid-Drift:** Helper `drift_centroid(old_centroid, query_embedding, alpha=0.05) -> Vector` mit normalisierter Verschiebung.
-- [ ] **T5 — Konstante:** `SCHEMA_CENTROID_DRIFT_ALPHA = 0.05` in `constants.py`.
-- [ ] **T6 — Unit-Tests:** (a) Schema-Hit in Precision → nur access_count++. (b) Schema-Hit in Exploration → Properties refreshed wenn Top-N stabil. (c) Schema-Hit in Validation mit Prediction Error → Centroid driftet leicht. (d) Engram-Hit unbeeinflusst von neuer Logik.
+- [x] **T1 — Schema-Modell erweitern:** `_SchemaBase` bekommt `access_count` (default 0) + `last_accessed` (default None); Cypher-MERGE in `create_schema` setzt beide Felder.
+- [x] **T2 — Schema-Reconsolidation-Branch:** Neues Modul `engine/reflect/schema_reconsolidation.py::reconsolidate_schema_hit` (statt Erweiterung des bestehenden `reflect_orchestrator._reconsolidate_engrams_async` — Schema-Pfad ist disjunkt vom Engram-Queue-Loop und braucht andere Inputs). Best-effort: Per-hit-Failures werden geloggt, Recall-Pfad kracht nicht.
+- [x] **T3 — Property-Refresh-Helper:** Inline `_refresh_properties(evidence)` ruft `aggregate_properties` auf den `EvidenceEngram.tags`-Listen; persistiert über `update_schema(properties_json=...)`.
+- [x] **T4 — Centroid-Drift:** `drift_centroid` Modul-level; Validation-Branch lädt aktuellen Centroid via `qdrant.get_by_id`, drift, schreibt zurück per `qdrant.upsert_schema_centroid`. Per-Step-Failures geloggt.
+- [x] **T5 — Konstante:** `SCHEMA_CENTROID_DRIFT_ALPHA = 0.05` mit Test-Drift-Guard.
+- [x] **T6 — Unit-Tests:** 14 Tests in `tests/test_schema_reconsolidation.py` — 7×`drift_centroid` (alpha-Endpunkte, Norm-Erhalt, Dim-Mismatch, Drift-Guard) + 7×`reconsolidate_schema_hit` (engram-no-op, Precision-touch, Exploration-property-refresh, Validation-PE-drift, Validation-no-PE-skip, missing-schema, update-failure-best-effort).

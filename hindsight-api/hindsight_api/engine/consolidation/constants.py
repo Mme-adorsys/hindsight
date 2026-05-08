@@ -76,3 +76,11 @@ C3_CYCLE_PERIOD_DAYS: int = 7
 # to ground its answer, and saving two rows per schema hit adds up across
 # the per-recall budget. Drift guard in tests/test_evidence_resolver.py.
 RECALL_DEFAULT_EVIDENCE_N: int = 3
+
+# Story 21 — Schema reconsolidation centroid drift. When a schema hit
+# triggers Validation-mode reconsolidation with a prediction error, the
+# centroid is nudged towards the query embedding by this fraction:
+#     new = normalise((1 - α) · old + α · query)
+# α=0.05 keeps a single recall from yanking the centroid more than ~3°,
+# matching the engram-side reconsolidation conservatism (concept §10).
+SCHEMA_CENTROID_DRIFT_ALPHA: float = 0.05
