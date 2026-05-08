@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useBank } from "@/lib/bank-context";
 import { client } from "@/lib/api";
-import type { SchemaItem, SchemaDetailResponse, SchemaMember } from "@/lib/api";
+import type { EvidenceEngram, SchemaDetailResponse, SchemaItem } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
@@ -21,64 +21,77 @@ import {
   ChevronDown,
   Loader2,
   Brain,
+  ShieldAlert,
+  ShieldCheck,
 } from "lucide-react";
 import cytoscape from "cytoscape";
 
+// Epic 25 Story 28 — Schema-Explorer rewritten on top of the new
+// Story-27 Control Plane endpoints. Surfaces the new schema entity
+// shape (description, evidence_count, cycles_survived,
+// last_reinforced_at) plus the lifecycle counters from Stories 21/22
+// (access_count, drift_count) and the cross-agent confidence tier
+// from Stories 24/25 (agent_local | cross_agent_validated |
+// cross_agent_disputed).
+
 // ---------------------------------------------------------------------------
-// Maturity badge config
+// Confidence-tier badge
 // ---------------------------------------------------------------------------
 
-const MATURITY_CONFIG: Record<string, { label: string; bg: string; text: string }> = {
-  emerging: {
-    label: "Emerging",
+const TIER_CONFIG: Record<string, { label: string; bg: string; text: string; Icon?: typeof ShieldCheck }> = {
+  agent_local: {
+    label: "Agent-local",
     bg: "bg-slate-100 dark:bg-slate-800",
     text: "text-slate-600 dark:text-slate-400",
   },
-  stable: {
-    label: "Stable",
-    bg: "bg-blue-100 dark:bg-blue-900/40",
-    text: "text-blue-700 dark:text-blue-400",
-  },
-  dominant: {
-    label: "Dominant",
+  cross_agent_validated: {
+    label: "Cross-agent",
     bg: "bg-emerald-100 dark:bg-emerald-900/40",
     text: "text-emerald-700 dark:text-emerald-400",
+    Icon: ShieldCheck,
+  },
+  cross_agent_disputed: {
+    label: "Disputed",
+    bg: "bg-amber-100 dark:bg-amber-900/40",
+    text: "text-amber-700 dark:text-amber-400",
+    Icon: ShieldAlert,
   },
 };
 
-// Cytoscape node colors by maturity
-const MATURITY_COLORS: Record<string, string> = {
-  emerging: "#94a3b8",
-  stable: "#3b82f6",
-  dominant: "#10b981",
-};
+function ConfidenceBadge({ tier }: { tier: string | null }) {
+  if (!tier) return null;
+  const cfg = TIER_CONFIG[tier] ?? TIER_CONFIG.agent_local;
+  return (
+    <span
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${cfg.bg} ${cfg.text}`}
+    >
+      {cfg.Icon ? <cfg.Icon className="w-3 h-3" /> : null}
+      {cfg.label}
+    </span>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Sort helpers
 // ---------------------------------------------------------------------------
 
-type SortKey = "label" | "member_count" | "maturity" | "avg_strength" | "last_activated";
+type SortKey = "description" | "evidence_count" | "cycles_survived" | "last_reinforced_at";
 type SortDir = "asc" | "desc";
 
 function compareSchemas(a: SchemaItem, b: SchemaItem, key: SortKey, dir: SortDir): number {
   let cmp = 0;
   switch (key) {
-    case "label":
-      cmp = (a.label || "").localeCompare(b.label || "");
+    case "description":
+      cmp = (a.description || "").localeCompare(b.description || "");
       break;
-    case "member_count":
-      cmp = (a.member_count || 0) - (b.member_count || 0);
+    case "evidence_count":
+      cmp = (a.evidence_count || 0) - (b.evidence_count || 0);
       break;
-    case "maturity": {
-      const order: Record<string, number> = { emerging: 0, stable: 1, dominant: 2 };
-      cmp = (order[a.maturity] ?? 0) - (order[b.maturity] ?? 0);
+    case "cycles_survived":
+      cmp = (a.cycles_survived || 0) - (b.cycles_survived || 0);
       break;
-    }
-    case "avg_strength":
-      cmp = (a.avg_strength || 0) - (b.avg_strength || 0);
-      break;
-    case "last_activated":
-      cmp = (a.last_activated || "").localeCompare(b.last_activated || "");
+    case "last_reinforced_at":
+      cmp = (a.last_reinforced_at || "").localeCompare(b.last_reinforced_at || "");
       break;
   }
   return dir === "asc" ? cmp : -cmp;
@@ -95,19 +108,9 @@ function formatRelativeTime(iso: string | null): string {
   return `${days}d ago`;
 }
 
-// ---------------------------------------------------------------------------
-// MaturityBadge
-// ---------------------------------------------------------------------------
-
-function MaturityBadge({ maturity }: { maturity: string }) {
-  const cfg = MATURITY_CONFIG[maturity] || MATURITY_CONFIG.emerging;
-  return (
-    <span
-      className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${cfg.bg} ${cfg.text}`}
-    >
-      {cfg.label}
-    </span>
-  );
+function truncate(text: string, max = 80): string {
+  if (!text) return "";
+  return text.length > max ? text.slice(0, max - 1) + "…" : text;
 }
 
 // ---------------------------------------------------------------------------
@@ -147,96 +150,80 @@ function SortableHeader({
 }
 
 // ---------------------------------------------------------------------------
-// SchemaGraph (Cytoscape mini-graph)
+// SchemaGraph — Cytoscape mini-graph: schema centre + evidence engrams
 // ---------------------------------------------------------------------------
 
 function SchemaGraph({
   schema,
-  members,
+  evidence,
 }: {
   schema: SchemaDetailResponse;
-  members: SchemaMember[];
+  evidence: EvidenceEngram[];
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<cytoscape.Core | null>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
-
-    const maturityColor = MATURITY_COLORS[schema.maturity] || MATURITY_COLORS.emerging;
-
-    const nodes: cytoscape.ElementDefinition[] = [
+    const elements: cytoscape.ElementDefinition[] = [
       {
         data: {
-          id: schema.schema_id,
-          label: schema.label || "Schema",
+          id: schema.id,
+          label: truncate(schema.description, 24) || "(no description)",
           type: "schema",
         },
       },
-      ...members.map((m) => ({
+      ...evidence.map((e) => ({
         data: {
-          id: m.engram_id,
-          label:
-            (m.text_preview || "").slice(0, 40) + ((m.text_preview || "").length > 40 ? "..." : ""),
-          type: "member",
-          strength: m.strength || 0,
+          id: e.id,
+          label: truncate(e.text, 18),
+          type: "evidence",
         },
+      })),
+      ...evidence.map((e) => ({
+        data: { id: `${schema.id}->${e.id}`, source: schema.id, target: e.id },
       })),
     ];
 
-    const edges: cytoscape.ElementDefinition[] = members.map((m) => ({
-      data: {
-        source: m.engram_id,
-        target: schema.schema_id,
-        id: `${m.engram_id}->${schema.schema_id}`,
-      },
-    }));
-
     const cy = cytoscape({
       container: containerRef.current,
-      elements: [...nodes, ...edges],
+      elements,
       style: [
         {
           selector: "node[type='schema']",
           style: {
-            "background-color": maturityColor,
+            "background-color": "#3b82f6",
             label: "data(label)",
+            color: "#0f172a",
             "text-valign": "bottom",
-            "text-margin-y": 8,
+            "text-margin-y": 6,
             "font-size": "11px",
-            color: "#64748b",
-            width: 48,
-            height: 48,
-            "border-width": 3,
-            "border-color": maturityColor,
-            "border-opacity": 0.4,
+            width: 36,
+            height: 36,
           },
         },
         {
-          selector: "node[type='member']",
+          selector: "node[type='evidence']",
           style: {
             "background-color": "#94a3b8",
-            "background-opacity": 0.7,
             label: "",
-            width: `mapData(strength, 0, 1, 16, 36)`,
-            height: `mapData(strength, 0, 1, 16, 36)`,
+            width: 14,
+            height: 14,
           },
         },
         {
           selector: "edge",
           style: {
-            width: 1.5,
+            width: 1,
             "line-color": "#cbd5e1",
             "curve-style": "bezier",
-            opacity: 0.6,
           },
         },
       ],
       layout: {
         name: "concentric",
-        concentric: (node: cytoscape.NodeSingular) => (node.data("type") === "schema" ? 2 : 1),
+        concentric: (n: cytoscape.NodeSingular) => (n.data("type") === "schema" ? 100 : 1),
         levelWidth: () => 1,
-        minNodeSpacing: 30,
         animate: false,
       },
       userZoomingEnabled: false,
@@ -245,8 +232,7 @@ function SchemaGraph({
       autoungrabify: true,
     });
 
-    // Tooltip on hover
-    cy.on("mouseover", "node[type='member']", (evt) => {
+    cy.on("mouseover", "node[type='evidence']", (evt: cytoscape.EventObject) => {
       const node = evt.target;
       node.style("label", node.data("label"));
       node.style("font-size", "9px");
@@ -254,21 +240,42 @@ function SchemaGraph({
       node.style("text-valign", "bottom");
       node.style("text-margin-y", 6);
     });
-    cy.on("mouseout", "node[type='member']", (evt) => {
+    cy.on("mouseout", "node[type='evidence']", (evt: cytoscape.EventObject) => {
       evt.target.style("label", "");
     });
 
-    cyRef.current = cy;
-
+    cyRef.current = cy as unknown as cytoscape.Core;
     return () => {
       cy.destroy();
       cyRef.current = null;
     };
-  }, [schema, members]);
+  }, [schema, evidence]);
 
   return (
     <div ref={containerRef} className="w-full h-[300px] rounded-lg border border-border bg-card" />
   );
+}
+
+// ---------------------------------------------------------------------------
+// Property renderer
+// ---------------------------------------------------------------------------
+
+function PropertyValue({ value }: { value: unknown }) {
+  if (Array.isArray(value)) {
+    return <span className="text-xs text-muted-foreground">{value.map(String).join(", ")}</span>;
+  }
+  if (value && typeof value === "object" && "mean" in (value as Record<string, unknown>)) {
+    const v = value as { min?: number; max?: number; mean?: number };
+    return (
+      <span className="text-xs font-mono text-muted-foreground">
+        {v.mean?.toFixed(2)} <span className="opacity-60">({v.min}–{v.max})</span>
+      </span>
+    );
+  }
+  if (typeof value === "object" && value !== null) {
+    return <span className="text-xs font-mono text-muted-foreground">{JSON.stringify(value)}</span>;
+  }
+  return <span className="text-xs">{String(value)}</span>;
 }
 
 // ---------------------------------------------------------------------------
@@ -280,14 +287,12 @@ export function SchemaExplorerView() {
   const [schemas, setSchemas] = useState<SchemaItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<SchemaDetailResponse | null>(null);
+  const [evidence, setEvidence] = useState<EvidenceEngram[]>([]);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // ---------------------------------------------------------------------------
-  // Sort state
-  // ---------------------------------------------------------------------------
-  const [sortKey, setSortKey] = useState<SortKey>("last_activated");
+  const [sortKey, setSortKey] = useState<SortKey>("last_reinforced_at");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
   const handleSort = useCallback(
@@ -304,16 +309,13 @@ export function SchemaExplorerView() {
 
   const sortedSchemas = [...schemas].sort((a, b) => compareSchemas(a, b, sortKey, sortDir));
 
-  // ---------------------------------------------------------------------------
-  // Fetch schema list
-  // ---------------------------------------------------------------------------
   const fetchSchemas = useCallback(
     async (opts?: { silent?: boolean }) => {
       if (!currentBank) return;
       if (!opts?.silent) setLoading(true);
       try {
         const res = await client.listSchemas(currentBank);
-        setSchemas(res.schemas);
+        setSchemas(res);
         setError(null);
       } catch (e) {
         if (!opts?.silent) setError(e instanceof Error ? e.message : "Failed to fetch schemas");
@@ -328,28 +330,34 @@ export function SchemaExplorerView() {
     fetchSchemas();
   }, [fetchSchemas]);
 
-  // Auto-refresh every 30s
   useEffect(() => {
     const id = setInterval(() => fetchSchemas({ silent: true }), 30_000);
     return () => clearInterval(id);
   }, [fetchSchemas]);
 
-  // ---------------------------------------------------------------------------
-  // Fetch schema detail on selection
-  // ---------------------------------------------------------------------------
   useEffect(() => {
     if (!selectedId || !currentBank) {
       setDetail(null);
+      setEvidence([]);
       return;
     }
     let cancelled = false;
     (async () => {
       setDetailLoading(true);
       try {
-        const res = await client.getSchemaDetail(selectedId, currentBank);
-        if (!cancelled) setDetail(res);
+        const [d, ev] = await Promise.all([
+          client.getSchemaDetail(selectedId),
+          client.getSchemaEvidence(selectedId, currentBank).catch(() => [] as EvidenceEngram[]),
+        ]);
+        if (!cancelled) {
+          setDetail(d);
+          setEvidence(ev);
+        }
       } catch {
-        if (!cancelled) setDetail(null);
+        if (!cancelled) {
+          setDetail(null);
+          setEvidence([]);
+        }
       } finally {
         if (!cancelled) setDetailLoading(false);
       }
@@ -359,9 +367,6 @@ export function SchemaExplorerView() {
     };
   }, [selectedId, currentBank]);
 
-  // ---------------------------------------------------------------------------
-  // Render: loading
-  // ---------------------------------------------------------------------------
   if (loading) {
     return (
       <div className="space-y-4">
@@ -372,9 +377,6 @@ export function SchemaExplorerView() {
     );
   }
 
-  // ---------------------------------------------------------------------------
-  // Render: error
-  // ---------------------------------------------------------------------------
   if (error) {
     return (
       <Card className="border-red-200 dark:border-red-900/40">
@@ -394,9 +396,6 @@ export function SchemaExplorerView() {
     );
   }
 
-  // ---------------------------------------------------------------------------
-  // Render: empty state
-  // ---------------------------------------------------------------------------
   if (schemas.length === 0) {
     return (
       <Card>
@@ -407,8 +406,8 @@ export function SchemaExplorerView() {
               No schemas have emerged yet
             </h3>
             <p className="text-muted-foreground text-sm max-w-md mx-auto">
-              Schemas form after multiple NCR (Nightly Consolidation Run) cycles when frequently
-              co-activated Engrams are clustered and abstracted into higher-level patterns.
+              Schemas form after C2 cycles cluster repeatedly co-activated buffer engrams and
+              R4 mints a stable :Schema node. Run C2 a few times to see them surface.
             </p>
           </div>
         </CardContent>
@@ -416,12 +415,8 @@ export function SchemaExplorerView() {
     );
   }
 
-  // ---------------------------------------------------------------------------
-  // Render: schema list + detail
-  // ---------------------------------------------------------------------------
   return (
     <div className="space-y-6">
-      {/* Refresh button */}
       <div className="flex justify-end">
         <button
           onClick={() => fetchSchemas()}
@@ -432,12 +427,11 @@ export function SchemaExplorerView() {
         </button>
       </div>
 
-      {/* Schema Table */}
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-base flex items-center gap-2">
             <Network className="w-4 h-4" />
-            Schemas ({schemas.length})
+            Schemas in {currentBank}
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0">
@@ -445,75 +439,51 @@ export function SchemaExplorerView() {
             <TableHeader>
               <TableRow>
                 <SortableHeader
-                  label="Label"
-                  sortKey="label"
+                  label="Description"
+                  sortKey="description"
                   currentKey={sortKey}
                   currentDir={sortDir}
                   onSort={handleSort}
                 />
                 <SortableHeader
-                  label="Members"
-                  sortKey="member_count"
+                  label="Evidence"
+                  sortKey="evidence_count"
                   currentKey={sortKey}
                   currentDir={sortDir}
                   onSort={handleSort}
                 />
                 <SortableHeader
-                  label="Maturity"
-                  sortKey="maturity"
+                  label="Cycles"
+                  sortKey="cycles_survived"
                   currentKey={sortKey}
                   currentDir={sortDir}
                   onSort={handleSort}
                 />
                 <SortableHeader
-                  label="Strength"
-                  sortKey="avg_strength"
+                  label="Last reinforced"
+                  sortKey="last_reinforced_at"
                   currentKey={sortKey}
                   currentDir={sortDir}
                   onSort={handleSort}
                 />
-                <SortableHeader
-                  label="Last Active"
-                  sortKey="last_activated"
-                  currentKey={sortKey}
-                  currentDir={sortDir}
-                  onSort={handleSort}
-                />
+                <TableHead>Tier</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {sortedSchemas.map((s) => (
                 <TableRow
-                  key={s.schema_id}
-                  className={`cursor-pointer transition-colors ${
-                    selectedId === s.schema_id
-                      ? "bg-primary/5 border-l-2 border-l-primary"
-                      : "hover:bg-muted/50"
-                  }`}
-                  onClick={() => setSelectedId(selectedId === s.schema_id ? null : s.schema_id)}
+                  key={s.id}
+                  className={`cursor-pointer ${selectedId === s.id ? "bg-accent" : ""}`}
+                  onClick={() => setSelectedId(s.id)}
                 >
-                  <TableCell className="font-medium max-w-[300px] truncate">
-                    {s.label || <span className="text-muted-foreground italic">untitled</span>}
+                  <TableCell className="font-medium">{truncate(s.description, 60) || s.id}</TableCell>
+                  <TableCell>{s.evidence_count}</TableCell>
+                  <TableCell>{s.cycles_survived}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {formatRelativeTime(s.last_reinforced_at)}
                   </TableCell>
-                  <TableCell>{s.member_count}</TableCell>
                   <TableCell>
-                    <MaturityBadge maturity={s.maturity} />
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex items-center gap-2">
-                      <div className="w-16 h-2 rounded-full bg-muted overflow-hidden">
-                        <div
-                          className="h-full rounded-full bg-primary/60"
-                          style={{ width: `${(s.avg_strength || 0) * 100}%` }}
-                        />
-                      </div>
-                      <span className="text-xs text-muted-foreground">
-                        {((s.avg_strength || 0) * 100).toFixed(0)}%
-                      </span>
-                    </div>
-                  </TableCell>
-                  <TableCell className="text-muted-foreground text-sm">
-                    {formatRelativeTime(s.last_activated)}
+                    <ConfidenceBadge tier={s.confidence_tier} />
                   </TableCell>
                 </TableRow>
               ))}
@@ -522,68 +492,102 @@ export function SchemaExplorerView() {
         </CardContent>
       </Card>
 
-      {/* Detail Panel */}
       {selectedId && (
         <Card>
-          <CardHeader className="pb-3">
+          <CardHeader>
             <CardTitle className="text-base flex items-center gap-2">
               <Brain className="w-4 h-4" />
-              {detailLoading ? "Loading..." : detail?.label || "Schema Detail"}
-              {detail && <MaturityBadge maturity={detail.maturity} />}
+              Schema Detail
+              {detailLoading && <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />}
             </CardTitle>
           </CardHeader>
           <CardContent>
-            {detailLoading ? (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
-              </div>
-            ) : detail ? (
+            {detail ? (
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* Left: Member list */}
-                <div>
-                  <h4 className="text-sm font-semibold text-muted-foreground mb-3">
-                    Members ({detail.members.length})
-                  </h4>
-                  {detail.members.length === 0 ? (
-                    <p className="text-sm text-muted-foreground italic">
-                      This schema has no remaining members — they may have decayed.
-                    </p>
-                  ) : (
-                    <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1">
-                      {detail.members.map((m) => (
-                        <div
-                          key={m.engram_id}
-                          className="p-3 rounded-lg border border-border bg-muted/30 hover:bg-muted/60 transition-colors"
-                        >
-                          <p className="text-sm text-foreground line-clamp-2">
-                            {m.text_preview || (
-                              <span className="italic text-muted-foreground">no preview</span>
-                            )}
-                          </p>
-                          <div className="flex items-center gap-3 mt-1.5 text-xs text-muted-foreground">
-                            <span>Strength: {((m.strength || 0) * 100).toFixed(0)}%</span>
-                            <span className="font-mono">{m.engram_id.slice(0, 8)}...</span>
-                          </div>
-                        </div>
-                      ))}
+                <div className="space-y-4">
+                  <div>
+                    <h4 className="text-sm font-medium text-muted-foreground mb-1">Description</h4>
+                    <p className="text-sm">{detail.description || "(no description)"}</p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 text-sm">
+                    <div>
+                      <span className="text-muted-foreground">Evidence count: </span>
+                      <span className="font-medium">{detail.evidence_count}</span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Cycles survived: </span>
+                      <span className="font-medium">{detail.cycles_survived}</span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Access count: </span>
+                      <span className="font-medium">{detail.access_count}</span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Drift count: </span>
+                      <span
+                        className={`font-medium ${detail.drift_count > 0 ? "text-amber-600 dark:text-amber-400" : ""}`}
+                      >
+                        {detail.drift_count}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Last reinforced: </span>
+                      <span>{formatRelativeTime(detail.last_reinforced_at)}</span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Last accessed: </span>
+                      <span>{formatRelativeTime(detail.last_accessed)}</span>
+                    </div>
+                  </div>
+                  {detail.confidence_tier && (
+                    <div>
+                      <h4 className="text-sm font-medium text-muted-foreground mb-1">Confidence</h4>
+                      <ConfidenceBadge tier={detail.confidence_tier} />
+                    </div>
+                  )}
+                  {Object.keys(detail.properties).length > 0 && (
+                    <div>
+                      <h4 className="text-sm font-medium text-muted-foreground mb-1">Properties</h4>
+                      <ul className="space-y-1">
+                        {Object.entries(detail.properties).map(([k, v]) => (
+                          <li key={k} className="flex items-baseline gap-2 text-sm">
+                            <span className="font-mono text-xs text-muted-foreground">{k}:</span>
+                            <PropertyValue value={v} />
+                          </li>
+                        ))}
+                      </ul>
                     </div>
                   )}
                 </div>
-
-                {/* Right: Mini-graph */}
-                <div>
-                  <h4 className="text-sm font-semibold text-muted-foreground mb-3">Schema Graph</h4>
-                  {detail.members.length > 0 ? (
-                    <SchemaGraph schema={detail} members={detail.members} />
+                <div className="space-y-3">
+                  <h4 className="text-sm font-medium text-muted-foreground">Evidence Engrams</h4>
+                  {evidence.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No active evidence engrams.</p>
                   ) : (
-                    <div className="h-[300px] rounded-lg border border-border bg-card flex items-center justify-center">
-                      <span className="text-sm text-muted-foreground">No members to visualize</span>
-                    </div>
+                    <ul className="space-y-2">
+                      {evidence.map((e) => (
+                        <li
+                          key={e.id}
+                          className="text-sm border rounded-md px-3 py-2 bg-card hover:bg-accent/40 transition-colors"
+                        >
+                          <p>{truncate(e.text, 140)}</p>
+                          {e.tags?.length > 0 && (
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              {e.tags.slice(0, 4).join(" · ")}
+                            </p>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
                   )}
+                  <div>
+                    <h4 className="text-sm font-medium text-muted-foreground mt-4 mb-2">Mini-graph</h4>
+                    <SchemaGraph schema={detail} evidence={evidence} />
+                  </div>
                 </div>
               </div>
             ) : (
-              <p className="text-muted-foreground text-sm">Failed to load schema detail.</p>
+              <p className="text-sm text-muted-foreground">Select a schema to inspect.</p>
             )}
           </CardContent>
         </Card>

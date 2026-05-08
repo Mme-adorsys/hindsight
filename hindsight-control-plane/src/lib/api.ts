@@ -208,29 +208,55 @@ export interface RetainTraceDetail {
   trace_data: PipelineTrace;
 }
 
-export interface SchemaMember {
-  engram_id: string;
-  text_preview: string;
-  strength: number | null;
-}
+// Epic 25 Story 28 — types now reflect the new CLS schema entity (Story 27
+// backend). Legacy engram-with-layer='neocortex' fields (member_count,
+// maturity, avg_strength, last_activated) are retired; the new shape
+// surfaces description / evidence_count / cycles_survived / status /
+// last_reinforced_at and the Story-21/22/24/25 lifecycle counters.
 
 export interface SchemaItem {
-  schema_id: string;
-  label: string | null;
-  member_count: number;
-  maturity: "emerging" | "stable" | "dominant";
-  avg_strength: number | null;
-  created_at: string | null;
-  last_activated: string | null;
-  tags: string[] | null;
+  id: string;
+  description: string;
+  evidence_count: number;
+  cycles_survived: number;
+  status: "active" | "archived";
+  last_reinforced_at: string | null;
+  /** Story 24/25 — "agent_local" | "cross_agent_validated" | "cross_agent_disputed" */
+  confidence_tier: string | null;
 }
 
-export interface SchemaListResponse {
-  schemas: SchemaItem[];
+export interface EvidenceEngram {
+  id: string;
+  text: string;
+  fact_type: string | null;
+  context: string | null;
+  strength: number | null;
+  tags: string[];
 }
 
 export interface SchemaDetailResponse extends SchemaItem {
-  members: SchemaMember[];
+  properties: Record<string, unknown>;
+  evidence_engram_ids: string[];
+  centroid_qdrant_id: string | null;
+  /** Story 21 — recall-side reactivation counter */
+  access_count: number;
+  last_accessed: string | null;
+  /** Story 22 — Validation-mode centroid drift bookkeeping */
+  drift_count: number;
+  last_drifted_at: string | null;
+  /** Only populated when ?include_centroid=true */
+  centroid: number[] | null;
+}
+
+export interface HyperSchemaItem {
+  id: string;
+  description: string;
+  evidence_count: number;
+  cycles_survived: number;
+  status: "active" | "archived";
+  last_reinforced_at: string | null;
+  children_ids: string[];
+  properties: Record<string, unknown>;
 }
 
 export class ControlPlaneClient {
@@ -392,24 +418,52 @@ export class ControlPlaneClient {
   }
 
   /**
-   * List all schemas (Meta-Engrams) for a bank.
+   * List active Schemas for a bank (Epic 25 Story 27/28).
+   *
+   * The legacy ``SchemaListResponse`` envelope is gone — the new
+   * Story-27 endpoint returns the array directly.
    */
-  async listSchemas(bankId: string, limit?: number) {
+  async listSchemas(
+    bankId: string,
+    opts?: { limit?: number; offset?: number; sortBy?: "last_reinforced_at" | "evidence_count" | "cycles_survived" }
+  ) {
     const qs = new URLSearchParams({ bank_id: bankId });
-    if (limit !== undefined) qs.set("limit", String(limit));
-    return this.fetchApi<SchemaListResponse>(`/api/schemas?${qs.toString()}`, {
+    if (opts?.limit !== undefined) qs.set("limit", String(opts.limit));
+    if (opts?.offset !== undefined) qs.set("offset", String(opts.offset));
+    if (opts?.sortBy) qs.set("sort_by", opts.sortBy);
+    return this.fetchApi<SchemaItem[]>(`/api/schemas?${qs.toString()}`, {
       cache: "no-store" as RequestCache,
     });
   }
 
   /**
-   * Get a single schema with its member Engrams.
+   * Get a single schema's full detail including Story-21/22 counters.
    */
-  async getSchemaDetail(schemaId: string, bankId: string) {
+  async getSchemaDetail(schemaId: string, opts?: { includeCentroid?: boolean }) {
+    const qs = new URLSearchParams();
+    if (opts?.includeCentroid) qs.set("include_centroid", "true");
     return this.fetchApi<SchemaDetailResponse>(
-      `/api/schemas/${encodeURIComponent(schemaId)}?bank_id=${encodeURIComponent(bankId)}`,
+      `/api/schemas/${encodeURIComponent(schemaId)}${qs.toString() ? `?${qs.toString()}` : ""}`,
       { cache: "no-store" as RequestCache }
     );
+  }
+
+  /** Top-N evidence engrams behind a schema hit (Epic 25 Story 27). */
+  async getSchemaEvidence(schemaId: string, bankId: string, maxN = 5) {
+    const qs = new URLSearchParams({ bank_id: bankId, max_n: String(maxN) });
+    return this.fetchApi<EvidenceEngram[]>(
+      `/api/schemas/${encodeURIComponent(schemaId)}/evidence?${qs.toString()}`,
+      { cache: "no-store" as RequestCache }
+    );
+  }
+
+  /** List active HyperSchemas with their :SPECIALIZES children. */
+  async listHyperSchemas(bankId: string, limit?: number) {
+    const qs = new URLSearchParams({ bank_id: bankId });
+    if (limit !== undefined) qs.set("limit", String(limit));
+    return this.fetchApi<HyperSchemaItem[]>(`/api/hyper-schemas?${qs.toString()}`, {
+      cache: "no-store" as RequestCache,
+    });
   }
 
   /**

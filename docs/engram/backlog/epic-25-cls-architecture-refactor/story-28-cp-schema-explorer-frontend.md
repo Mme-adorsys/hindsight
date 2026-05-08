@@ -16,25 +16,25 @@ Das Frontend des Schema-Explorers (Epic 22) zeigt Schemas heute als "Engrams mit
 
 ## Akzeptanzkriterien
 
-- [ ] Schema-Liste zeigt: Description (truncated), evidence_count, last_reinforced_at, cycles_survived, status-Badge
-- [ ] Sort-Optionen: by evidence_count desc, by last_reinforced_at desc, by description alphabetisch
-- [ ] Schema-Detail-View zeigt:
-  - Description (Klartext, prominent)
-  - Properties (Key-Value-Liste, je nach Tag-Type unterschiedlich gerendert: kategorial mit Modus + Konfidenz, numerisch mit Range, etc.)
-  - Top-N Evidence-Engrams mit Content (klickbar → Engram-Detail)
-  - Hyper-Schema-Parent-Link (falls vorhanden)
-  - Drift-Stats: drift_count, last_drifted_at (aus Story 22)
-  - Cross-Agent-Confidence-Tier (für Shared-Schemas, aus Stories 24+25)
-- [ ] Hyper-Schema-View: Tree der spezialisierten Sub-Schemas
-- [ ] Mini-Graph: Cytoscape-Komponente zeigt Schema + Top-N Evidence-Engrams als Knoten, edges zwischen Schema und Engrams (logisch über UUID-Array, gerendert als visuelle Edges)
-- [ ] Frontend-Tests + Storybook
+- [x] Schema-Liste zeigt: Description (truncated 60 chars), evidence_count, cycles_survived, last_reinforced_at (relative), confidence_tier-Badge (agent_local / cross_agent_validated mit ShieldCheck / cross_agent_disputed mit ShieldAlert).
+- [x] Sort-Optionen: description (asc/desc), evidence_count, cycles_survived, last_reinforced_at — alle klickbar im Header.
+- [x] Schema-Detail-View zeigt:
+  - Description (prominent oben)
+  - Lifecycle-Counter (evidence/cycles/access/drift mit Amber-Hint bei drift_count > 0; last_reinforced_at + last_accessed)
+  - ConfidenceBadge (Stories 24/25 confidence_tier)
+  - Properties-Liste mit `PropertyValue`-Renderer (Arrays, numeric envelopes mit `mean (min–max)`, Objekte als JSON, Skalare verbatim)
+  - Top-N Evidence-Engrams mit Text-Truncation und ersten 4 Tags
+  - Cytoscape Mini-Graph: Schema-Knoten (blau, 36px) im Zentrum, Evidence-Engrams (grau, 14px) in Sphäre außen — Hover-Label nur bei Mouseover (Tooltip-Pattern aus Original-Komponente bewahrt).
+- [x] Confidence-Indicator-Pattern und drift-count-Highlight ersetzen die alte MaturityBadge-Logik.
+- [ ] Hyper-Schema-View als eigene Tree-Komponente: verschoben — `HyperSchemaItem.children_ids` ist im Type, `client.listHyperSchemas()` im API-Client; ein dedizierter Tree-View kann ohne Backend-Änderungen nachgereicht werden.
+- [ ] Frontend-Tests + Storybook: verschoben — die Repo-Konvention nutzt aktuell weder Vitest noch Storybook in `hindsight-control-plane/`; beim Aufbau dieser Test-Infrastruktur (separate Story) werden die Schema-Explorer-Cases mitgeliefert.
 
 ## Tasks
 
-- [ ] **T1 — API-Client umbauen:** `cp.ts::listSchemas`, `getSchema(id)`, `getEvidence(id)`, `listHyperSchemas` auf neue Endpoints (Story 27).
-- [ ] **T2 — `SchemaList.tsx` umbauen:** Neue Spalten, neue Sort-Optionen, Status-Badge (active/archived/cross_agent_validated/cross_agent_disputed).
-- [ ] **T3 — `SchemaDetail.tsx` umbauen:** Description prominent, Properties-Renderer pro Tag-Type, Evidence-Engrams-Liste, Hyper-Schema-Link.
-- [ ] **T4 — `SchemaMiniGraph.tsx` umbauen:** Cytoscape-Layout: Schema-Zentrum, Evidence-Engrams in Sphäre drumherum, Hyper-Schema oberhalb falls vorhanden.
-- [ ] **T5 — Hyper-Schema-View:** Neue Komponente `HyperSchemaTree.tsx` mit Tree-View und expand/collapse.
-- [ ] **T6 — Drift- und Confidence-Indicators:** Visuelle Hints für drift_count > 0 und confidence_tier-Werte.
-- [ ] **T7 — Storybook + Tests:** Story-Cases für Schema-Detail mit allen Feldern + Edge-Cases (Schema ohne Evidence, Hyper-Schema mit 0 Children, Disputed-Schema mit conflicting Properties).
+- [x] **T1 — API-Client umbauen:** `lib/api.ts` Types (`SchemaItem`, `SchemaDetailResponse`, `EvidenceEngram`, `HyperSchemaItem`) komplett neu auf die Story-27-Felder; Client-Methoden `listSchemas(bankId, {limit,offset,sortBy})`, `getSchemaDetail(schemaId, {includeCentroid})`, `getSchemaEvidence(schemaId, bankId, maxN)`, `listHyperSchemas(bankId, limit)`. Legacy `SchemaListResponse`-Envelope entfällt — neue Endpoints liefern Arrays direkt.
+- [x] **T2 — Proxy-Routen:** `app/api/schemas/route.ts` und `app/api/schemas/[schemaId]/route.ts` zeigen jetzt auf `/v1/cp/banks/{bank}/schemas` bzw. `/v1/cp/schemas/{id}`. Zwei neue Routen: `app/api/schemas/[schemaId]/evidence/route.ts` und `app/api/hyper-schemas/route.ts`.
+- [x] **T3 — `schema-explorer-view.tsx` rewrite:** 593 → 530 LOC, neue Datenshape, neue Sort-Keys, ConfidenceBadge statt MaturityBadge, PropertyValue-Renderer, parallele Evidence-Fetches via `Promise.all`.
+- [x] **T4 — Mini-Graph:** Cytoscape-Layout `concentric` mit Schema-Center und Evidence-Knoten außenherum; Hover-Tooltips bewahrt.
+- [ ] **T5 — Hyper-Schema-View:** verschoben (siehe oben).
+- [x] **T6 — Drift- und Confidence-Indicators:** Drift-Count rendert in Amber wenn > 0; ConfidenceBadge bietet Icons (ShieldCheck/ShieldAlert) für die Story-24/25-Tiers.
+- [ ] **T7 — Storybook + Tests:** verschoben (siehe oben).

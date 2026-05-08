@@ -8,15 +8,16 @@ export async function GET(
 ) {
   try {
     const { schemaId } = await params;
-    const bankId = request.nextUrl.searchParams.get("bank_id");
-    if (!bankId) {
-      return NextResponse.json({ error: "bank_id is required" }, { status: 400 });
-    }
-
-    const response = await fetch(
-      `${DATAPLANE_URL}/v1/default/banks/${encodeURIComponent(bankId)}/schemas/${encodeURIComponent(schemaId)}`,
-      { cache: "no-store" }
-    );
+    // Story 28 — the new Story-27 detail endpoint is bank-agnostic;
+    // bank_id is no longer required here, but callers may still pass
+    // it for back-compat.
+    const includeCentroid = request.nextUrl.searchParams.get("include_centroid");
+    const qs = new URLSearchParams();
+    if (includeCentroid) qs.set("include_centroid", includeCentroid);
+    const url = `${DATAPLANE_URL}/v1/cp/schemas/${encodeURIComponent(schemaId)}${
+      qs.toString() ? `?${qs.toString()}` : ""
+    }`;
+    const response = await fetch(url, { cache: "no-store" });
 
     if (!response.ok) {
       if (response.status === 404) {
