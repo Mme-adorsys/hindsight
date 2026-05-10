@@ -2894,26 +2894,53 @@ def _register_routes(app: FastAPI):
             }
             if report.consolidation
             else None,
-            "phase1_decay": {
-                "total": report.phase1.total,
-                "decayed": report.phase1.decayed,
-                "archived": report.phase1.archived,
-            }
-            if report.phase1
-            else None,
-            "phase2_strengthen": {
-                "total": report.phase2.total,
-                "promoted": report.phase2.promoted,
-            }
-            if report.phase2
-            else None,
-            "phase3_schema": {
-                "created": report.phase3.created,
-                "strengthened": report.phase3.strengthened,
-                "deleted": report.phase3.deleted,
-            }
-            if report.phase3
-            else None,
+            # Epic 25 Story 18 — NCRReport now carries C2/C3 composite reports
+            # instead of the legacy phase1/phase2/phase3 split. Surface them
+            # directly so the trigger response stays useful for the CP UI.
+            "c2": (
+                {
+                    "candidates_detected": report.c2.candidates_detected,
+                    "matured": report.c2.matured,
+                    "reinforced": report.c2.reinforced,
+                    "created": report.c2.created,
+                    "decay": (
+                        {
+                            "total": report.c2.decay.total,
+                            "archived": report.c2.decay.archived,
+                            "retained": report.c2.decay.retained,
+                            "skipped_locked": report.c2.decay.skipped_locked,
+                        }
+                        if report.c2.decay
+                        else None
+                    ),
+                }
+                if report.c2
+                else None
+            ),
+            "c3": (
+                {
+                    "r3": (
+                        {
+                            "schemas_scanned": report.c3.r3.schemas_scanned,
+                            "pairs_above_cosine": report.c3.r3.pairs_above_cosine,
+                            "pairs_with_property_diff": report.c3.r3.pairs_with_property_diff,
+                            "hyper_schemas_created": report.c3.r3.hyper_schemas_created,
+                        }
+                        if report.c3.r3
+                        else None
+                    ),
+                    "r5": (
+                        {
+                            "schemas_scanned": report.c3.r5.schemas_scanned,
+                            "archived_ids": [str(x) for x in (report.c3.r5.archived_ids or [])],
+                        }
+                        if report.c3.r5
+                        else None
+                    ),
+                }
+                if report.c3
+                else None
+            ),
             "errors": report.errors,
         }
 
