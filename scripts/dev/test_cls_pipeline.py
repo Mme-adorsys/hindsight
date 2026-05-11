@@ -90,15 +90,13 @@ def build_seed_memories() -> list[SeedMemory]:
     out: list[SeedMemory] = []
 
     # ── Cluster A: Coffee 1:1 morning, productive ─────────────────────────
-    # Distinct topic per memory so retain dedup doesn't collapse them.
     a_topics = [
-        ("Anna", "the new authentication flow", "agreed on a token-rotation approach"),
-        ("Ben", "the migration of the orders table", "decided to ship the dry-run first"),
-        ("Carla", "API response times", "identified a hot path in the recall handler"),
-        ("Dario", "the upcoming release", "split the changelog into user-facing buckets"),
-        ("Eva", "the on-call rotation", "rebalanced shifts for the next quarter"),
+        ("Anna", "the new authentication flow", "token rotation approach"),
+        ("Ben", "the migration of the orders table", "dry-run first decision"),
+        ("Carla", "API response times", "hot path in the recall handler"),
+        ("Dario", "the upcoming release", "changelog user-facing buckets"),
+        ("Eva", "the on-call rotation", "shift rebalance for the quarter"),
     ]
-    a_query = "morning coffee one on one espresso bar sprint plan"
     for person, topic, outcome in a_topics:
         out.append(
             SeedMemory(
@@ -116,7 +114,9 @@ def build_seed_memories() -> list[SeedMemory]:
                     "mood:productive",
                     "duration:30",
                 ],
-                recall_query=a_query,
+                # Per-memory query so the recall loop bumps THIS engram's
+                # access_count, not the cluster's strongest one.
+                recall_query=f"coffee {person} morning {topic}",
             )
         )
 
@@ -128,7 +128,6 @@ def build_seed_memories() -> list[SeedMemory]:
         ("Inka", "a podcast about urban planning"),
         ("Jonas", "the office foosball tournament"),
     ]
-    b_query = "afternoon coffee one on one catching up personal chat"
     for person, topic in b_topics:
         out.append(
             SeedMemory(
@@ -146,7 +145,7 @@ def build_seed_memories() -> list[SeedMemory]:
                     "mood:casual",
                     "duration:30",
                 ],
-                recall_query=b_query,
+                recall_query=f"coffee {person} afternoon {topic}",
             )
         )
 
@@ -158,7 +157,6 @@ def build_seed_memories() -> list[SeedMemory]:
         ("15", "rolling out the new retriever", "tighten Qdrant payload defaults"),
         ("16", "the load-test campaign", "raise hint budgets for analogy mode"),
     ]
-    c_query = "friday sprint retrospective group action items team six"
     for week, win, action in c_items:
         out.append(
             SeedMemory(
@@ -176,7 +174,7 @@ def build_seed_memories() -> list[SeedMemory]:
                     "mood:reflective",
                     "duration:60",
                 ],
-                recall_query=c_query,
+                recall_query=f"sprint retro week {week} {win}",
             )
         )
 
@@ -263,32 +261,31 @@ def phase_recall_loop(base: str, bank_id: str, seeds: list[SeedMemory]) -> Phase
     print("STEP 3: TARGETED RECALLS (push access_count past C1 STC gate)")
     print("=" * 72)
     t0 = time.time()
-    # One representative query per cluster — all members within a cluster
-    # share the same query, so each member should see access_count grow as
-    # the recall iterates. Total recalls per cluster ~= recall_count × 1
-    # (we issue the cluster's query that many times).
-    cluster_queries: dict[str, tuple[str, str, int]] = {}
-    for s in seeds:
-        if s.cluster in cluster_queries:
-            continue
-        cluster_queries[s.cluster] = (s.recall_query, s.mode, s.recall_count)
-
+    # Per-seed distinctive query so each engram gets its own recall hits
+    # (otherwise the cluster's strongest engram absorbs everything and the
+    # rest stay at access_count=0).
     total = 0
-    for cluster, (query, mode, n) in cluster_queries.items():
+    per_cluster_hits: dict[str, int] = {}
+    for s in seeds:
         hits = 0
-        for _ in range(n):
+        for _ in range(s.recall_count):
             try:
                 resp = _post_json(
                     f"{base}/v1/default/banks/{bank_id}/memories/recall",
-                    {"query": query, "mode": mode},
+                    {"query": s.recall_query, "mode": s.mode},
                     timeout=60.0,
                 )
                 hits += len(resp.get("results", []))
                 total += 1
             except Exception as exc:
-                print(f"  {cluster} recall failed: {exc}")
+                print(f"  {s.cluster} recall failed: {exc}")
                 break
-        print(f"  {cluster:<20s} {n}× recalls, total returned hits={hits}")
+        per_cluster_hits[s.cluster] = per_cluster_hits.get(s.cluster, 0) + hits
+        print(f"  {s.cluster:<20s} q='{s.recall_query[:40]}'  hits={hits}")
+
+    print()
+    for cluster, hits in per_cluster_hits.items():
+        print(f"  Sum {cluster:<20s} hits={hits}")
     print(f"\n  Total recalls executed: {total}")
     print()
     return PhaseReport(name="recall", duration_s=time.time() - t0, payload={"total": total})
