@@ -107,6 +107,7 @@ def build_seed_memories() -> list[SeedMemory]:
                     "Productive sprint-plan focused session."
                 ),
                 tags=[
+                    "experience",  # → C1 promote threshold = 0.4 (vs default 0.7)
                     "cluster:coffee_morning",
                     "format:1on1",
                     "drink:coffee",
@@ -138,6 +139,7 @@ def build_seed_memories() -> list[SeedMemory]:
                     "personal catch-up."
                 ),
                 tags=[
+                    "experience",  # → C1 promote threshold = 0.4
                     "cluster:coffee_afternoon",
                     "format:1on1",
                     "drink:coffee",
@@ -167,6 +169,7 @@ def build_seed_memories() -> list[SeedMemory]:
                     "for the next sprint."
                 ),
                 tags=[
+                    "experience",  # → C1 promote threshold = 0.4
                     "cluster:sprint_retro",
                     "format:group",
                     "participants:6",
