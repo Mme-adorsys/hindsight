@@ -2826,8 +2826,13 @@ def _register_routes(app: FastAPI):
         tags=["Consolidation"],
         status_code=200,
     )
-    async def api_ncr_trigger(bank_id: str, phase: str | None = None):
-        """Manually trigger NCR phases for a bank."""
+    async def api_ncr_trigger(bank_id: str, phase: str | None = None, force: bool = False):
+        """Manually trigger NCR phases for a bank.
+
+        ``force=true`` bypasses the in-process per-phase cooldown — intended
+        for dev / smoke-test scripts that want to drive C2(×N) back-to-back
+        without restarting the API.
+        """
         # Check NCR is enabled
         if not hasattr(app.state, "ncr_orchestrator"):
             raise HTTPException(
@@ -2847,9 +2852,9 @@ def _register_routes(app: FastAPI):
             phases = {phase}
             cooldown_key = phase
 
-        # Per-phase rate-limit
+        # Per-phase rate-limit (skipped when force=true — dev/smoke escape).
         cooldown = _NCR_PHASE_COOLDOWNS[cooldown_key]
-        if cooldown > 0:
+        if cooldown > 0 and not force:
             now = datetime.now(timezone.utc)
             rate_key = f"{bank_id}:{cooldown_key}"
             last = _ncr_last_trigger.get(rate_key)

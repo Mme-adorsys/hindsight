@@ -81,22 +81,32 @@ class SeedMemory:
 def build_seed_memories() -> list[SeedMemory]:
     """3×5 cluster-friendly seeds.
 
-    Cluster A and B are intentionally very similar in content but differ in
-    `time` / `mood` properties — that's the R3 hyper-schema bait. Cluster C
-    is a different topic entirely so it doesn't bleed into the others.
+    Cluster A and B share the same overall structure (1:1 coffee) but vary
+    by time + mood — that's the R3 hyper-schema bait. Cluster C is a
+    different topic so it doesn't bleed into the others. Per-memory
+    content is *distinct enough* that retain-side dedup (embedding
+    similarity threshold) doesn't merge them.
     """
     out: list[SeedMemory] = []
 
     # ── Cluster A: Coffee 1:1 morning, productive ─────────────────────────
-    coffee_morning_query = "morning coffee 1on1 with colleague productive"
-    for person in ("Anna", "Ben", "Carla", "Dario", "Eva"):
+    # Distinct topic per memory so retain dedup doesn't collapse them.
+    a_topics = [
+        ("Anna", "the new authentication flow", "agreed on a token-rotation approach"),
+        ("Ben", "the migration of the orders table", "decided to ship the dry-run first"),
+        ("Carla", "API response times", "identified a hot path in the recall handler"),
+        ("Dario", "the upcoming release", "split the changelog into user-facing buckets"),
+        ("Eva", "the on-call rotation", "rebalanced shifts for the next quarter"),
+    ]
+    a_query = "morning coffee one on one espresso bar sprint plan"
+    for person, topic, outcome in a_topics:
         out.append(
             SeedMemory(
                 cluster="coffee_morning",
                 content=(
-                    f"Had a 30-minute morning coffee 1:1 with {person} at the "
-                    "espresso bar. We focused on the sprint plan, made progress "
-                    "on the next milestone. Productive session."
+                    f"Had a 30-minute morning coffee one-on-one with {person} at the "
+                    f"espresso bar. We talked about {topic} and {outcome}. "
+                    "Productive sprint-plan focused session."
                 ),
                 tags=[
                     "cluster:coffee_morning",
@@ -106,20 +116,27 @@ def build_seed_memories() -> list[SeedMemory]:
                     "mood:productive",
                     "duration:30",
                 ],
-                recall_query=coffee_morning_query,
+                recall_query=a_query,
             )
         )
 
     # ── Cluster B: Coffee 1:1 afternoon, casual ───────────────────────────
-    coffee_afternoon_query = "afternoon coffee 1on1 catching up casual"
-    for person in ("Felix", "Gina", "Hans", "Inka", "Jonas"):
+    b_topics = [
+        ("Felix", "weekend hiking plans"),
+        ("Gina", "the new espresso machine in the office"),
+        ("Hans", "his recent ski trip to Austria"),
+        ("Inka", "a podcast about urban planning"),
+        ("Jonas", "the office foosball tournament"),
+    ]
+    b_query = "afternoon coffee one on one catching up personal chat"
+    for person, topic in b_topics:
         out.append(
             SeedMemory(
                 cluster="coffee_afternoon",
                 content=(
                     f"Took a 30-minute afternoon coffee break with {person}. "
-                    "We caught up on personal stuff and team gossip. Relaxed, "
-                    "casual chat — no agenda."
+                    f"We chatted casually about {topic}. Relaxed, no-agenda "
+                    "personal catch-up."
                 ),
                 tags=[
                     "cluster:coffee_afternoon",
@@ -129,20 +146,27 @@ def build_seed_memories() -> list[SeedMemory]:
                     "mood:casual",
                     "duration:30",
                 ],
-                recall_query=coffee_afternoon_query,
+                recall_query=b_query,
             )
         )
 
     # ── Cluster C: Friday sprint retro, group session ─────────────────────
-    retro_query = "friday sprint retrospective group action items"
-    for week in ("week 12", "week 13", "week 14", "week 15", "week 16"):
+    c_items = [
+        ("12", "shipping the schema-explorer hotfix", "split prep tickets earlier"),
+        ("13", "the green-light test pass", "automate the dev-stack reset"),
+        ("14", "two production incidents", "expand runbooks for cache invalidation"),
+        ("15", "rolling out the new retriever", "tighten Qdrant payload defaults"),
+        ("16", "the load-test campaign", "raise hint budgets for analogy mode"),
+    ]
+    c_query = "friday sprint retrospective group action items team six"
+    for week, win, action in c_items:
         out.append(
             SeedMemory(
                 cluster="sprint_retro",
                 content=(
-                    f"Sprint retrospective on Friday for {week}. The full team "
-                    "of six gathered, walked through what went well and what "
-                    "didn't, captured action items for next week."
+                    f"Sprint retrospective on Friday for week {week}. The team of six "
+                    f"celebrated {win} and captured the action item to {action} "
+                    "for the next sprint."
                 ),
                 tags=[
                     "cluster:sprint_retro",
@@ -152,7 +176,7 @@ def build_seed_memories() -> list[SeedMemory]:
                     "mood:reflective",
                     "duration:60",
                 ],
-                recall_query=retro_query,
+                recall_query=c_query,
             )
         )
 
@@ -246,13 +270,16 @@ def phase_recall_loop(base: str, bank_id: str, seeds: list[SeedMemory]) -> Phase
     return PhaseReport(name="recall", duration_s=time.time() - t0, payload={"total": total})
 
 
-def phase_ncr(base: str, bank_id: str, phase: str, label: str) -> PhaseReport:
+def phase_ncr(base: str, bank_id: str, phase: str, label: str, *, force: bool = True) -> PhaseReport:
+    """Trigger one NCR phase. ``force=True`` bypasses the per-phase cooldown
+    (dev-only escape introduced for this smoke test)."""
     print("=" * 72)
     print(f"STEP: NCR TRIGGER — phase={phase} ({label})")
     print("=" * 72)
     t0 = time.time()
+    qs = f"phase={phase}" + ("&force=true" if force else "")
     resp = _post_json(
-        f"{base}/v1/default/banks/{bank_id}/ncr/trigger?phase={phase}",
+        f"{base}/v1/default/banks/{bank_id}/ncr/trigger?{qs}",
         {"bank_id": bank_id},
         timeout=600.0,
     )
