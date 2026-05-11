@@ -218,6 +218,8 @@ def phase_seed(base: str, bank_id: str, seeds: list[SeedMemory]) -> PhaseReport:
     print("=" * 72)
     t0 = time.time()
     by_cluster: dict[str, int] = {}
+    persisted_by_cluster: dict[str, int] = {}
+    duplicates: list[str] = []
     for idx, s in enumerate(seeds, 1):
         body = {
             "items": [{"content": s.content, "tags": s.tags}],
@@ -225,13 +227,35 @@ def phase_seed(base: str, bank_id: str, seeds: list[SeedMemory]) -> PhaseReport:
             "task_context": s.task_context,
         }
         sub = time.time()
-        _post_json(f"{base}/v1/default/banks/{bank_id}/memories", body, timeout=180.0)
+        resp = _post_json(f"{base}/v1/default/banks/{bank_id}/memories", body, timeout=180.0)
         by_cluster[s.cluster] = by_cluster.get(s.cluster, 0) + 1
-        print(f"  [{idx:2d}/{len(seeds)}] {s.cluster:<20s} {time.time() - sub:5.1f}s")
+
+        # Surface dedup outcomes — the retain response carries one
+        # `outcomes` entry per item with status ∈ {persisted, deduplicated,
+        # filtered}. Anything other than `persisted` explains the
+        # `/graph` shortfall.
+        outcomes = resp.get("outcomes") or resp.get("items") or []
+        status = (outcomes[0].get("status") if outcomes else None) or "unknown"
+        if status == "persisted":
+            persisted_by_cluster[s.cluster] = persisted_by_cluster.get(s.cluster, 0) + 1
+        elif status in ("deduplicated", "filtered"):
+            duplicates.append(f"{s.cluster}#{idx} → {status}")
+        print(
+            f"  [{idx:2d}/{len(seeds)}] {s.cluster:<20s} {time.time() - sub:5.1f}s  status={status}"
+        )
     print()
-    print("  Per cluster:", ", ".join(f"{k}={v}" for k, v in by_cluster.items()))
+    print("  Sent per cluster:     ", ", ".join(f"{k}={v}" for k, v in by_cluster.items()))
+    print("  Persisted per cluster:", ", ".join(f"{k}={v}" for k, v in persisted_by_cluster.items()) or "(empty)")
+    if duplicates:
+        print("  Non-persisted:")
+        for d in duplicates:
+            print(f"    {d}")
     print()
-    return PhaseReport(name="seed", duration_s=time.time() - t0, payload={"by_cluster": by_cluster})
+    return PhaseReport(
+        name="seed",
+        duration_s=time.time() - t0,
+        payload={"by_cluster": by_cluster, "persisted_by_cluster": persisted_by_cluster, "duplicates": duplicates},
+    )
 
 
 def phase_recall_loop(base: str, bank_id: str, seeds: list[SeedMemory]) -> PhaseReport:
@@ -334,11 +358,17 @@ def phase_inspect_buffer(base: str, bank_id: str) -> PhaseReport:
     try:
         stats = _get_json(f"{base}/v1/default/banks/{bank_id}/engrams/stats")
         if isinstance(stats, dict):
-            for layer in stats.get("layers", []):
-                print(
-                    f"  layer={layer.get('layer'):<12s} count={layer.get('count'):>3d}  "
-                    f"avg_strength={layer.get('avg_strength', 0):.3f}"
-                )
+            print(f"  total={stats.get('total', 0)}")
+            # EngramStatsResponse.layers is a dict[layer_name, {count, avg_strength}].
+            for layer_name, layer_stats in (stats.get("layers") or {}).items():
+                if isinstance(layer_stats, dict):
+                    print(
+                        f"  layer={layer_name:<14s} count={layer_stats.get('count'):>3d}  "
+                        f"avg_strength={layer_stats.get('avg_strength', 0):.3f}"
+                    )
+            sd = stats.get("strength_distribution") or {}
+            if sd:
+                print(f"  strength: weak={sd.get('weak', 0)} moderate={sd.get('moderate', 0)} strong={sd.get('strong', 0)}")
     except Exception as exc:
         print(f"  /engrams/stats failed: {exc}")
 
