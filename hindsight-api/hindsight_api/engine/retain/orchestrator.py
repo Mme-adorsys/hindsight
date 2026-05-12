@@ -55,6 +55,7 @@ async def retain_batch(
     confidence_score: float | None = None,
     session=None,
     neo4j_client=None,
+    qdrant_client=None,
     budget=None,
     budget_profile=None,
 ) -> tuple[list[list[str]], TokenUsage]:
@@ -618,6 +619,38 @@ async def retain_batch(
             for ra in replacement_actions:
                 fact_id_map[id(ra.new_fact)] = ra.existing_unit_id
             unit_ids = [fact_id_map[id(f)] for f in facts_to_store]
+
+            # Mirror engram embeddings into Qdrant (concept §3 — engram
+            # points carry payload.kind="engram"). Without this the
+            # Thalamus novelty check and C2 cluster detection both run
+            # blind against an empty collection. Best-effort: a Qdrant
+            # failure does not roll back the PG transaction; the next
+            # successful retain re-upserts the same point id.
+            if qdrant_client is not None and new_unit_ids:
+                points = [
+                    {
+                        "engram_id": uid,
+                        "embedding": list(fact.embedding),
+                        "payload": {
+                            "bank_id": bank_id,
+                            "text": (fact.fact_text or "")[:200],
+                            "fact_type": fact.fact_type,
+                            "tags": list(getattr(fact, "tags", None) or []),
+                        },
+                    }
+                    for uid, fact in zip(new_unit_ids, keep_facts)
+                    if fact.embedding is not None
+                ]
+                if points:
+                    try:
+                        await qdrant_client.batch_upsert(points)
+                    except Exception as exc:  # noqa: BLE001 — best-effort mirror
+                        logger.warning(
+                            "Retain-side Qdrant batch_upsert failed for bank=%s n=%d: %s",
+                            bank_id,
+                            len(points),
+                            exc,
+                        )
 
             # Process entities
             step_start = time.time()

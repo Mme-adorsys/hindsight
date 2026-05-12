@@ -400,6 +400,7 @@ class RetainOrchestrator:
                 fact_type_override=fact_type_override,
                 confidence_score=confidence_score,
                 session=session,
+                qdrant_client=self.engram_storage._qdrant if self.engram_storage is not None else None,
                 budget=budget,
                 budget_profile=budget_profile,
             )

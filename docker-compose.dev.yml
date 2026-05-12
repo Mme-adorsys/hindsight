@@ -51,7 +51,10 @@ services:
       retries: 15
 
   qdrant:
-    image: qdrant/qdrant:v1.9.0
+    # Bumped from v1.9.0: the qdrant-client (v1.17.x) bundled with the API
+    # uses the new /collections/.../points/query endpoint which 1.9 doesn't
+    # have → every search returned 404. v1.12+ supports query_points.
+    image: qdrant/qdrant:v1.12.5
     container_name: mm-qdrant
     ports:
       - "6336:6333"
