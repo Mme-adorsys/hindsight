@@ -322,11 +322,15 @@ async def list_bank_hyper_schemas(
     limit: int = Query(50, ge=1, le=500),
 ) -> list[HyperSchemaDTO]:
     neo4j = _neo4j(request)
+    # Cypher 5: after a `collect(...)` aggregation, only RETURNed names are
+    # visible — ORDER BY h.last_reinforced_at would fail. Hoist the order
+    # key into the projection so the planner keeps it accessible.
     cypher = (
         "MATCH (h:HyperSchema {status: 'active'}) "
         "OPTIONAL MATCH (s:Schema)-[:SPECIALIZES]->(h) "
-        "RETURN properties(h) AS hp, collect(s.id) AS child_ids "
-        "ORDER BY h.last_reinforced_at DESC "
+        "RETURN properties(h) AS hp, collect(s.id) AS child_ids, "
+        "       h.last_reinforced_at AS last_reinforced_at "
+        "ORDER BY last_reinforced_at DESC "
         "LIMIT $limit"
     )
     rows = await neo4j.run_cypher(cypher, params={"limit": int(limit)})

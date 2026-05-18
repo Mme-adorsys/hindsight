@@ -297,7 +297,12 @@ async def reinforce_schema(
         last_drifted_at=None,
     )
 
-    await update_schema(neo4j, schema.id, updated.to_neo4j_props(), label="Schema")
+    # update_schema rejects mutation of the immutable identity fields, so
+    # strip them before handing over the freshly-built props dict.
+    _props = updated.to_neo4j_props()
+    for _k in ("id", "created_at"):
+        _props.pop(_k, None)
+    await update_schema(neo4j, schema.id, _props, label="Schema")
 
     try:
         await qdrant.upsert_schema_centroid(
@@ -421,7 +426,12 @@ async def reinforce_schema_single_engram(
         last_drifted_at=None,
     )
 
-    await update_schema(neo4j, schema.id, updated.to_neo4j_props(), label="Schema")
+    # update_schema rejects mutation of the immutable identity fields, so
+    # strip them before handing over the freshly-built props dict.
+    _props = updated.to_neo4j_props()
+    for _k in ("id", "created_at"):
+        _props.pop(_k, None)
+    await update_schema(neo4j, schema.id, _props, label="Schema")
 
     try:
         await qdrant.upsert_schema_centroid(
