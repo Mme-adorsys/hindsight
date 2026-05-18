@@ -48,8 +48,11 @@ async def create_schema(
     """
     _check_label(label)
     props = model.to_neo4j_props()
+    # Cypher 5 requires `ON CREATE SET` to follow the MERGE before the
+    # plain `SET` block — interleaving them is a syntax error.
     query = (
         f"MERGE (s:{label} {{id: $id}}) "
+        "ON CREATE SET s.created_at = $created_at "
         "SET s.description = $description, "
         "    s.properties_json = $properties_json, "
         "    s.centroid_qdrant_id = $centroid_qdrant_id, "
@@ -62,7 +65,6 @@ async def create_schema(
         "    s.last_accessed = $last_accessed, "
         "    s.drift_count = $drift_count, "
         "    s.last_drifted_at = $last_drifted_at "
-        "ON CREATE SET s.created_at = $created_at "
         "RETURN properties(s) AS p"
     )
     rows = await client.run_cypher(query, params=props)
