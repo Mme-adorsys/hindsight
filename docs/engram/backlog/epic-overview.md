@@ -114,6 +114,14 @@ Stories enthalten eingebettete Tasks als Checkliste.
 |---|------|-------------|----------------|
 | 25 | **CLS Architecture Refactor** | Neue 3-Phasen-Pipeline (C1, C2, C3), Schema als eigenständige Neo4j-Entität (`:Schema`/`:HyperSchema`-Knoten), Engram-Layer eingeschränkt auf {working, buffer}, Schema-Centroid in Qdrant (`payload.kind="schema"`), HDBSCAN-Cluster-Detection in C2 mit R1+R2-Maturation, Schema-Fingerprint-Match (Cosine ≥ 0.85), statistische Property-Aggregation, `consolidation.schema_description` Pipeline-Step (Tier SMALL + Template-Fallback), R4 batch + incremental, C3 mit Hyper-Schema-Bildung (R3) und Schema Death (R5), HybridRetriever für gemischte Engram/Schema-Treffer, Mode-abhängige Gewichtung. Cleanup der alten ncr_decay/ncr_strengthen/schema_processor-Module. **Plus Adaption** bestehender Epics auf neue Architektur: Reconsolidation auf Schema-Hits + Drift-Tracking (Epic 10), Multi-Bank-Schema-Promotion + Cross-Agent-Konvergenz + Konflikt-Resolution (Epic 14), Control-Plane Schema-Explorer Backend + Frontend (Epic 22). 28 Stories in 8 Blöcken. | Epic 01, Epic 02, Epic 03, Epic 10, Epic 12, Epic 13, Epic 14, Epic 22, Epic 24 |
 
+### Phase 11 — C2 Tuning auf kleinen Banken → **Milestone 11: "Memory Clusters Early"**
+
+> Live-Smoke-Test in Epic 25 hat einen architektonischen Tradeoff offengelegt: HDBSCAN-Cohesion und Thalamus-Novelty pullen in entgegengesetzte Richtungen. Auf 15-Memory Dev-Bänken sieht HDBSCAN entweder einen undifferenzierten Blob (zu hohe Within-Cluster-Ähnlichkeit) oder gar keine Cluster (zu hohe Diversität). Außerdem extrahiert die Retain-Pipeline ~2 LLM-Facts pro Memory; das Embedding für C2 sitzt auf Fakt-Ebene und verliert dabei die cluster-distinktiven Signale des Original-Texts.
+
+| # | Epic | Beschreibung | Abhängigkeiten |
+|---|------|-------------|----------------|
+| 26 | **C2 Pattern Recognition Tuning** | Auflösung des Cohesion-vs-Novelty Tradeoffs für kleine Banken. Mögliche Stoßrichtungen: (a) C2 nutzt für HDBSCAN Original-Memory-Text + Tags statt extrahierter Facts (zweite Embedding-Spur); (b) Tag-gewichteter Cosine in `_mean_pairwise_cosine` (gleiche Cluster-Tags = +Bonus, unabhängig von Vokabular); (c) adaptive `MIN_CLUSTER_SIZE` / `COHESION_THRESHOLD` als Funktion der Bankgröße. Plus: Reset-Bug fixen (Neo4j-Schemas überleben `reset_neo4j`). Plus: Embedding-Diagnose-Endpoint für Dev (UMAP über Buffer-Engrams für visuelle Cluster-Inspektion). | Epic 25 |
+
 ---
 
 ## Abhängigkeitsgraph
