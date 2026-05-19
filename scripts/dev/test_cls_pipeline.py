@@ -101,19 +101,18 @@ def build_seed_memories() -> list[SeedMemory]:
         out.append(
             SeedMemory(
                 cluster="coffee_morning",
-                # Cluster signature is intentionally orthogonal to cluster B:
-                # this one screams "work / sprint / engineering / planning"
-                # using terms the afternoon memories never touch. HDBSCAN
-                # needs separation in vector space, so the shared phrases
-                # have to be cluster-specific, not generally cofee-themed.
+                # Heavy shared boilerplate so the cluster centroid dominates
+                # the embedding; the personalized tail stays short. Without
+                # this the per-memory topic ("authentication flow" vs
+                # "migration") drives pairwise cosine below the 0.75
+                # cohesion gate and HDBSCAN drops the cluster.
                 content=(
-                    "Engineering sprint planning sync over morning coffee. "
-                    "Reviewed sprint backlog tickets, refined estimates, "
-                    "discussed blockers and dependencies, agreed on this "
-                    "sprint's deliverables. Technical working meeting, "
-                    "engineering priorities, code review followups. "
-                    f"With {person} we covered {topic} and decided on the "
-                    f"{outcome}."
+                    "Morning coffee one-on-one at the office espresso bar. "
+                    "Productive sprint-plan focused session, aligned on "
+                    "priorities for the upcoming sprint and agreed on "
+                    "the next steps. Quick 30-minute morning coffee sync, "
+                    "structured agenda, productive working coffee meeting. "
+                    f"Talked with {person} about {topic} and {outcome}."
                 ),
                 tags=[
                     "experience",  # → C1 promote threshold = 0.4 (vs default 0.7)
@@ -142,17 +141,17 @@ def build_seed_memories() -> list[SeedMemory]:
         out.append(
             SeedMemory(
                 cluster="coffee_afternoon",
-                # Cluster signature is intentionally orthogonal to cluster A:
-                # leisure / hobby / weekend / family vocabulary, zero
-                # overlap with engineering/sprint terms. Gives HDBSCAN the
-                # separation it needs in embedding space.
+                # Heavy shared boilerplate (see cluster A note above) — the
+                # cluster signature dominates the embedding, the personal
+                # tail just differentiates enough to avoid retain-side
+                # dedup.
                 content=(
-                    "Afternoon leisure chat over coffee, weekend stories "
-                    "and hobbies. Talked about family activities, sports, "
-                    "vacation memories and personal interests outside the "
-                    "office. Relaxed lifestyle conversation, hobbies "
-                    "weekend trip family vacation. "
-                    f"{person} told me about {topic}."
+                    "Afternoon coffee break in the office kitchen, casual "
+                    "no-agenda personal catch-up. Relaxed friendly chat to "
+                    "decompress between meetings, away from work topics. "
+                    "Quick 30-minute afternoon coffee, easy-going personal "
+                    "chitchat, friendly informal coffee break. "
+                    f"Hung out with {person} about {topic}."
                 ),
                 tags=[
                     "experience",  # → C1 promote threshold = 0.4
