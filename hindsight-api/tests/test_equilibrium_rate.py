@@ -27,7 +27,6 @@ from hindsight_api.engine.consolidation.scoring import (
 )
 from hindsight_api.engine.engram_types import ThalamusScores
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -78,20 +77,31 @@ class TestBankFactor:
     def test_reference_size_returns_unity(self) -> None:
         assert compute_bank_factor(REFERENCE_BANK_SIZE) == pytest.approx(1.0)
 
-    def test_small_bank_inflates(self) -> None:
-        # log(1001)/log(51) ≈ 6.9088 / 3.9318 ≈ 1.7572
-        assert compute_bank_factor(50) == pytest.approx(1.7572, abs=1e-3)
+    def test_small_bank_capped(self) -> None:
+        # Raw log-ratio for size=50 is ≈ 1.7572 (>2× BASE_MIN_ACCESS),
+        # which used to lock C1 out on dev banks. The new small-bank cap
+        # (SMALL_BANK_FACTOR_CAP=1.5 when size < SMALL_BANK_THRESHOLD)
+        # keeps the inflation but bounds it. See concept §5.3 + the
+        # post-Epic-25 smoke fix.
+        assert compute_bank_factor(50) == pytest.approx(1.5, abs=1e-3)
+
+    def test_at_threshold_uses_raw_ratio(self) -> None:
+        # SMALL_BANK_THRESHOLD == 100 → at exactly that size the cap stops
+        # applying. Raw value: log(1001)/log(101) ≈ 6.9088 / 4.6151 ≈ 1.4970.
+        assert compute_bank_factor(100) == pytest.approx(1.4970, abs=1e-3)
 
     def test_large_bank_deflates(self) -> None:
         # log(1001)/log(50001) ≈ 6.9088 / 10.8198 ≈ 0.6386
         assert compute_bank_factor(50_000) == pytest.approx(0.6386, abs=1e-3)
 
-    def test_empty_bank_returns_max_compensation(self) -> None:
-        assert compute_bank_factor(0) == 2.0
+    def test_empty_bank_returns_small_bank_cap(self) -> None:
+        # Used to be 2.0 (max compensation). Now capped to the small-bank
+        # value so fresh dev banks aren't immediately locked out of C1.
+        assert compute_bank_factor(0) == 1.5
 
-    def test_negative_bank_returns_max_compensation(self) -> None:
+    def test_negative_bank_returns_small_bank_cap(self) -> None:
         # Defensive — negative sizes should never happen but must not crash.
-        assert compute_bank_factor(-1) == 2.0
+        assert compute_bank_factor(-1) == 1.5
 
     def test_custom_reference_size(self) -> None:
         # reference=100, size=100 → ratio = 1.0

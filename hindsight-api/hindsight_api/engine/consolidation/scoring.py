@@ -186,6 +186,18 @@ def sessions_alive(bank_session_count: int, engram_created_at_session: int) -> i
     return max(0, bank_session_count - engram_created_at_session)
 
 
+SMALL_BANK_THRESHOLD: int = REFERENCE_BANK_SIZE // 10  # 100 engrams
+SMALL_BANK_FACTOR_CAP: float = 1.5
+"""Above the reference size the formula deflates naturally; below
+``SMALL_BANK_THRESHOLD`` (~100 engrams) the raw log-ratio inflates the
+factor sharply (e.g. 2.49 at size=15), which in turn pushes ``min_access``
+to 13+ and effectively blocks C1 promotion on dev / first-week banks. The
+cap is empirical: 1.5× still asks small-bank engrams to clear roughly
+5×1.5=8 recalls before promotion (more than the BASE_MIN_ACCESS but
+nowhere near the runaway value), and large banks (>=100) keep the
+original behaviour."""
+
+
 def compute_bank_factor(bank_size: int, reference_size: int = REFERENCE_BANK_SIZE) -> float:
     """Normalize per-Engram recall probability across banks of different sizes.
 
@@ -194,7 +206,9 @@ def compute_bank_factor(bank_size: int, reference_size: int = REFERENCE_BANK_SIZ
     deflated access_counts due to competition. This factor shifts the
     equilibrium rate to keep the lifecycle fair regardless of bank size.
 
-    Formula: ``log(1 + reference_size) / log(1 + bank_size)``.
+    Formula: ``log(1 + reference_size) / log(1 + bank_size)``, then capped
+    at ``SMALL_BANK_FACTOR_CAP`` when the bank holds fewer than
+    ``SMALL_BANK_THRESHOLD`` engrams (avoids C1 lockout on dev banks).
 
     Args:
         bank_size: Current Engram count for the bank.
@@ -202,12 +216,15 @@ def compute_bank_factor(bank_size: int, reference_size: int = REFERENCE_BANK_SIZ
             Defaults to ``REFERENCE_BANK_SIZE``.
 
     Returns:
-        A strictly positive multiplier. An empty / size=0 bank yields 2.0
-        (maximum compensation) rather than a division by zero.
+        A strictly positive multiplier. An empty / size=0 bank yields the
+        small-bank cap rather than a division by zero.
     """
     if bank_size < 1:
-        return 2.0
-    return math.log(1 + reference_size) / math.log(1 + bank_size)
+        return SMALL_BANK_FACTOR_CAP
+    factor = math.log(1 + reference_size) / math.log(1 + bank_size)
+    if bank_size < SMALL_BANK_THRESHOLD:
+        factor = min(factor, SMALL_BANK_FACTOR_CAP)
+    return factor
 
 
 def compute_equilibrium_rate(

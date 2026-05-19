@@ -20,7 +20,6 @@ from hindsight_api.engine.consolidation.scoring import (
     passes_hard_gates,
 )
 
-
 # ---------------------------------------------------------------------------
 # Constants sanity
 # ---------------------------------------------------------------------------
@@ -85,13 +84,13 @@ class TestTagThresholdLookup:
 
 
 class TestMinAccess:
-    def test_empty_bank_uses_max_bank_factor(self) -> None:
-        # bank_factor(0) = 2.0 → ceil(5 × 2.0) = 10
-        assert compute_min_access(0) == 10
+    def test_empty_bank_uses_small_bank_cap(self) -> None:
+        # bank_factor(0) = SMALL_BANK_FACTOR_CAP = 1.5 → ceil(5 × 1.5) = 8
+        assert compute_min_access(0) == 8
 
-    def test_small_bank_inflates_gate(self) -> None:
-        # bank_factor(50) ≈ 1.7572 → ceil(5 × 1.7572) = 9
-        assert compute_min_access(50) == 9
+    def test_small_bank_capped_gate(self) -> None:
+        # bank_factor(50) is capped at 1.5 (was 1.7572) → ceil(5 × 1.5) = 8
+        assert compute_min_access(50) == 8
 
     def test_reference_size_returns_base(self) -> None:
         # bank_factor(1000) = 1.0 → ceil(5 × 1.0) = 5
@@ -136,9 +135,10 @@ class TestHardGates:
         assert passes_hard_gates(access_count=10, novelty=0.1, bank_size=1000) is False
 
     def test_small_bank_requires_higher_access(self) -> None:
-        # bank_size=50 → min_access=9; access=5 would have passed for size=1000
+        # bank_size=50 → min_access=8 (capped via SMALL_BANK_FACTOR_CAP);
+        # access=5 would have passed for size=1000 but is too low here.
         assert passes_hard_gates(access_count=5, novelty=0.5, bank_size=50) is False
-        assert passes_hard_gates(access_count=9, novelty=0.5, bank_size=50) is True
+        assert passes_hard_gates(access_count=8, novelty=0.5, bank_size=50) is True
 
     def test_large_bank_accepts_lower_access(self) -> None:
         # bank_size=50000 → min_access=4; access=4 is enough
@@ -157,7 +157,8 @@ class TestHardGates:
         assert passes_hard_gates(access_count=min_acc, novelty=0.5, bank_size=1000) is True
         assert passes_hard_gates(access_count=min_acc - 1, novelty=0.5, bank_size=1000) is False
 
-    def test_empty_bank_requires_high_access(self) -> None:
-        # bank_size=0 → min_access=10; access=10 OK, access=9 fails
-        assert passes_hard_gates(access_count=10, novelty=0.5, bank_size=0) is True
-        assert passes_hard_gates(access_count=9, novelty=0.5, bank_size=0) is False
+    def test_empty_bank_requires_capped_access(self) -> None:
+        # bank_size=0 → min_access=8 (SMALL_BANK_FACTOR_CAP × BASE).
+        # access=8 passes; access=7 fails.
+        assert passes_hard_gates(access_count=8, novelty=0.5, bank_size=0) is True
+        assert passes_hard_gates(access_count=7, novelty=0.5, bank_size=0) is False
