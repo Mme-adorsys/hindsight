@@ -31,8 +31,8 @@ class TestConstants:
 
     def test_tag_threshold_values(self) -> None:
         assert TAG_PROMOTE_THRESHOLDS["fact"] == 0.7
-        assert TAG_PROMOTE_THRESHOLDS["experience"] == 0.4
-        assert TAG_PROMOTE_THRESHOLDS["opinion"] == 0.4
+        assert TAG_PROMOTE_THRESHOLDS["experience"] == 0.35
+        assert TAG_PROMOTE_THRESHOLDS["opinion"] == 0.35
 
     def test_default_matches_fact(self) -> None:
         # Fallback should be strict by default — behave like an unlabeled fact.
@@ -58,17 +58,17 @@ class TestTagThresholdLookup:
         assert get_promote_threshold_for_tags(["fact"]) == 0.7
 
     def test_experience_returns_lenient_threshold(self) -> None:
-        assert get_promote_threshold_for_tags(["experience"]) == 0.4
+        assert get_promote_threshold_for_tags(["experience"]) == 0.35
 
     def test_opinion_returns_lenient_threshold(self) -> None:
-        assert get_promote_threshold_for_tags(["opinion"]) == 0.4
+        assert get_promote_threshold_for_tags(["opinion"]) == 0.35
 
     def test_unknown_tag_falls_back_to_default(self) -> None:
         assert get_promote_threshold_for_tags(["weather"]) == DEFAULT_TAG_PROMOTE_THRESHOLD
 
     def test_lowest_match_wins_on_multi_tag(self) -> None:
-        # fact (0.7) + experience (0.4) → 0.4 (benefit of the doubt)
-        assert get_promote_threshold_for_tags(["fact", "experience"]) == 0.4
+        # fact (0.7) + experience (0.35) → 0.35 (benefit of the doubt)
+        assert get_promote_threshold_for_tags(["fact", "experience"]) == 0.35
 
     def test_unknown_tags_mixed_with_known(self) -> None:
         # Unknown tags are ignored — "fact" still applies.

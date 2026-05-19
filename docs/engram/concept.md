@@ -597,8 +597,8 @@ Facts sind "billige" Informationseinheiten — viele kommen rein, die meisten si
 | Tag-Kategorie | Promote-Threshold | Begründung |
 |---------------|:-----------------:|------------|
 | fact | 0.7 | Muss sich durch hohen Thalamus-Score ODER häufige Nutzung beweisen |
-| experience | 0.4 | Erfahrungen sind bereits verarbeitetes Wissen |
-| opinion | 0.4 | Meinungen/Schlussfolgerungen sind Syntheseleistungen |
+| experience | 0.35 | Erfahrungen sind bereits verarbeitetes Wissen — Bar bewusst niedrig, damit kohärente Episoden-Cluster (deren Member-Engrams die Thalamus-Novelty gegenseitig dämpfen) trotzdem C1-promotebar bleiben |
+| opinion | 0.35 | Meinungen/Schlussfolgerungen sind Syntheseleistungen |
 
 #### Archive-Threshold
 
@@ -1000,8 +1000,8 @@ composite   = thalamus_overall × decay
 | Tag-Kategorie | Promote-Threshold | Begründung |
 |---------------|:-----------------:|------------|
 | fact | 0.7 | Muss sich durch hohen Thalamus-Score ODER häufige Nutzung beweisen |
-| experience | 0.4 | Erfahrungen sind bereits verarbeitetes Wissen |
-| opinion | 0.4 | Meinungen/Schlussfolgerungen sind Syntheseleistungen |
+| experience | 0.35 | Erfahrungen sind bereits verarbeitetes Wissen — Bar bewusst niedrig, damit kohärente Episoden-Cluster trotz gegenseitig gedämpfter Thalamus-Novelty C1-promotebar bleiben |
+| opinion | 0.35 | Meinungen/Schlussfolgerungen sind Syntheseleistungen |
 
 5. **Sonst:** Engram bleibt im Working Memory, wird beim nächsten C1-Run erneut geprüft
 

@@ -160,8 +160,14 @@ MIN_EQUILIBRIUM_RATE: float = 0.001  # lower guard against pathological input
 
 TAG_PROMOTE_THRESHOLDS: dict[str, float] = {
     "fact": 0.7,
-    "experience": 0.4,
-    "opinion": 0.4,
+    # Experiences are episodic / already-processed: the bar is lower than
+    # for raw facts. Empirically 0.4 was still too strict on dev banks
+    # where shared cluster boilerplate suppresses Thalamus novelty
+    # (composite score ≈ 0.38). Drop to 0.35 so a cohesive episodic
+    # cluster can still clear C1 promotion without giving away the
+    # access + novelty hard gates.
+    "experience": 0.35,
+    "opinion": 0.35,
 }
 DEFAULT_TAG_PROMOTE_THRESHOLD: float = 0.7  # conservative fallback (like fact)
 BASE_MIN_ACCESS_FOR_PROMOTE: int = 5  # bank-size 1000 anchor
