@@ -101,10 +101,18 @@ def build_seed_memories() -> list[SeedMemory]:
         out.append(
             SeedMemory(
                 cluster="coffee_morning",
+                # Heavy shared boilerplate so the cluster centroid dominates
+                # the embedding; the personalized tail stays short. Without
+                # this the per-memory topic ("authentication flow" vs
+                # "migration") drives pairwise cosine below the 0.75
+                # cohesion gate and HDBSCAN drops the cluster.
                 content=(
-                    f"Had a 30-minute morning coffee one-on-one with {person} at the "
-                    f"espresso bar. We talked about {topic} and {outcome}. "
-                    "Productive sprint-plan focused session."
+                    "Morning coffee one-on-one at the office espresso bar. "
+                    "Productive sprint-plan focused session, aligned on "
+                    "priorities for the upcoming sprint and agreed on "
+                    "the next steps. Quick 30-minute morning coffee sync, "
+                    "structured agenda, productive working coffee meeting. "
+                    f"Talked with {person} about {topic} and {outcome}."
                 ),
                 tags=[
                     "experience",  # → C1 promote threshold = 0.4 (vs default 0.7)
@@ -133,10 +141,17 @@ def build_seed_memories() -> list[SeedMemory]:
         out.append(
             SeedMemory(
                 cluster="coffee_afternoon",
+                # Heavy shared boilerplate (see cluster A note above) — the
+                # cluster signature dominates the embedding, the personal
+                # tail just differentiates enough to avoid retain-side
+                # dedup.
                 content=(
-                    f"Took a 30-minute afternoon coffee break with {person}. "
-                    f"We chatted casually about {topic}. Relaxed, no-agenda "
-                    "personal catch-up."
+                    "Afternoon coffee break in the office kitchen, casual "
+                    "no-agenda personal catch-up. Relaxed friendly chat to "
+                    "decompress between meetings, away from work topics. "
+                    "Quick 30-minute afternoon coffee, easy-going personal "
+                    "chitchat, friendly informal coffee break. "
+                    f"Hung out with {person} about {topic}."
                 ),
                 tags=[
                     "experience",  # → C1 promote threshold = 0.4
@@ -231,16 +246,16 @@ def phase_seed(base: str, bank_id: str, seeds: list[SeedMemory]) -> PhaseReport:
         resp = _post_json(f"{base}/v1/default/banks/{bank_id}/memories", body, timeout=180.0)
         by_cluster[s.cluster] = by_cluster.get(s.cluster, 0) + 1
 
-        # Surface dedup outcomes — the retain response carries one
-        # `outcomes` entry per item with status ∈ {persisted, deduplicated,
-        # filtered}. Anything other than `persisted` explains the
-        # `/graph` shortfall.
-        outcomes = resp.get("outcomes") or resp.get("items") or []
-        status = (outcomes[0].get("status") if outcomes else None) or "unknown"
-        if status == "persisted":
+        # RetainResponse only exposes coarse `success` + `items_count`
+        # — per-item dedup/filter status is not surfaced by the API.
+        # Treat success as "accepted" and rely on the /graph snapshot
+        # later in the pipeline to detect any silent drops.
+        if resp.get("success") and resp.get("items_count", 0) > 0:
+            status = "accepted"
             persisted_by_cluster[s.cluster] = persisted_by_cluster.get(s.cluster, 0) + 1
-        elif status in ("deduplicated", "filtered"):
-            duplicates.append(f"{s.cluster}#{idx} → {status}")
+        else:
+            status = "rejected"
+            duplicates.append(f"{s.cluster}#{idx} → rejected (items_count=0)")
         print(
             f"  [{idx:2d}/{len(seeds)}] {s.cluster:<20s} {time.time() - sub:5.1f}s  status={status}"
         )
