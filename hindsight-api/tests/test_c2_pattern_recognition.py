@@ -52,7 +52,7 @@ def _entries(ids: list[str]) -> list[dict]:
 
 def _qdrant_mock(ids: list[str], vectors: list[list[float]]):
     qdrant = AsyncMock()
-    qdrant.retrieve_many = AsyncMock(
+    qdrant.retrieve_memory_embeddings = AsyncMock(
         return_value=[{"engram_id": eid, "vector": vec, "payload": {}} for eid, vec in zip(ids, vectors, strict=True)]
     )
     return qdrant
@@ -167,7 +167,7 @@ class TestDetectClusters:
             qdrant = _qdrant_mock(ids, [_unit(0.0)])
             candidates = await detect_clusters("bank-A", pool, qdrant)
         # qdrant should not even be queried in the short-circuit path.
-        qdrant.retrieve_many.assert_not_called()
+        qdrant.retrieve_memory_embeddings.assert_not_called()
         assert candidates == []
 
     async def test_hdbscan_failure_is_swallowed(self):
@@ -194,7 +194,7 @@ class TestDetectClusters:
         ids = [str(uuid.uuid4()) for _ in range(4)]
         pool = AsyncMock()
         partial_qdrant = AsyncMock()
-        partial_qdrant.retrieve_many = AsyncMock(
+        partial_qdrant.retrieve_memory_embeddings = AsyncMock(
             return_value=[
                 {"engram_id": ids[0], "vector": _unit(0.0), "payload": {}},
                 {"engram_id": ids[1], "vector": _unit(0.01), "payload": {}},

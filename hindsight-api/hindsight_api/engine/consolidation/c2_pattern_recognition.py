@@ -195,7 +195,12 @@ async def detect_clusters(
 
     engram_ids = [str(e["engram_id"]) for e in entries]
     tags_by_id: dict[str, tuple[str, ...]] = {str(e["engram_id"]): tuple(e.get("tags") or ()) for e in entries}
-    points = await qdrant.retrieve_many(engram_ids)
+    # Epic 26 Story 02 — cluster on memory_embeddings (original text + tags)
+    # rather than fact-embeddings, so the macro-semantic cluster signature
+    # isn't stripped by LLM fact extraction. Engrams without a memory
+    # embedding (pre-Epic-26) are silently skipped — they keep their slot in
+    # PG but won't drive cluster detection until the backfill runs.
+    points = await qdrant.retrieve_memory_embeddings(engram_ids)
     by_id = {p["engram_id"]: p["vector"] for p in points if p.get("vector") is not None}
 
     aligned_ids = [eid for eid in engram_ids if eid in by_id]

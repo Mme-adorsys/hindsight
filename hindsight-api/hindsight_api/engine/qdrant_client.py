@@ -210,6 +210,90 @@ class QdrantEngineClient:
 
         await _retry_with_backoff(_upsert)
 
+    # Epic 26 Story 02 — the macro-semantic memory_embedding lane.
+    # Engram fact-embeddings (kind="engram") are tuned for Recall + Thalamus
+    # novelty — they're short, LLM-distilled facts. C2 needs to cluster on
+    # the *original* memory text + tags to keep the cluster signature
+    # intact, otherwise HDBSCAN sees a blob (see Epic 26 epic.md).
+    # Same collection, different point_id (uuid5 namespace) so engram and
+    # memory embeddings co-exist without colliding on the engram_id key.
+    _MEMORY_POINT_NAMESPACE = uuid.UUID("a36e2db8-3b87-5a7c-9f1a-8f3c4b2d6e15")
+
+    @classmethod
+    def _memory_point_id(cls, engram_id: str) -> str:
+        """Deterministic Qdrant point id for an engram's memory_embedding.
+
+        Derived via UUIDv5 so the same engram_id always maps to the same
+        point id (idempotent upsert, deterministic backfill).
+        """
+        return str(uuid.uuid5(cls._MEMORY_POINT_NAMESPACE, f"memory:{engram_id}"))
+
+    async def upsert_memory_embedding(
+        self,
+        engram_id: str,
+        embedding: list[float],
+        payload: dict[str, Any],
+    ) -> None:
+        """Insert or update the macro-semantic memory_embedding for an engram.
+
+        Same collection as fact embeddings, distinct point id (uuid5 of
+        engram_id), payload pinned to ``kind="memory_embedding"``. Carries
+        ``engram_id`` in payload so reverse lookups stay simple.
+        """
+        client = self._require_client()
+        # Validate engram_id is a valid UUID before deriving the point id —
+        # garbage in would silently produce a valid uuid5.
+        uuid.UUID(engram_id)
+        point_id = self._memory_point_id(engram_id)
+        merged_payload = {**payload, "engram_id": engram_id, "kind": "memory_embedding"}
+
+        async def _upsert():
+            await client.upsert(
+                collection_name=self._collection,
+                points=[
+                    qdrant_models.PointStruct(
+                        id=point_id,
+                        vector=embedding,
+                        payload=merged_payload,
+                    )
+                ],
+            )
+
+        await _retry_with_backoff(_upsert)
+
+    async def retrieve_memory_embeddings(self, engram_ids: list[str]) -> list[dict[str, Any]]:
+        """Batch-retrieve memory_embeddings for the given engram ids.
+
+        Mirrors :meth:`retrieve_many` but resolves the memory_embedding
+        point id via uuid5 before fetching. C2 ``detect_clusters`` and the
+        R4 match path consume this instead of the fact-embedding retrieve.
+
+        Missing memory_embeddings (e.g. engrams predating Epic 26) are
+        silently skipped — same contract as ``retrieve_many``.
+        """
+        client = self._require_client()
+        if not engram_ids:
+            return []
+        point_ids = [self._memory_point_id(eid) for eid in engram_ids]
+
+        async def _retrieve():
+            results = await client.retrieve(
+                collection_name=self._collection,
+                ids=point_ids,
+                with_vectors=True,
+                with_payload=True,
+            )
+            return [
+                {
+                    "engram_id": p.payload.get("engram_id", str(p.id)),
+                    "vector": p.vector,
+                    "payload": p.payload,
+                }
+                for p in results
+            ]
+
+        return await _retry_with_backoff(_retrieve)
+
     async def search_similar(
         self,
         embedding: list[float],

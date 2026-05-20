@@ -652,6 +652,72 @@ async def retain_batch(
                             exc,
                         )
 
+                # Epic 26 Story 02 — memory_embedding lane. Fact-embeddings
+                # above sit on LLM-distilled facts and lose the cluster
+                # signature that lives in the original memory text. C2 needs
+                # the macro-semantic view to find clusters, so we embed
+                # ``original_content + tags`` once per source content and
+                # upsert under a separate Qdrant point id (kind="memory_embedding").
+                # Cache by content_index so multiple facts from the same
+                # memory share the embedding call.
+                memory_embedding_cache: dict[int, list[float]] = {}
+                memory_payload_cache: dict[int, dict[str, Any]] = {}
+                pending_indices: list[int] = []
+                pending_texts: list[str] = []
+                for fact in keep_facts:
+                    if fact.embedding is None:
+                        continue
+                    ci = int(fact.content_index)
+                    if ci in memory_embedding_cache or ci in pending_indices:
+                        continue
+                    if ci >= len(contents_dicts):
+                        continue
+                    src = contents_dicts[ci]
+                    original_text = (src.get("content") or "").strip()
+                    original_tags = list(src.get("tags") or [])
+                    if not original_text and not original_tags:
+                        continue
+                    pending_indices.append(ci)
+                    pending_texts.append(f"{original_text} {' '.join(original_tags)}".strip())
+                    memory_payload_cache[ci] = {
+                        "bank_id": bank_id,
+                        "text": original_text[:200],
+                        "tags": original_tags,
+                    }
+                if pending_texts:
+                    try:
+                        vecs = await embedding_processing.generate_embeddings_batch(embeddings_model, pending_texts)
+                        for ci, vec in zip(pending_indices, vecs):
+                            memory_embedding_cache[ci] = list(vec)
+                    except Exception as exc:  # noqa: BLE001 — best-effort
+                        logger.warning(
+                            "Retain-side memory_embedding generation failed bank=%s n=%d: %s",
+                            bank_id,
+                            len(pending_texts),
+                            exc,
+                        )
+
+                for uid, fact in zip(new_unit_ids, keep_facts):
+                    if fact.embedding is None:
+                        continue
+                    vec = memory_embedding_cache.get(int(fact.content_index))
+                    if vec is None:
+                        continue
+                    payload = memory_payload_cache.get(int(fact.content_index), {"bank_id": bank_id})
+                    try:
+                        await qdrant_client.upsert_memory_embedding(
+                            engram_id=uid,
+                            embedding=vec,
+                            payload=payload,
+                        )
+                    except Exception as exc:  # noqa: BLE001 — best-effort
+                        logger.warning(
+                            "Retain-side memory_embedding upsert failed bank=%s engram_id=%s: %s",
+                            bank_id,
+                            uid,
+                            exc,
+                        )
+
             # Process entities
             step_start = time.time()
             # Build map of content_index -> user entities for merging
