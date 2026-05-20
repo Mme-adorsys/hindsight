@@ -59,10 +59,23 @@ Heute: Wenn HDBSCAN `raw_clusters=0` returniert, ist nicht ersichtlich *warum* �
 
 Vorschlag: Dev-Endpoint `/v1/cp/banks/{bank_id}/c2-snapshot` der die Buffer-Engram-Vektoren via UMAP auf 2D projiziert + Cluster-Labels einfärbt. Wird vom Schema-Explorer-Frontend (Epic 22) konsumiert.
 
+## Story 06 — C1-Promotion-Rate auf Dev-Bänken (offen)
+
+**Befund nach Story 02 Live-Smoke:** Selbst mit funktionierender memory_embedding-Lane (sprint_retro paarweise Cosines 0.83-0.90 im memory_embedding-Raum — klar clusterbar) bleibt C1 der Bottleneck: 5 von 21 Engrams in Buffer, sprint_retro 0/8 obwohl es das stärkste Cluster-Signal hat.
+
+**Root-Cause:** Thalamus avg_score fällt nach dem ersten Retain auf 0.30-0.39 weil ähnliche Folge-Memories die `novelty`-Komponente drücken (Konzept §5.2). Plus access_count-Hard-Gate (≥ 8) wird auf kleinen Bänken selten erreicht.
+
+**Mögliche Stoßrichtungen:**
+- (a) Thalamus-Novelty soll memory_embedding statt fact_embedding nutzen (Cluster-Cohesion-konform).
+- (b) Composite-Score-Decay-Faktor für junge Engrams (< 24h) auf 1.1× erhöhen (Geburts-Bonus).
+- (c) access_count-Hard-Gate auf Dev-Bänken (<100 Engrams) auf 5 zurück (war pre-Epic-24).
+
+Aufschlussreich nur via Smoke-Run mit größerer Bank — siehe Story 04 (50-Memory-Variante).
+
 ## Out-of-Scope
 
 - Änderung der `COHESION_THRESHOLD=0.75`-Konstante auf Production-Bänken (Konzept-Bindung §13 R1).
-- Änderung der Thalamus-Novelty-Komponente (Konzept §5.2).
+- Änderung der Thalamus-Novelty-Komponente direkt (Konzept §5.2). Story 06 (a) ist eine *Verdrahtung*, kein Konzept-Verstoß.
 - Composite-Score-Formel allgemein.
 
 ## Akzeptanzkriterien (Milestone 11)
