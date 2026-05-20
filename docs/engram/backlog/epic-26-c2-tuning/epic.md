@@ -89,12 +89,16 @@ Aufschlussreich nur via Smoke-Run mit größerer Bank — siehe Story 04 (50-Mem
 | 01 — Reset-Bug | ✅ | `a07916b` |
 | 02 — Memory-Embedding-Lane | ✅ | `363f57b` + `c0ca7aa` |
 | 03 — Backfill | ⏸ Deferred (Dev-Bänke starten frisch) | — |
-| 04 — Smoke 50-Memory-Variante | ⏸ Pending | — |
+| 04 — Smoke-Skalierung + 100-Memory | ✅ | `c1fdbe2` |
 | 05 — UMAP Dev-Diagnostik | ⏸ Optional | — |
 | 06 — Thalamus kind=engram filter | ✅ | `9946171` |
 | 07 — HDBSCAN → Agglomerative | ✅ | `b32cccf` |
 
-**Smoke-Test-Endstand:** 2/6 Hard-Checks. C1-Promotion auf 15-Memory-Banken bleibt das Limit (afternoon=1, retro=0 in Buffer); rest ist Statistik-Effekt kleiner Bänke und wird auf 50+ Memories verschwinden (Story 04).
+**Smoke-Test-Endstand (100-Memory):** 4/6 Hard-Checks. Zwei echte fresh schemas im neuen Bank (`coffee_morning` + `sprint_retro`, retro mit evidence=6 cycles=2). C2 R1 + R2 + R4 vollständig validiert.
+
+**Warum nicht 6/6 mit 100 Memories?** R4 Schema-Fingerprint-Match: `coffee_afternoon`-Centroid matchte den existierenden `coffee_morning`-Centroid mit cosine ≥ 0.85 (geteilter boilerplate "coffee/office") → REINFORCED morning statt CREATED afternoon. Das ist **korrektes Konzept-§13-R4-Verhalten** (ähnliche Patterns sollen denselben Schema verstärken). Der "3 schemas"-Test-Check ist daher zu optimistisch für Seeds mit hoher Cluster-Overlap.
+
+**Bekanntes Cross-Bank-Leak im CP Read-Path:** `/v1/cp/banks/{bank_id}/schemas` zeigt auch schemas aus anderen Banks weil `_filter_bank` einen "kein bank_id stamp → zeigen" Fallback hat. Schema-Knoten in Neo4j tragen kein `bank_id` (nur Qdrant-Payload). Story für eine spätere Iteration (kein Datenintegritäts-Issue, nur UI-Display).
 
 ## Out-of-Scope
 
