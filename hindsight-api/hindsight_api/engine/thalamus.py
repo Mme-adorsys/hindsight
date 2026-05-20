@@ -294,7 +294,22 @@ class ThalamusFilter:
             filters = None
             if bank_id:
                 filters = {"must": [{"key": "bank_id", "match": {"value": bank_id}}]}
-            results = await self._qdrant.search_similar(embedding, limit=5, filters=filters)
+            # Epic 26 Story 06 — pin novelty search to fact-embeddings.
+            # Without ``kind="engram"`` the search also matches against
+            # schema centroids (Epic 25 Story 03) and memory_embeddings
+            # (Epic 26 Story 02). Memory_embeddings in particular drag
+            # novelty down because they are derived from raw content+tags
+            # and look very similar to any new content that shares the
+            # cluster signature — a regression silently introduced by
+            # the memory_embedding lane. Concept §5.2 specifies novelty
+            # against existing memories (engrams), not against the
+            # cortical schema layer.
+            results = await self._qdrant.search_similar(
+                embedding,
+                limit=5,
+                filters=filters,
+                kind="engram",
+            )
         except Exception:
             logger.warning("Thalamus novelty: Qdrant search failed, defaulting to 1.0", exc_info=True)
             return 1.0, None, 0.0
