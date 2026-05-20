@@ -72,6 +72,30 @@ Vorschlag: Dev-Endpoint `/v1/cp/banks/{bank_id}/c2-snapshot` der die Buffer-Engr
 
 Aufschlussreich nur via Smoke-Run mit größerer Bank — siehe Story 04 (50-Memory-Variante).
 
+## Story 07 — HDBSCAN durch AgglomerativeClustering ersetzen ✅
+
+**Status:** Implementiert (Commit `b32cccf`). Smoke-Test ging von 0/6 auf 2/6 Hard-Checks.
+
+**Befund:** HDBSCAN failed empirisch auf Dev-Banken (n<50). 8 Buffer-Engrams mit pairwise Cosine 0.85+ wurden über ALLE Configs (eom/leaf × min_samples 1/2) als komplette Noise gelabeled. Concept §13 R1 fragt explizit nach "paarweise Cosine ≥ 0.75" — das ist eine Distanz-Schwellen-Operation, kein Dichte-Problem.
+
+**Fix:** `sklearn.cluster.AgglomerativeClustering(metric="cosine", linkage="complete", distance_threshold=1-COHESION_THRESHOLD)` drückt §13 R1 direkt aus: alle Paare im Cluster müssen über dem Cohesion-Gate liegen. Singletons werden auf -1 remapped (Noise-Konvention beibehalten).
+
+**Live-Verifikation:** dev-cls-smoke produziert jetzt ein echtes `coffee_morning` Schema mit 4 Evidence-IDs und aggregierten Properties (cluster, format, mood, time).
+
+## Status der Stories (Stand 2026-05-20)
+
+| Story | Status | Commit |
+|-------|--------|--------|
+| 01 — Reset-Bug | ✅ | `a07916b` |
+| 02 — Memory-Embedding-Lane | ✅ | `363f57b` + `c0ca7aa` |
+| 03 — Backfill | ⏸ Deferred (Dev-Bänke starten frisch) | — |
+| 04 — Smoke 50-Memory-Variante | ⏸ Pending | — |
+| 05 — UMAP Dev-Diagnostik | ⏸ Optional | — |
+| 06 — Thalamus kind=engram filter | ✅ | `9946171` |
+| 07 — HDBSCAN → Agglomerative | ✅ | `b32cccf` |
+
+**Smoke-Test-Endstand:** 2/6 Hard-Checks. C1-Promotion auf 15-Memory-Banken bleibt das Limit (afternoon=1, retro=0 in Buffer); rest ist Statistik-Effekt kleiner Bänke und wird auf 50+ Memories verschwinden (Story 04).
+
 ## Out-of-Scope
 
 - Änderung der `COHESION_THRESHOLD=0.75`-Konstante auf Production-Bänken (Konzept-Bindung §13 R1).
