@@ -98,8 +98,59 @@ def reset_postgres(bank_id: str) -> dict[str, int]:
     return counts
 
 
+def list_qdrant_schema_ids(bank_id: str) -> list[str]:
+    """Return Qdrant point ids for ``kind=schema`` points stamped with ``bank_id``.
+
+    Schemas don't carry ``bank_id`` on the Neo4j node (only the centroid Qdrant
+    payload does), so per-bank reset has to resolve the schema ids through
+    Qdrant before nuking either store. Must run BEFORE ``reset_qdrant`` since
+    that deletes the points we need to read.
+    """
+    from qdrant_client import QdrantClient
+    from qdrant_client.http import models as qmodels
+
+    url = os.environ.get("QDRANT_URL", "http://localhost:6336")
+    api_key = os.environ.get("QDRANT_API_KEY") or None
+    collection = os.environ.get("QDRANT_COLLECTION", "engrams")
+
+    client = QdrantClient(url=url, api_key=api_key)
+    try:
+        collections = {c.name for c in client.get_collections().collections}
+        if collection not in collections:
+            return []
+
+        ids: list[str] = []
+        offset = None
+        flt = qmodels.Filter(
+            must=[
+                qmodels.FieldCondition(key="bank_id", match=qmodels.MatchValue(value=bank_id)),
+                qmodels.FieldCondition(key="kind", match=qmodels.MatchValue(value="schema")),
+            ]
+        )
+        # Scroll in pages of 256 — covers any realistic per-bank schema count.
+        while True:
+            points, offset = client.scroll(
+                collection_name=collection,
+                scroll_filter=flt,
+                limit=256,
+                offset=offset,
+                with_payload=False,
+                with_vectors=False,
+            )
+            ids.extend(str(p.id) for p in points)
+            if offset is None:
+                break
+        return ids
+    finally:
+        client.close()
+
+
 def reset_qdrant(bank_id: str) -> int:
-    """Filter-delete all Qdrant points with matching bank_id payload."""
+    """Filter-delete all Qdrant points with matching bank_id payload.
+
+    Covers all ``kind``s (engram, schema, future memory_embedding) because the
+    filter only matches on bank_id — anything stamped with this bank goes.
+    """
     from qdrant_client import QdrantClient
     from qdrant_client.http import models as qmodels
 
@@ -134,8 +185,22 @@ def reset_qdrant(bank_id: str) -> int:
         client.close()
 
 
-def reset_neo4j(bank_id: str) -> dict[str, int]:
-    """DETACH DELETE all Engram and Schema nodes for this bank."""
+def reset_neo4j(bank_id: str, schema_ids: list[str] | None = None) -> dict[str, int]:
+    """DETACH DELETE all Engram and Schema/HyperSchema nodes for this bank.
+
+    Engrams carry ``bank_id`` as a Neo4j property and are deleted by filter.
+    Schemas and HyperSchemas do *not* carry ``bank_id`` on the node, so we
+    resolve their ids two ways:
+
+    1. ``schema_ids`` (from ``list_qdrant_schema_ids``) — covers schemas whose
+       centroid is still in Qdrant. Pass them through from the caller because
+       Qdrant is wiped right next to this call.
+    2. Orphan sweep — schemas whose ``evidence_engram_ids`` overlap the
+       Engram ids about to be deleted. Catches schemas whose centroid was
+       already purged in a prior buggy reset but whose Neo4j node lingered.
+
+    The union of both is then DETACH DELETE'd. Returns per-label counts.
+    """
     from neo4j import GraphDatabase
 
     url = os.environ.get("NEO4J_BOLT_URL", "bolt://localhost:7688")
@@ -143,11 +208,19 @@ def reset_neo4j(bank_id: str) -> dict[str, int]:
     password = os.environ.get("NEO4J_PASSWORD", "hindsightdev")
     database = os.environ.get("NEO4J_DATABASE", "neo4j")
 
-    counts: dict[str, int] = {}
+    counts: dict[str, int] = {"engrams": 0, "schemas": 0, "hyper_schemas": 0, "orphan_schemas": 0}
     driver = GraphDatabase.driver(url, auth=(username, password))
     try:
         with driver.session(database=database) as session:
-            # Engrams
+            # Pre-collect engram ids so the orphan sweep can reverse-match
+            # against ``evidence_engram_ids`` after the engrams are gone.
+            engram_id_rows = session.run(
+                "MATCH (e:Engram {bank_id: $bank_id}) RETURN e.id AS id",
+                bank_id=bank_id,
+            )
+            bank_engram_ids = [r["id"] for r in engram_id_rows]
+
+            # Engrams (filter by bank_id property — set during retain)
             result = session.run(
                 "MATCH (e:Engram {bank_id: $bank_id}) "
                 "WITH collect(e) AS nodes "
@@ -157,15 +230,35 @@ def reset_neo4j(bank_id: str) -> dict[str, int]:
             )
             counts["engrams"] = result.single()["deleted"]
 
-            # Schemas
-            result = session.run(
-                "MATCH (s:Schema {bank_id: $bank_id}) "
-                "WITH collect(s) AS nodes "
-                "CALL { WITH nodes UNWIND nodes AS n DETACH DELETE n } "
-                "RETURN size(nodes) AS deleted",
-                bank_id=bank_id,
-            )
-            counts["schemas"] = result.single()["deleted"]
+            # Orphan sweep — schemas whose evidence pointed at this bank's
+            # engrams. ANY overlap is enough; a schema's evidence is by
+            # definition single-bank under the current architecture.
+            orphan_ids: list[str] = []
+            if bank_engram_ids:
+                for label in ("Schema", "HyperSchema"):
+                    rows = session.run(
+                        f"MATCH (s:{label}) "
+                        "WHERE ANY(eid IN s.evidence_engram_ids WHERE eid IN $engram_ids) "
+                        "RETURN s.id AS id",
+                        engram_ids=bank_engram_ids,
+                    )
+                    orphan_ids.extend(r["id"] for r in rows)
+            counts["orphan_schemas"] = len(orphan_ids)
+
+            all_schema_ids = list({*(schema_ids or []), *orphan_ids})
+
+            # Schemas + HyperSchemas by id list. One id can only hit one
+            # label so the per-label counts add up to the total touched.
+            if all_schema_ids:
+                for label, key in (("Schema", "schemas"), ("HyperSchema", "hyper_schemas")):
+                    result = session.run(
+                        f"MATCH (s:{label}) WHERE s.id IN $ids "
+                        "WITH collect(s) AS nodes "
+                        "CALL { WITH nodes UNWIND nodes AS n DETACH DELETE n } "
+                        "RETURN size(nodes) AS deleted",
+                        ids=all_schema_ids,
+                    )
+                    counts[key] = result.single()["deleted"]
     finally:
         driver.close()
     return counts
@@ -194,7 +287,9 @@ def main() -> int:
     _load_env()
 
     if not args.yes:
-        confirm = input(f"About to wipe ALL data for bank '{bank_id}' across Postgres/Qdrant/Neo4j. Type 'yes' to proceed: ")
+        confirm = input(
+            f"About to wipe ALL data for bank '{bank_id}' across Postgres/Qdrant/Neo4j. Type 'yes' to proceed: "
+        )
         if confirm.strip().lower() != "yes":
             print("Aborted.")
             return 1
@@ -209,14 +304,20 @@ def main() -> int:
         label = "rows" if n >= 0 else ("table not found" if n == -1 else "no bank_id column")
         print(f"   {marker} {tbl}: {n if n >= 0 else label}")
 
+    # Resolve schema ids via Qdrant BEFORE deleting Qdrant points — the
+    # Neo4j :Schema node has no bank_id property so we have to match by id.
+    schema_ids = list_qdrant_schema_ids(bank_id)
+    print(f"   ↳ resolved {len(schema_ids)} schema id(s) from Qdrant for Neo4j cleanup")
+
     print("2. Qdrant filter-delete...")
     qdrant_count = reset_qdrant(bank_id)
     print(f"   ✓ deleted {qdrant_count} points from engrams collection")
 
     print("3. Neo4j detach-delete...")
-    neo4j_counts = reset_neo4j(bank_id)
+    neo4j_counts = reset_neo4j(bank_id, schema_ids=schema_ids)
     print(f"   ✓ engrams: {neo4j_counts.get('engrams', 0)}")
     print(f"   ✓ schemas: {neo4j_counts.get('schemas', 0)}")
+    print(f"   ✓ hyper_schemas: {neo4j_counts.get('hyper_schemas', 0)}")
 
     print("-" * 60)
     print("Done.")

@@ -30,7 +30,7 @@ from pathlib import Path
 
 # Re-use the 3-store reset helpers from the existing dev script.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from reset_bank import _load_env, reset_neo4j, reset_postgres, reset_qdrant  # noqa: E402
+from reset_bank import _load_env, list_qdrant_schema_ids, reset_neo4j, reset_postgres, reset_qdrant  # noqa: E402
 
 DEFAULT_BANK = "dev-cls-smoke"
 DEFAULT_API = "http://localhost:8889"
@@ -219,11 +219,19 @@ def phase_reset(bank_id: str) -> PhaseReport:
     _load_env()
     pg = reset_postgres(bank_id)
     pg_total = sum(v for v in pg.values() if v > 0)
+    # Resolve schema ids from Qdrant BEFORE deleting Qdrant points — the
+    # Neo4j :Schema node has no bank_id property so we have to match by id.
+    schema_ids = list_qdrant_schema_ids(bank_id)
     qd = reset_qdrant(bank_id)
-    neo = reset_neo4j(bank_id)
+    neo = reset_neo4j(bank_id, schema_ids=schema_ids)
     print(f"  Postgres: {pg_total} rows deleted")
     print(f"  Qdrant:   {qd} points deleted")
-    print(f"  Neo4j:    {neo.get('engrams', 0)} engrams, {neo.get('schemas', 0)} schemas deleted")
+    print(
+        f"  Neo4j:    {neo.get('engrams', 0)} engrams, "
+        f"{neo.get('schemas', 0)} schemas, "
+        f"{neo.get('hyper_schemas', 0)} hyper-schemas deleted "
+        f"(resolved {len(schema_ids)} schema id(s) via Qdrant)"
+    )
     print()
     return PhaseReport(name="reset", duration_s=time.time() - t0, payload={"pg": pg, "qd": qd, "neo": neo})
 
@@ -256,9 +264,7 @@ def phase_seed(base: str, bank_id: str, seeds: list[SeedMemory]) -> PhaseReport:
         else:
             status = "rejected"
             duplicates.append(f"{s.cluster}#{idx} → rejected (items_count=0)")
-        print(
-            f"  [{idx:2d}/{len(seeds)}] {s.cluster:<20s} {time.time() - sub:5.1f}s  status={status}"
-        )
+        print(f"  [{idx:2d}/{len(seeds)}] {s.cluster:<20s} {time.time() - sub:5.1f}s  status={status}")
     print()
     print("  Sent per cluster:     ", ", ".join(f"{k}={v}" for k, v in by_cluster.items()))
     print("  Persisted per cluster:", ", ".join(f"{k}={v}" for k, v in persisted_by_cluster.items()) or "(empty)")
@@ -354,10 +360,7 @@ def phase_ncr(base: str, bank_id: str, phase: str, label: str, *, force: bool = 
             f"with_diff={r3.get('pairs_with_property_diff', 0)} "
             f"hyper_created={r3.get('hyper_schemas_created', 0)}"
         )
-        print(
-            f"  C3 R5: schemas_scanned={r5.get('schemas_scanned', 0)} "
-            f"archived={len(r5.get('archived_ids') or [])}"
-        )
+        print(f"  C3 R5: schemas_scanned={r5.get('schemas_scanned', 0)} archived={len(r5.get('archived_ids') or [])}")
 
     if resp.get("errors"):
         print(f"  Errors: {resp['errors']}")
@@ -383,7 +386,9 @@ def phase_inspect_buffer(base: str, bank_id: str) -> PhaseReport:
                     )
             sd = stats.get("strength_distribution") or {}
             if sd:
-                print(f"  strength: weak={sd.get('weak', 0)} moderate={sd.get('moderate', 0)} strong={sd.get('strong', 0)}")
+                print(
+                    f"  strength: weak={sd.get('weak', 0)} moderate={sd.get('moderate', 0)} strong={sd.get('strong', 0)}"
+                )
     except Exception as exc:
         print(f"  /engrams/stats failed: {exc}")
 
