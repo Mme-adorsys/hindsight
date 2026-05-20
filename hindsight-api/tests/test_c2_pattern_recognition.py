@@ -148,7 +148,7 @@ class TestDetectClusters:
                 new=AsyncMock(return_value=_entries(ids)),
             ),
             patch(
-                "hindsight_api.engine.consolidation.c2_pattern_recognition._run_hdbscan",
+                "hindsight_api.engine.consolidation.c2_pattern_recognition._run_clustering",
                 return_value=np.zeros(n, dtype=int),
             ),
         ):
@@ -180,7 +180,7 @@ class TestDetectClusters:
                 new=AsyncMock(return_value=_entries(ids)),
             ),
             patch(
-                "hindsight_api.engine.consolidation.c2_pattern_recognition._run_hdbscan",
+                "hindsight_api.engine.consolidation.c2_pattern_recognition._run_clustering",
                 side_effect=RuntimeError("synthetic"),
             ),
         ):

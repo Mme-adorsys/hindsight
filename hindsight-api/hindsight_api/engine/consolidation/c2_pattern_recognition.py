@@ -135,28 +135,43 @@ def _mean_pairwise_cosine(embeddings: np.ndarray) -> float:
     return total / (n * (n - 1) / 2.0)
 
 
-def _run_hdbscan(embeddings: np.ndarray) -> np.ndarray:
-    """Wrap the HDBSCAN call so the import is hot-loaded (heavy dep).
+def _run_clustering(embeddings: np.ndarray) -> np.ndarray:
+    """Cluster L2-normalised embeddings via Agglomerative + cosine threshold.
 
-    Cosine isn't directly supported by HDBSCAN — we feed L2-normalised
-    vectors and use Euclidean, which is monotonic in cosine for unit
-    vectors (||u-v||^2 = 2 - 2·cos(u,v)).
+    Epic 26 Story 07 — replaces the previous HDBSCAN call. Concept §13 R1
+    asks for "≥ 3 buffer engrams with pairwise cosine ≥ 0.75" which is a
+    distance-threshold operation, not a density-based one. HDBSCAN's
+    density estimation needs many points to be stable; on dev / first-week
+    banks (n < 50) it returns all-noise even when the data clearly
+    contains a tight cluster (verified empirically: 6 engrams at pairwise
+    cosine 0.85+ still labelled as noise).
+
+    AgglomerativeClustering with ``linkage="complete"`` and
+    ``distance_threshold = 1 - COHESION_THRESHOLD`` enforces that every
+    pair inside a cluster sits above the cohesion gate — the §13 R1
+    semantics, expressed directly. Singletons (label appearing only once)
+    are remapped to -1 to preserve the "noise" convention the caller
+    expects.
     """
-    import hdbscan
+    from sklearn.cluster import AgglomerativeClustering
 
-    # ``min_samples=2`` keeps the algorithm permissive enough to surface the
-    # small (size=MIN_CLUSTER_SIZE) clusters concept §13 R1 cares about; the
-    # default (``min_samples=min_cluster_size``) requires three mutually
-    # reachable neighbours per point and rejects 3-point bundles.
-    clusterer = hdbscan.HDBSCAN(
-        min_cluster_size=MIN_CLUSTER_SIZE,
-        min_samples=2,
-        metric="euclidean",
-        cluster_selection_method="eom",
-        allow_single_cluster=False,
+    clusterer = AgglomerativeClustering(
+        n_clusters=None,
+        metric="cosine",
+        linkage="complete",
+        distance_threshold=1.0 - COHESION_THRESHOLD,
     )
-    clusterer.fit(embeddings)
-    return clusterer.labels_
+    raw_labels = clusterer.fit_predict(embeddings)
+    # Drop singletons — concept §13 R1 requires size ≥ MIN_CLUSTER_SIZE.
+    # Leaving them as positive labels would confuse the downstream "label
+    # == -1 means noise" iteration; remap them up-front.
+    counts: dict[int, int] = {}
+    for lbl in raw_labels:
+        counts[int(lbl)] = counts.get(int(lbl), 0) + 1
+    return np.array(
+        [int(lbl) if counts[int(lbl)] >= MIN_CLUSTER_SIZE else -1 for lbl in raw_labels],
+        dtype=np.int64,
+    )
 
 
 async def detect_clusters(
@@ -212,7 +227,7 @@ async def detect_clusters(
     matrix = _l2_normalise(np.asarray([by_id[eid] for eid in aligned_ids], dtype=np.float64))
 
     try:
-        labels = _run_hdbscan(matrix)
+        labels = _run_clustering(matrix)
     except Exception as exc:
         logger.warning("HDBSCAN failed on bank=%s: %s", bank_id, exc)
         stats.skipped_reason = f"hdbscan_error:{type(exc).__name__}"
