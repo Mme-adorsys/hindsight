@@ -660,10 +660,10 @@ async def retain_batch(
                 # upsert under a separate Qdrant point id (kind="memory_embedding").
                 # Cache by content_index so multiple facts from the same
                 # memory share the embedding call.
-                memory_embedding_cache: dict[int, list[float]] = {}
-                memory_payload_cache: dict[int, dict[str, Any]] = {}
-                pending_indices: list[int] = []
-                pending_texts: list[str] = []
+                memory_embedding_cache = {}
+                memory_payload_cache = {}
+                pending_indices = []
+                pending_texts = []
                 for fact in keep_facts:
                     if fact.embedding is None:
                         continue
