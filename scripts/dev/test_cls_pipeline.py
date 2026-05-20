@@ -78,24 +78,175 @@ class SeedMemory:
     recall_query: str = ""
 
 
-def build_seed_memories() -> list[SeedMemory]:
-    """3×5 cluster-friendly seeds.
+_MORNING_PEOPLE = [
+    "Anna", "Ben", "Carla", "Dario", "Eva",
+    "Finn", "Greta", "Hugo", "Iris", "Jonas",
+    "Klara", "Lars", "Maja", "Nils", "Ola",
+    "Pia", "Quentin", "Rosa", "Sami", "Tilda",
+    "Ulli", "Vera", "Wim", "Xander", "Yara",
+    "Zane", "Aiden", "Brooke", "Chen", "Dasha",
+    "Esra", "Faruk", "Gabi", "Hari", "Inga",
+    "Juno", "Kim", "Lior", "Mira", "Nora",
+]
+_MORNING_TOPICS = [
+    ("the new authentication flow", "token rotation approach"),
+    ("the migration of the orders table", "dry-run first decision"),
+    ("API response times", "hot path in the recall handler"),
+    ("the upcoming release", "changelog user-facing buckets"),
+    ("the on-call rotation", "shift rebalance for the quarter"),
+    ("the embedding cache rollout", "warm-up job for cold starts"),
+    ("the analytics pipeline backlog", "weekly grooming cadence"),
+    ("the staging environment refresh", "snapshot-restore script"),
+    ("the postgres index review", "covering index for the hot query"),
+    ("the queue worker autoscaling", "p95 latency-driven policy"),
+    ("the new feature flag service", "rollout cohort design"),
+    ("the monorepo build cache", "remote artifact store"),
+    ("the gRPC vs REST tradeoff", "deprecation path for v1 callers"),
+    ("the kafka consumer lag spike", "rebalance after partition split"),
+    ("the OAuth migration plan", "session rotation cutover window"),
+    ("the spec for the export job", "schema versioning convention"),
+    ("the load test results", "saturation point at 2.5k rps"),
+    ("the chaos test schedule", "weekly fail-injection slot"),
+    ("the data warehouse model", "slowly-changing dimensions for users"),
+    ("the cost dashboard", "monthly spend-per-feature breakdown"),
+    ("the SDK versioning policy", "semver enforcement in CI"),
+    ("the rate limit redesign", "token bucket with per-tenant capacity"),
+    ("the search relevance regression", "dual-encoder retraining plan"),
+    ("the auth audit log gaps", "structured fields for SIEM ingest"),
+    ("the dependency upgrade sweep", "automated PR generation"),
+    ("the i18n rollout for the dashboard", "extraction script and review"),
+    ("the team's PR turnaround", "review SLA target of 24h"),
+    ("the migration playbook draft", "step-by-step rollback decisions"),
+    ("the incident response retro", "MTTR target adjustment"),
+    ("the API gateway rewrite", "phased shadow-traffic plan"),
+    ("the secret rotation cadence", "automated weekly rotation script"),
+    ("the test flakiness dashboard", "owner assignment per top-5 flaky test"),
+    ("the platform tier proposal", "free / pro / enterprise feature matrix"),
+    ("the developer onboarding doc", "first-day setup script"),
+    ("the metrics pipeline rewrite", "Prometheus to OpenTelemetry migration"),
+    ("the customer feedback triage", "weekly synthesis ritual"),
+    ("the support ticket SLA", "tier-2 routing rules"),
+    ("the architecture decision log", "ADR template and naming convention"),
+    ("the new design system rollout", "component migration checklist"),
+    ("the privacy compliance review", "DSR fulfillment workflow"),
+]
+_AFTERNOON_PEOPLE = [
+    "Felix", "Gina", "Hans", "Inka", "Jonas",
+    "Karin", "Liam", "Mei", "Noah", "Oksana",
+    "Paolo", "Quinn", "Rosa", "Samir", "Tom",
+    "Uma", "Viktor", "Wren", "Xenia", "Yusuf",
+    "Zoe", "Alex", "Bruno", "Cleo", "Dimi",
+    "Eli", "Fanny", "Gregor", "Hella", "Ivan",
+    "Jana", "Kostas", "Lina", "Mats", "Nadia",
+    "Olek", "Petra", "Roman", "Selma", "Tibor",
+]
+_AFTERNOON_TOPICS = [
+    "weekend hiking plans",
+    "the new espresso machine in the office",
+    "his recent ski trip to Austria",
+    "a podcast about urban planning",
+    "the office foosball tournament",
+    "her vegetable garden harvest",
+    "the latest indie game release",
+    "a documentary about glaciers",
+    "the half marathon they signed up for",
+    "the photography exhibition downtown",
+    "their toddler's first words",
+    "the rainy weekend at the cabin",
+    "a homemade pasta recipe",
+    "the road trip through the alps",
+    "a chess tournament at the local club",
+    "the dog adoption from the shelter",
+    "the bouldering gym opening",
+    "their bee-keeping side hobby",
+    "the rooftop garden project",
+    "a stand-up comedy night",
+    "their pottery class progress",
+    "the trail run last Saturday",
+    "the kayaking trip on the river",
+    "a vinyl record they just bought",
+    "the surf weekend on the coast",
+    "the book club's next pick",
+    "the language exchange meetup",
+    "the homebrew beer batch",
+    "the bike repair workshop",
+    "the cooking class they took",
+    "a new sourdough starter",
+    "the camping trip in autumn",
+    "the open mic night they attended",
+    "a wine tasting at the vineyard",
+    "the birdwatching weekend",
+    "their garden tomato harvest",
+    "the dance class on Tuesdays",
+    "a marathon training plan",
+    "the rock climbing gym",
+    "a museum visit on the weekend",
+]
+_RETRO_THEMES = [
+    ("shipping the schema-explorer hotfix", "split prep tickets earlier"),
+    ("the green-light test pass", "automate the dev-stack reset"),
+    ("two production incidents", "expand runbooks for cache invalidation"),
+    ("rolling out the new retriever", "tighten Qdrant payload defaults"),
+    ("the load-test campaign", "raise hint budgets for analogy mode"),
+    ("closing the auth migration", "track session-rotation metrics weekly"),
+    ("the dashboard refresh launch", "add e2e tests for the top widgets"),
+    ("hitting the latency SLO", "publish the runbook for cache saturation"),
+    ("the embedding cache rollout", "schedule cold-start warm-ups nightly"),
+    ("the postgres index sweep", "set query-cost alerts on the hot path"),
+    ("the kafka partition rebalance", "document the lag-recovery procedure"),
+    ("the feature-flag service launch", "review cohort definitions monthly"),
+    ("the staging refresh job", "add snapshot freshness alerting"),
+    ("the chaos engineering kickoff", "publish a quarterly chaos calendar"),
+    ("the SDK 2.0 release", "automate changelog generation in CI"),
+    ("the rate limit redesign", "ship per-tenant token bucket configs"),
+    ("the i18n launch in the dashboard", "rotate translation reviewers monthly"),
+    ("the privacy compliance audit", "automate DSR ticket templates"),
+    ("the dependency upgrade sweep", "set a monthly cadence with owners"),
+    ("the metrics pipeline migration", "decommission the legacy collector"),
+    ("the cost-dashboard launch", "tag every PR with a feature owner"),
+    ("the API gateway shadow rollout", "track parity dashboards daily"),
+    ("the onboarding doc rewrite", "add a self-serve setup test"),
+    ("the support routing rules update", "publish SLAs per tier"),
+    ("the architecture decision rituals", "back-fill ADRs for last quarter"),
+    ("the design system migration", "set a per-team migration deadline"),
+    ("the load-test infrastructure", "share saturation reports weekly"),
+    ("the developer onboarding tooling", "track time-to-first-PR"),
+    ("the security review process", "checklist for every external dep"),
+    ("the search relevance regression fix", "weekly relevance review meeting"),
+    ("the customer feedback synthesis", "ship a monthly summary post"),
+    ("the analytics pipeline backlog", "groom tickets every Friday"),
+    ("the migration playbook draft", "rehearse with the on-call team"),
+    ("the platform tier proposal", "validate with three lighthouse customers"),
+    ("the secret rotation rollout", "auto-rotate weekly without manual steps"),
+    ("the kafka consumer lag spike fix", "set alerts on partition lag"),
+    ("the OAuth cutover", "monitor session rotation rates daily"),
+    ("the dashboard launch follow-up", "track widget usage per cohort"),
+    ("the API rewrite roadmap", "freeze v1 deprecation date"),
+    ("the team rituals refresh", "test new retro format for 6 weeks"),
+]
 
-    Cluster A and B share the same overall structure (1:1 coffee) but vary
-    by time + mood — that's the R3 hyper-schema bait. Cluster C is a
-    different topic so it doesn't bleed into the others. Per-memory
-    content is *distinct enough* that retain-side dedup (embedding
-    similarity threshold) doesn't merge them.
+
+def build_seed_memories(cluster_size: int = 5) -> list[SeedMemory]:
+    """Generate cluster-friendly seeds, scaled by ``cluster_size``.
+
+    3 clusters × ``cluster_size`` memories. Cluster A and B share the same
+    overall structure (1:1 coffee) but vary by time + mood — that's the
+    R3 hyper-schema bait. Cluster C is a different topic so it doesn't
+    bleed into the others. Per-memory content is *distinct enough* that
+    retain-side dedup (embedding similarity threshold) doesn't merge them.
+
+    Pools are sized for up to 40 memories per cluster; values beyond that
+    cycle modulo with deterministic indexing.
     """
     out: list[SeedMemory] = []
 
+    def _pick(pool, idx):
+        return pool[idx % len(pool)]
+
     # ── Cluster A: Coffee 1:1 morning, productive ─────────────────────────
     a_topics = [
-        ("Anna", "the new authentication flow", "token rotation approach"),
-        ("Ben", "the migration of the orders table", "dry-run first decision"),
-        ("Carla", "API response times", "hot path in the recall handler"),
-        ("Dario", "the upcoming release", "changelog user-facing buckets"),
-        ("Eva", "the on-call rotation", "shift rebalance for the quarter"),
+        (_pick(_MORNING_PEOPLE, i), *_pick(_MORNING_TOPICS, i))
+        for i in range(cluster_size)
     ]
     for person, topic, outcome in a_topics:
         out.append(
@@ -131,11 +282,8 @@ def build_seed_memories() -> list[SeedMemory]:
 
     # ── Cluster B: Coffee 1:1 afternoon, casual ───────────────────────────
     b_topics = [
-        ("Felix", "weekend hiking plans"),
-        ("Gina", "the new espresso machine in the office"),
-        ("Hans", "his recent ski trip to Austria"),
-        ("Inka", "a podcast about urban planning"),
-        ("Jonas", "the office foosball tournament"),
+        (_pick(_AFTERNOON_PEOPLE, i), _pick(_AFTERNOON_TOPICS, i))
+        for i in range(cluster_size)
     ]
     for person, topic in b_topics:
         out.append(
@@ -167,13 +315,9 @@ def build_seed_memories() -> list[SeedMemory]:
         )
 
     # ── Cluster C: Friday sprint retro, group session ─────────────────────
-    c_items = [
-        ("12", "shipping the schema-explorer hotfix", "split prep tickets earlier"),
-        ("13", "the green-light test pass", "automate the dev-stack reset"),
-        ("14", "two production incidents", "expand runbooks for cache invalidation"),
-        ("15", "rolling out the new retriever", "tighten Qdrant payload defaults"),
-        ("16", "the load-test campaign", "raise hint budgets for analogy mode"),
-    ]
+    # Week numbers start at 12 to keep parity with the original 5-seed
+    # smoke (which produced the first sprint_retro schema in earlier runs).
+    c_items = [(str(12 + i), *_pick(_RETRO_THEMES, i)) for i in range(cluster_size)]
     for week, win, action in c_items:
         out.append(
             SeedMemory(
@@ -476,7 +620,7 @@ def phase_inspect_cortex(base: str, bank_id: str) -> PhaseReport:
 # ---------------------------------------------------------------------------
 
 
-def evaluate_summary(reports: list[PhaseReport]) -> int:
+def evaluate_summary(reports: list[PhaseReport], *, cluster_size: int = 5) -> int:
     print("=" * 72)
     print("SUMMARY")
     print("=" * 72)
@@ -491,10 +635,17 @@ def evaluate_summary(reports: list[PhaseReport]) -> int:
     c2_first = (by_name.get("ncr-c2-1") or PhaseReport(name="x")).payload.get("c2") or {}
     c2_second = (by_name.get("ncr-c2-2") or PhaseReport(name="x")).payload.get("c2") or {}
 
+    # Promotion target scales with cluster size — 60% of the seeds reaching
+    # buffer means each of 3 clusters has roughly cluster_size×0.6 engrams,
+    # well above MIN_CLUSTER_SIZE=3 so HDBSCAN/Agglomerative can work.
+    promote_target = max(9, int(3 * cluster_size * 0.6))
+    # Each of the 3 themed clusters should yield one schema on a healthy run.
+    schemas_target = 3 if cluster_size >= 5 else max(2, cluster_size // 2)
+
     checks: list[tuple[str, bool, str]] = [
         (
-            "C1 promoted ≥ 9 engrams to buffer",
-            (c1.get("consolidated", 0) >= 9),
+            f"C1 promoted ≥ {promote_target} engrams to buffer",
+            (c1.get("consolidated", 0) >= promote_target),
             f"consolidated={c1.get('consolidated', 0)}",
         ),
         (
@@ -508,18 +659,18 @@ def evaluate_summary(reports: list[PhaseReport]) -> int:
             f"matured={c2_second.get('matured', 0)}",
         ),
         (
-            "C2 minted ≥ 2 schemas",
-            (c2_second.get("created", 0) >= 2),
+            f"C2 minted ≥ {schemas_target} schemas",
+            (c2_second.get("created", 0) >= schemas_target),
             f"created={c2_second.get('created', 0)}",
         ),
         (
-            "Cortex shows ≥ 2 schemas after C2",
-            (schemas_after_c2 >= 2),
+            f"Cortex shows ≥ {schemas_target} schemas after C2",
+            (schemas_after_c2 >= schemas_target),
             f"cortex_schemas={schemas_after_c2}",
         ),
         (
-            "Final cortex schemas == 3",
-            (final_schemas == 3),
+            f"Final cortex schemas == {schemas_target}",
+            (final_schemas == schemas_target),
             f"cortex_schemas={final_schemas}",
         ),
     ]
@@ -545,9 +696,9 @@ def evaluate_summary(reports: list[PhaseReport]) -> int:
 # ---------------------------------------------------------------------------
 
 
-def run(bank_id: str, base_url: str, *, skip_reset: bool, skip_c3: bool) -> int:
+def run(bank_id: str, base_url: str, *, skip_reset: bool, skip_c3: bool, cluster_size: int = 5) -> int:
     base = base_url.rstrip("/")
-    seeds = build_seed_memories()
+    seeds = build_seed_memories(cluster_size=cluster_size)
     reports: list[PhaseReport] = []
 
     print()
@@ -596,7 +747,7 @@ def run(bank_id: str, base_url: str, *, skip_reset: bool, skip_c3: bool) -> int:
         )
         reports.append(cortex_after_c2_dup)
 
-    return evaluate_summary(reports)
+    return evaluate_summary(reports, cluster_size=cluster_size)
 
 
 def main() -> int:
@@ -605,8 +756,25 @@ def main() -> int:
     parser.add_argument("--api-url", default=DEFAULT_API)
     parser.add_argument("--skip-reset", action="store_true")
     parser.add_argument("--skip-c3", action="store_true", help="skip the R3+R5 phase")
+    parser.add_argument(
+        "--scale",
+        type=int,
+        default=15,
+        help=(
+            "Total number of seed memories (split across 3 clusters). "
+            "Default 15 (=5/cluster). Use 30, 60, 100 for larger runs — "
+            "each memory takes ~60-80s on local Ollama, so 100 ≈ ~2h."
+        ),
+    )
     args = parser.parse_args()
-    return run(args.bank_id, args.api_url, skip_reset=args.skip_reset, skip_c3=args.skip_c3)
+    cluster_size = max(3, args.scale // 3)
+    return run(
+        args.bank_id,
+        args.api_url,
+        skip_reset=args.skip_reset,
+        skip_c3=args.skip_c3,
+        cluster_size=cluster_size,
+    )
 
 
 if __name__ == "__main__":
