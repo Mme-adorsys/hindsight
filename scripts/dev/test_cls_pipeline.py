@@ -226,7 +226,135 @@ _RETRO_THEMES = [
 ]
 
 
-def build_seed_memories(cluster_size: int = 5) -> list[SeedMemory]:
+_TECH_FACTS = [
+    "The authentication service issues JWT tokens with a one-hour expiration window.",
+    "PostgreSQL handles 95% of read traffic through the read replica.",
+    "API latency at p95 stays under 200 milliseconds for the recall handler.",
+    "The orders table holds approximately 50 million rows.",
+    "The embedding model produces 384-dimensional vectors with cosine distance.",
+    "Qdrant stores engram embeddings in a single collection named 'engrams'.",
+    "Neo4j indexes :Schema and :HyperSchema nodes by centroid_qdrant_id.",
+    "The retain pipeline extracts on average 2.3 facts per source memory.",
+    "Token bucket rate limits cap free tier users at 60 requests per minute.",
+    "The CI build cache reduces test suite runtime from 14 minutes to 3 minutes.",
+    "OAuth refresh tokens rotate every 30 days under the current policy.",
+    "The staging snapshot job runs at 02:00 UTC each weekday.",
+    "Feature flags route 5% of traffic to the new retriever by default.",
+    "Kafka consumer lag stays below 500 messages across all production topics.",
+    "The CDN serves static assets from 47 edge locations.",
+    "API gateway logs retain raw entries for 30 days and aggregates for one year.",
+    "The chaos test schedule runs one fault injection per Wednesday.",
+    "Service mesh sidecars add roughly 4 milliseconds of overhead per request.",
+    "Postgres connection pool is sized to 80 connections per primary instance.",
+    "The SDK supports Python 3.10+, Node 18+, and Rust 1.74+.",
+    "Audit logs ship to the SIEM in JSON Lines format every five seconds.",
+    "The cost dashboard refreshes feature-level spend nightly at 03:00.",
+    "Search reranking adds 12 milliseconds median latency on top of retrieval.",
+    "The metrics pipeline emits 1.2 million data points per minute.",
+    "Documentation site builds rebuild on every merge to main within 90 seconds.",
+    "The thalamus filter computes four scores: novelty, surprise, relevance, valence.",
+    "Buffer engrams clear the C1 STC gate at access_count of five or more.",
+    "The schema-fingerprint match threshold is fixed at 0.85 cosine similarity.",
+    "HDBSCAN requires a minimum cluster size of three to emit a candidate.",
+    "Reflect operations run on demand and consume no nightly compute budget.",
+    "The control plane Next.js dev server picks an available port at startup.",
+    "The development docker stack exposes Qdrant on port 6336 and Neo4j on 7688.",
+    "Bank session count increments only on explicit session close.",
+    "The retain orchestrator caches memory embeddings per content index.",
+    "Cross-encoder reranking accepts up to 64 candidate documents per call.",
+    "Decay halves an engram's score every 7 days without reinforcement.",
+    "Schema centroids are L2-normalised before storage in Qdrant.",
+    "The platform supports five active session modes per agent.",
+    "Pre-commit hooks block commits with ruff or type errors.",
+    "Embedding throughput on local GPU peaks at 800 tokens per second.",
+]
+_LIFESTYLE_FACTS = [
+    "The riverside trail north of the city extends 12 kilometres along the bank.",
+    "Bouldering gyms in the city charge 18 euros for a single day pass.",
+    "Sourdough starters need daily feeding for the first two weeks after activation.",
+    "Bee colonies in moderate climates need at least 60 pounds of winter honey.",
+    "Public libraries in the district open from 09:00 to 19:00 on weekdays.",
+    "Espresso brewing extracts at 9 bars of pressure within 25 to 30 seconds.",
+    "Vegetable gardens yield roughly two kilograms of tomatoes per square metre.",
+    "Half marathons cover 21.0975 kilometres on a certified course.",
+    "Vinyl records spin at 33.3, 45, or 78 revolutions per minute.",
+    "Indoor climbing routes are graded from 4 to 9 on the French scale.",
+    "Most board games for adults take between 60 and 120 minutes to finish.",
+    "Standard chess clocks allocate three minutes per move in classical play.",
+    "Trail running shoes typically last 600 to 800 kilometres before retirement.",
+    "Local farmers markets open Saturday morning between 08:00 and 13:00.",
+    "Specialty coffee shops use water at 92 to 96 degrees Celsius for pour-over.",
+    "Public swimming pools in the area maintain 27 degrees Celsius year-round.",
+    "Most national parks charge eight euros per car for daily entry.",
+    "Yoga studios offer drop-in classes for 22 euros without a subscription.",
+    "Cycling jerseys typically weigh between 110 and 140 grams.",
+    "Pottery kilns reach firing temperatures of 1200 degrees Celsius.",
+    "Photography classes at the community college run for ten weekly sessions.",
+    "Outdoor swimming pools close for the season in mid-September.",
+    "Hiking the mountain ridge takes between six and eight hours round trip.",
+    "Bird migration patterns peak in the region during April and September.",
+    "Beekeeping associations charge thirty euros for an annual membership.",
+    "Local museums waive admission fees on the first Sunday of each month.",
+    "Tide times along the coast shift by roughly 50 minutes each day.",
+    "Long-distance trains run hourly between the city and the coast.",
+    "Sourdough bread loaves bake for 35 to 45 minutes at 230 degrees Celsius.",
+    "Mountain bike trails in the forest reserve open from April to October.",
+    "Open mic nights at the jazz club start at 21:00 every Wednesday.",
+    "Community gardens allocate plots of 25 square metres per member.",
+    "Public ice rinks open from November through March in the city.",
+    "Stand-up comedy clubs offer half-price tickets on Tuesday evenings.",
+    "Outdoor cinemas screen films on Friday evenings from June to August.",
+    "Wild blueberry harvest in the forest peaks in late July.",
+    "Local cycling clubs gather every Saturday at 08:30 at the main bridge.",
+    "Mountain hut reservations open six months in advance for peak season.",
+    "Apple harvests in the regional orchards run from late September into October.",
+    "Cross-country ski trails are groomed twice weekly from December onward.",
+]
+_TEAM_METRICS = [
+    "The team ships between four and six features per two-week sprint.",
+    "Sprint retrospectives run for sixty minutes with six participants.",
+    "Velocity has held at thirty-five story points for eight consecutive weeks.",
+    "Pull request turnaround averages eighteen hours from open to merge.",
+    "Production incidents per month dropped from six to two over the last quarter.",
+    "Code review participation reaches ninety-two percent across the engineering team.",
+    "On-call rotation cycles every twelve weeks across the platform group.",
+    "Mean time to recovery for critical incidents sits at forty-five minutes.",
+    "The team archives 23 percent of created tickets without implementation.",
+    "Quarterly OKR completion averages seventy-eight percent across the engineering org.",
+    "Engineering headcount has grown from twelve to twenty-one people in eighteen months.",
+    "Documentation coverage for public APIs holds at eighty-four percent.",
+    "Test coverage for the core engine sits steady at eighty-seven percent.",
+    "Average daily PR count across the team reaches twenty-four merges.",
+    "Cross-team PR reviews account for thirty-five percent of total reviews.",
+    "Roadmap planning ceremonies repeat once per quarter for two days.",
+    "Team velocity in story points correlates with on-call burden negatively.",
+    "Open source dependency upgrades happen on a monthly cadence.",
+    "Engineering managers spend thirty percent of their time in 1:1 meetings.",
+    "Customer feedback synthesis ships a monthly report on the third Tuesday.",
+    "Hiring loops include four technical interviews and one architecture round.",
+    "Team retention over the last twelve months sits at ninety-one percent.",
+    "Onboarding to first PR averages four working days for new engineers.",
+    "Quarterly hackathons produce on average eight prototype demos.",
+    "Knowledge-sharing sessions run weekly for forty-five minutes.",
+    "Architecture decision records average twelve per quarter across the platform.",
+    "Postmortem documents average two thousand words and require manager review.",
+    "Support escalations from on-call to engineering reach roughly five per week.",
+    "Customer Net Promoter Score for the platform holds at forty-two.",
+    "Engineering blog publishes one article per month authored by a rotating engineer.",
+    "Performance reviews run biannually in March and September.",
+    "Engineering wide all-hands meets every other Thursday at 16:00.",
+    "Internal tooling team responds to support tickets within two business days.",
+    "Cross-functional projects involve product, design, and engineering by default.",
+    "Sprint backlog refinement runs every Monday for ninety minutes.",
+    "Pair programming sessions account for fifteen percent of engineering time.",
+    "Production deploys happen Tuesday through Thursday only, never on Mondays.",
+    "Annual engineering offsites run for three days each October.",
+    "Customer interviews precede every major feature spec by two to four weeks.",
+    "Engineering interview panels include one engineer from outside the hiring team.",
+]
+
+
+def build_seed_memories(cluster_size: int = 5, style: str = "experience") -> list[SeedMemory]:
     """Generate cluster-friendly seeds, scaled by ``cluster_size``.
 
     3 clusters × ``cluster_size`` memories. Cluster A and B share the same
@@ -237,7 +365,15 @@ def build_seed_memories(cluster_size: int = 5) -> list[SeedMemory]:
 
     Pools are sized for up to 40 memories per cluster; values beyond that
     cycle modulo with deterministic indexing.
+
+    ``style="experience"`` (default) emits episodic content tagged
+    ``experience`` (concept §5.3 promote threshold 0.35).
+    ``style="fact"`` emits declarative world-fact content tagged ``fact``
+    (concept §5.3 promote threshold 0.7 — much stricter).
     """
+    if style == "fact":
+        return _build_fact_seeds(cluster_size)
+
     out: list[SeedMemory] = []
 
     def _pick(pool, idx):
@@ -337,6 +473,85 @@ def build_seed_memories(cluster_size: int = 5) -> list[SeedMemory]:
                     "duration:60",
                 ],
                 recall_query=f"sprint retro week {week} {win}",
+            )
+        )
+
+    return out
+
+
+def _build_fact_seeds(cluster_size: int) -> list[SeedMemory]:
+    """World-fact variant of :func:`build_seed_memories`.
+
+    Three clusters of declarative present-tense statements. Tag ``fact``
+    gives a Promote-Threshold of 0.7 (concept §5.3) — significantly
+    stricter than ``experience`` 0.35, so C1 promotion is the empirical
+    question this variant is designed to probe.
+    """
+    out: list[SeedMemory] = []
+
+    def _pick(pool, idx):
+        return pool[idx % len(pool)]
+
+    # ── Cluster A: tech world-facts ───────────────────────────────────────
+    for i in range(cluster_size):
+        statement = _pick(_TECH_FACTS, i)
+        out.append(
+            SeedMemory(
+                cluster="tech_facts",
+                content=(
+                    "Engineering reference notes for the platform stack. "
+                    "Operational metric captured for runbook documentation. "
+                    f"Recorded fact: {statement}"
+                ),
+                tags=[
+                    "fact",  # → C1 promote threshold = 0.7 (strict)
+                    "cluster:tech_facts",
+                    "domain:engineering",
+                    "shape:declarative",
+                ],
+                recall_query=f"tech fact {i}: {statement[:40]}",
+            )
+        )
+
+    # ── Cluster B: lifestyle world-facts ──────────────────────────────────
+    for i in range(cluster_size):
+        statement = _pick(_LIFESTYLE_FACTS, i)
+        out.append(
+            SeedMemory(
+                cluster="lifestyle_facts",
+                content=(
+                    "Local lifestyle reference notes for the neighbourhood guide. "
+                    "Documentation point captured for future reference. "
+                    f"Recorded fact: {statement}"
+                ),
+                tags=[
+                    "fact",
+                    "cluster:lifestyle_facts",
+                    "domain:lifestyle",
+                    "shape:declarative",
+                ],
+                recall_query=f"lifestyle fact {i}: {statement[:40]}",
+            )
+        )
+
+    # ── Cluster C: team metrics world-facts ───────────────────────────────
+    for i in range(cluster_size):
+        statement = _pick(_TEAM_METRICS, i)
+        out.append(
+            SeedMemory(
+                cluster="team_metrics",
+                content=(
+                    "Engineering team reporting metrics for the quarterly review. "
+                    "Operational metric captured for organisational documentation. "
+                    f"Recorded fact: {statement}"
+                ),
+                tags=[
+                    "fact",
+                    "cluster:team_metrics",
+                    "domain:engineering_ops",
+                    "shape:declarative",
+                ],
+                recall_query=f"team metric {i}: {statement[:40]}",
             )
         )
 
@@ -696,9 +911,17 @@ def evaluate_summary(reports: list[PhaseReport], *, cluster_size: int = 5) -> in
 # ---------------------------------------------------------------------------
 
 
-def run(bank_id: str, base_url: str, *, skip_reset: bool, skip_c3: bool, cluster_size: int = 5) -> int:
+def run(
+    bank_id: str,
+    base_url: str,
+    *,
+    skip_reset: bool,
+    skip_c3: bool,
+    cluster_size: int = 5,
+    style: str = "experience",
+) -> int:
     base = base_url.rstrip("/")
-    seeds = build_seed_memories(cluster_size=cluster_size)
+    seeds = build_seed_memories(cluster_size=cluster_size, style=style)
     reports: list[PhaseReport] = []
 
     print()
@@ -766,6 +989,17 @@ def main() -> int:
             "each memory takes ~60-80s on local Ollama, so 100 ≈ ~2h."
         ),
     )
+    parser.add_argument(
+        "--style",
+        choices=["experience", "fact"],
+        default="experience",
+        help=(
+            "Seed content style. 'experience' (default) uses episodic content "
+            "tagged with 'experience' (promote threshold 0.35, concept §5.3). "
+            "'fact' uses declarative world-fact content tagged with 'fact' "
+            "(promote threshold 0.7 — empirical probe of strict-tag behavior)."
+        ),
+    )
     args = parser.parse_args()
     cluster_size = max(3, args.scale // 3)
     return run(
@@ -774,6 +1008,7 @@ def main() -> int:
         skip_reset=args.skip_reset,
         skip_c3=args.skip_c3,
         cluster_size=cluster_size,
+        style=args.style,
     )
 
 
