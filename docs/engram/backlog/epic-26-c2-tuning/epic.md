@@ -100,6 +100,8 @@ Aufschlussreich nur via Smoke-Run mit größerer Bank — siehe Story 04 (50-Mem
 
 **Bekanntes Cross-Bank-Leak im CP Read-Path:** `/v1/cp/banks/{bank_id}/schemas` zeigt auch schemas aus anderen Banks weil `_filter_bank` einen "kein bank_id stamp → zeigen" Fallback hat. Schema-Knoten in Neo4j tragen kein `bank_id` (nur Qdrant-Payload). Story für eine spätere Iteration (kein Datenintegritäts-Issue, nur UI-Display).
 
+**Bonus: Fact-Style Smoke (`--style fact`)** validierte die Tag-basierte Lifecycle-Differenzierung empirisch. 99 world-fact-Memories auf derselben Bank → 119 Engrams → **C1 consolidated=0** (alle in Working geblieben). Thalamus-avg-Score 0.38-0.40 × Decay ≈ 0.40 erreicht den 0.7-Promote-Threshold für `fact`-Tag nie. Konzept-korrektes §5.3-Verhalten: Facts brauchen höhere Bar als Experiences (Bio: episodisch wird gern konsolidiert, deklarative Trivia nicht). 0/6 hard checks, aber das ist der gewünschte Effekt — Pipeline weigert sich völlig korrekt, beliebige Facts zu konsolidieren.
+
 ## Out-of-Scope
 
 - Änderung der `COHESION_THRESHOLD=0.75`-Konstante auf Production-Bänken (Konzept-Bindung §13 R1).
