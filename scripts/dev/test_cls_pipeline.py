@@ -919,9 +919,16 @@ def run(
     skip_c3: bool,
     cluster_size: int = 5,
     style: str = "experience",
+    recalls_per_memory: int | None = None,
 ) -> int:
     base = base_url.rstrip("/")
     seeds = build_seed_memories(cluster_size=cluster_size, style=style)
+    if recalls_per_memory is not None:
+        # Override the per-seed recall budget. Useful for probing how many
+        # recalls a fact-tagged engram needs to clear the 0.7 promote
+        # threshold (concept §5.4 strength × decay path).
+        for s in seeds:
+            s.recall_count = recalls_per_memory
     reports: list[PhaseReport] = []
 
     print()
@@ -1000,6 +1007,18 @@ def main() -> int:
             "(promote threshold 0.7 — empirical probe of strict-tag behavior)."
         ),
     )
+    parser.add_argument(
+        "--recalls-per-memory",
+        type=int,
+        default=None,
+        help=(
+            "Override the per-seed recall budget (default 6 = SeedMemory."
+            "recall_count). Higher values probe the concept §5.4 strength × "
+            "decay path — repeated recalls bump engram strength which feeds "
+            "back into composite_score, eventually clearing even the 0.7 "
+            "fact-tag promote threshold."
+        ),
+    )
     args = parser.parse_args()
     cluster_size = max(3, args.scale // 3)
     return run(
@@ -1009,6 +1028,7 @@ def main() -> int:
         skip_c3=args.skip_c3,
         cluster_size=cluster_size,
         style=args.style,
+        recalls_per_memory=args.recalls_per_memory,
     )
 
 
