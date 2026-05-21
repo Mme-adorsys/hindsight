@@ -674,6 +674,38 @@ def phase_recall_loop(base: str, bank_id: str, seeds: list[SeedMemory]) -> Phase
     return PhaseReport(name="recall", duration_s=time.time() - t0, payload={"total": total})
 
 
+def phase_session_boundary(base: str, bank_id: str, label: str) -> PhaseReport:
+    """Bump ``bank.session_count`` so subsequent C1 sees ``sessions_alive > 0``.
+
+    Epic 26 Story 08 — production agents trigger this implicitly through
+    ``end_session``. The smoke never opens SessionManager sessions, so we
+    explicitly bump the counter between phases. Without this every engram
+    keeps ``sessions_alive=0`` and the decay formula short-circuits to 1.0
+    (= no amplification = facts can never clear the 0.7 promote threshold).
+    """
+    print("=" * 72)
+    print(f"STEP: SESSION BOUNDARY — {label}")
+    print("=" * 72)
+    t0 = time.time()
+    try:
+        resp = _post_json(
+            f"{base}/v1/default/banks/{bank_id}/sessions/advance",
+            {},
+            timeout=10.0,
+        )
+        new_count = resp.get("session_count")
+        print(f"  bank.session_count → {new_count}")
+    except Exception as exc:
+        print(f"  session-advance failed: {exc}")
+        new_count = None
+    print()
+    return PhaseReport(
+        name=f"session-advance-{label}",
+        duration_s=time.time() - t0,
+        payload={"session_count": new_count, "label": label},
+    )
+
+
 def phase_ncr(base: str, bank_id: str, phase: str, label: str, *, force: bool = True) -> PhaseReport:
     """Trigger one NCR phase. ``force=True`` bypasses the per-phase cooldown
     (dev-only escape introduced for this smoke test)."""
@@ -944,7 +976,13 @@ def run(
         print("STEP 1: RESET — skipped (--skip-reset)\n")
 
     reports.append(phase_seed(base, bank_id, seeds))
+    # Session boundary AFTER seed so created_at_session=0 engrams age by 1
+    # before recalls start (concept §5.4 decay needs sessions_alive > 0).
+    reports.append(phase_session_boundary(base, bank_id, "after-seed"))
     reports.append(phase_recall_loop(base, bank_id, seeds))
+    # Second boundary so the recall-driven access_count gets one more session
+    # to compare against in the decay denominator.
+    reports.append(phase_session_boundary(base, bank_id, "after-recall"))
 
     reports.append(phase_ncr(base, bank_id, "c1", "Working Memory → Buffer"))
     buf = phase_inspect_buffer(base, bank_id)

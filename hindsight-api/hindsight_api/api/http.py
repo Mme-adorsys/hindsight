@@ -2809,6 +2809,34 @@ def _register_routes(app: FastAPI):
     }
 
     @app.post(
+        "/v1/default/banks/{bank_id}/sessions/advance",
+        summary="Advance the bank's session_count manually (Epic 26 Story 08)",
+        description=(
+            "Bumps ``banks.session_count`` by 1 and returns the new value. "
+            "Concept §5.4 decay formula uses ``sessions_alive = "
+            "bank.session_count - engram.created_at_session`` to amplify "
+            "scores for engrams that are recalled more than expected. "
+            "Production agents trigger this implicitly through ``end_session``; "
+            "dev / smoke flows that don't open SessionManager sessions need "
+            "this explicit boundary to make the decay/amplification path "
+            "observable."
+        ),
+        operation_id="advance_session_boundary",
+        tags=["Consolidation"],
+        status_code=200,
+    )
+    async def api_session_advance(bank_id: str):
+        try:
+            from ..engine.engram_dictionary import increment_bank_session_count
+
+            pool = await app.state.memory._ctx.get_pool()
+            new_count = await increment_bank_session_count(pool, bank_id)
+            return {"bank_id": bank_id, "session_count": new_count}
+        except Exception as exc:
+            logger.error("session-advance failed for bank=%s: %s", bank_id, exc)
+            raise HTTPException(status_code=500, detail=str(exc))
+
+    @app.post(
         "/v1/default/banks/{bank_id}/ncr/trigger",
         summary="Manually trigger NCR for a bank",
         description=(
@@ -2872,6 +2900,26 @@ def _register_routes(app: FastAPI):
             _ncr_last_trigger[f"{bank_id}:{cooldown_key}"] = datetime.now(timezone.utc)
 
         orchestrator: NCROrchestrator = app.state.ncr_orchestrator
+
+        # Epic 26 Story 08 — auto-advance session_count before C1 so the decay
+        # formula (sessions_alive = bank.session_count - created_at_session)
+        # can amplify scores beyond birth thalamus. Without this, smoke / dev
+        # callers that never explicitly end_session leave sessions_alive=0
+        # forever; compute_decay short-circuits to 1.0 and composite stays
+        # stuck at the static thalamus_overall value. Only bumps for phases
+        # that consume the decay formula (c1).
+        if phases is None or "c1" in phases:
+            try:
+                from ..engine.engram_dictionary import increment_bank_session_count as _inc_sc
+
+                _pool = await app.state.memory._ctx.get_pool()
+                await _inc_sc(_pool, bank_id)
+            except Exception as exc:
+                logger.warning(
+                    "NCR trigger: session_count auto-bump failed for bank=%s — %s",
+                    bank_id,
+                    exc,
+                )
 
         try:
             report = await orchestrator.run(bank_id, trigger="manual", phases=phases)
