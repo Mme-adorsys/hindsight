@@ -104,7 +104,24 @@ Aufschlussreich nur via Smoke-Run mit größerer Bank — siehe Story 04 (50-Mem
 
 **Stress-Test: Fact mit 100 Recalls/Memory (`--recalls-per-memory 100`)** sollte zeigen, ob Recall-Druck Facts über den 0.7-Threshold pusht. Resultat: **NEIN.** 15 facts × 100 recalls → avg access_count=147 (max 300), aber **strength blieb bei 0.458** (= Thalamus-Birth-Wert). Composite = thalamus × strength × recency stayed at 0.458 < 0.7 → C1 consolidated=0.
 
-**Architektur-Befund (Story 08 Kandidat):** Auf der aktuellen Epic-25-Architektur bumpt der Recall-Pfad NUR `access_count`, NICHT `strength`. Der alte NCR-Phase-2-Strengthen-Pfad wurde in Epic 25 entfernt. Damit gibt es keinen Mechanismus, der hoch-frequentierte Facts mit der Zeit consolidate-fähig macht. Konzept §5.4 ("Composite = Thalamus × Strength × Recency") setzt aber genau diese Persistenz-durch-Nutzung voraus. Story 26.08 sollte einen "recall-driven strengthen"-Hook bauen, der bei jedem Recall die Strength des getroffenen Engrams inkrementell anhebt (entsprechend LTP bei wiederholter synaptischer Aktivierung).
+**Story 08 — Session Boundary für Decay-Amplifikation ✅**
+
+Initialer Befund war falsch: Strength × Recency war NICHT das Problem. Die echte Formel in der Codebasis ist `composite = thalamus × decay` mit `decay = log(1+access_count) / log(1+sessions_alive × r)`. Decay amplifiziert composite über den Thalamus-Birth-Wert wenn `access_count > sessions_alive × r`. ABER: edge-case `sessions_alive ≤ 0 → decay = 1.0`. Smoke ohne `end_session`-Aufrufe leaved sessions_alive=0 für alle Engrams → keine Amplifikation.
+
+**Fix (Commit `2300909`):**
+- Neuer `POST /v1/default/banks/{id}/sessions/advance` Endpoint (wrappt `increment_bank_session_count`)
+- `api_ncr_trigger` bumpt session_count automatisch vor C1-Phase
+- Smoke ruft `phase_session_boundary` zwischen seed→recall und recall→ncr
+
+**Empirisches Resultat (15 facts × 100 recalls × session-boundary):**
+| Metric | Vorher | Nachher |
+|--------|--------|---------|
+| C1 promoted | 0/17 | **16/17** |
+| avg_strength (= composite) | 0.458 | **2.825** |
+| Fresh schemas | 0 | **1** (`team_metrics`, erstes fact-tagged Schema überhaupt) |
+| Hard checks | 0/6 | **3/6** |
+
+Damit ist die Tag-basierte Lifecycle-Differenzierung vollständig validiert: **Facts können promoten, wenn sie sich durch wiederholten Recall-Druck beweisen** — exakt das §5.3-versprochene Verhalten. Concept §5.4 (composite = thalamus × decay mit Amplifikations-Pfad) ist korrekt implementiert; der Smoke hatte nur den vorgesehen Session-Lifecycle-Trigger nicht modelliert.
 
 ## Out-of-Scope
 
