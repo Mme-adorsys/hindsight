@@ -102,6 +102,10 @@ Aufschlussreich nur via Smoke-Run mit größerer Bank — siehe Story 04 (50-Mem
 
 **Bonus: Fact-Style Smoke (`--style fact`)** validierte die Tag-basierte Lifecycle-Differenzierung empirisch. 99 world-fact-Memories auf derselben Bank → 119 Engrams → **C1 consolidated=0** (alle in Working geblieben). Thalamus-avg-Score 0.38-0.40 × Decay ≈ 0.40 erreicht den 0.7-Promote-Threshold für `fact`-Tag nie. Konzept-korrektes §5.3-Verhalten: Facts brauchen höhere Bar als Experiences (Bio: episodisch wird gern konsolidiert, deklarative Trivia nicht). 0/6 hard checks, aber das ist der gewünschte Effekt — Pipeline weigert sich völlig korrekt, beliebige Facts zu konsolidieren.
 
+**Stress-Test: Fact mit 100 Recalls/Memory (`--recalls-per-memory 100`)** sollte zeigen, ob Recall-Druck Facts über den 0.7-Threshold pusht. Resultat: **NEIN.** 15 facts × 100 recalls → avg access_count=147 (max 300), aber **strength blieb bei 0.458** (= Thalamus-Birth-Wert). Composite = thalamus × strength × recency stayed at 0.458 < 0.7 → C1 consolidated=0.
+
+**Architektur-Befund (Story 08 Kandidat):** Auf der aktuellen Epic-25-Architektur bumpt der Recall-Pfad NUR `access_count`, NICHT `strength`. Der alte NCR-Phase-2-Strengthen-Pfad wurde in Epic 25 entfernt. Damit gibt es keinen Mechanismus, der hoch-frequentierte Facts mit der Zeit consolidate-fähig macht. Konzept §5.4 ("Composite = Thalamus × Strength × Recency") setzt aber genau diese Persistenz-durch-Nutzung voraus. Story 26.08 sollte einen "recall-driven strengthen"-Hook bauen, der bei jedem Recall die Strength des getroffenen Engrams inkrementell anhebt (entsprechend LTP bei wiederholter synaptischer Aktivierung).
+
 ## Out-of-Scope
 
 - Änderung der `COHESION_THRESHOLD=0.75`-Konstante auf Production-Bänken (Konzept-Bindung §13 R1).
