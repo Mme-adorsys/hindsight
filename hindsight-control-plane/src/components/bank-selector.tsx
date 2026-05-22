@@ -124,7 +124,7 @@ function BankSelectorInner() {
         {/* Logo */}
         <Image
           src="/logo.png"
-          alt="Hindsight"
+          alt="Cognity"
           width={40}
           height={40}
           className="h-10 w-auto"
@@ -382,7 +382,7 @@ export function BankSelector() {
           <div className="flex items-center gap-4 text-sm">
             <Image
               src="/logo.png"
-              alt="Hindsight"
+              alt="Cognity"
               width={40}
               height={40}
               className="h-10 w-auto"
