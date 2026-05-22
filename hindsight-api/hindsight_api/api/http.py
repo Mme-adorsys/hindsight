@@ -1342,18 +1342,32 @@ def create_app(
             # Decay/Strengthen/Schema processor classes; the orchestrator
             # now composes the function-pipelines in c2_pattern_recognition,
             # c2_schema_writer, c2_decay, and c3_schema_restructure directly.
-            # description_llm_caller stays None for now — schema_description
-            # falls back to the deterministic template path until the LLM
-            # adapter for the new prompt → text contract lands.
             if _config.ncr_enabled:
                 _consolidation = Consolidation1Service(pool=memory._pool, storage_service=memory.engram_storage)
                 _promotion_llm = memory._ctx.llm_registry.get_llm("retain", "conflict_resolution")
+
+                # Epic 26 — wire the schema_description LLM caller so emerging
+                # :Schema nodes get a one-sentence LLM summary instead of the
+                # deterministic "Muster über N Engrams: ..." template fallback.
+                # Tier SMALL per concept §13; routing goes through
+                # llm_registry.get_llm("consolidation", "schema_description").
+                _description_llm = memory._ctx.llm_registry.get_llm("consolidation", "schema_description")
+
+                async def _description_caller(prompt: str) -> str:
+                    resp = await _description_llm.call(
+                        messages=[{"role": "user", "content": prompt}],
+                        scope="schema_description",
+                        temperature=0.3,
+                        max_completion_tokens=200,
+                    )
+                    return str(resp).strip()
+
                 _orchestrator = NCROrchestrator(
                     pool=memory._pool,
                     consolidation=_consolidation,
                     qdrant_client=qdrant,
                     neo4j_client=neo4j,
-                    description_llm_caller=None,
+                    description_llm_caller=_description_caller,
                     # Phase 4: Shared Bank Promotion (B3/B5 + B2 Conflict Resolution)
                     # shared_bank_id=None → Phase 4 skipped (default when HINDSIGHT_API_NCR_SHARED_BANK_ID not set)
                     shared_bank_id=_config.ncr_shared_bank_id,
@@ -2807,6 +2821,65 @@ def _register_routes(app: FastAPI):
         "shared": 3600,
         "all": 3600,  # full NCR: 1 hour
     }
+
+    @app.post(
+        "/v1/default/banks/{bank_id}/schemas/redescribe",
+        summary="Regenerate LLM descriptions for all :Schema nodes in a bank",
+        description=(
+            "Iterates active :Schema nodes for ``bank_id``, calls "
+            "``generate_schema_description`` with the wired SMALL LLM caller, "
+            "and writes the fresh sentence back to ``s.description``. Useful "
+            "after wiring the LLM caller for the first time, when existing "
+            "schemas still carry the deterministic template fallback. "
+            "Skips :HyperSchema (different prompt — covered separately)."
+        ),
+        operation_id="redescribe_schemas",
+        tags=["Consolidation"],
+        status_code=200,
+    )
+    async def api_redescribe_schemas(bank_id: str):
+        if not hasattr(app.state, "ncr_orchestrator"):
+            raise HTTPException(status_code=503, detail="NCR is not enabled.")
+        orchestrator = app.state.ncr_orchestrator
+        caller = getattr(orchestrator, "_description_llm_caller", None)
+        if caller is None:
+            raise HTTPException(
+                status_code=503,
+                detail="schema_description LLM caller is not wired on this NCR orchestrator.",
+            )
+        from uuid import UUID
+
+        from ..engine.consolidation.schema_description import generate_schema_description
+        from ..engine.schema.schema_repository import list_active_schemas, update_schema
+        from .cp_schemas import _filter_bank
+
+        neo4j = app.state.neo4j
+        all_schemas = await list_active_schemas(neo4j, label="Schema", limit=10_000)
+        schemas = _filter_bank(all_schemas, bank_id)
+        updated = 0
+        for schema in schemas:
+            try:
+                description = await generate_schema_description(
+                    properties=schema.properties or {},
+                    evidence_count=schema.evidence_count or 0,
+                    llm_caller=caller,
+                )
+                if not description:
+                    continue
+                await update_schema(
+                    neo4j,
+                    UUID(str(schema.id)),
+                    {"description": description},
+                    label="Schema",
+                )
+                updated += 1
+            except Exception as exc:
+                logger.warning(
+                    "redescribe_schemas: failed on schema_id=%s — %s",
+                    schema.id,
+                    exc,
+                )
+        return {"bank_id": bank_id, "scanned": len(schemas), "updated": updated}
 
     @app.post(
         "/v1/default/banks/{bank_id}/sessions/advance",
