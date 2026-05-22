@@ -49,7 +49,7 @@ class TestGenerateSchemaDescription:
         assert result == "Coffee-Meetings am Nachmittag (~44min, produktiv)."
         # Prompt must include the JSON-rendered properties + evidence count.
         prompt = llm.await_args.args[0]
-        assert "Evidence-Count (Anzahl Episoden im Cluster): 8" in prompt
+        assert "Evidence-Count (number of episodes): 8" in prompt
         assert "activity" in prompt and "coffee" in prompt
         # evidence_count itself is not duplicated inside the JSON payload.
         assert '"evidence_count"' not in prompt
