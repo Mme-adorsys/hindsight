@@ -25,7 +25,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Check, ChevronsUpDown, Plus, FileText, Moon, Sun, Github } from "lucide-react";
 import { useTheme } from "@/lib/theme-context";
-import Image from "next/image";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
@@ -121,19 +120,6 @@ function BankSelectorInner() {
   return (
     <div className="bg-card text-card-foreground px-5 py-3 border-b-4 border-primary-gradient">
       <div className="flex items-center gap-4 text-sm">
-        {/* Logo */}
-        <Image
-          src="/logo.png"
-          alt="Cognity"
-          width={40}
-          height={40}
-          className="h-10 w-auto"
-          unoptimized
-        />
-
-        {/* Separator */}
-        <div className="h-8 w-px bg-border" />
-
         {/* Memory Bank Selector */}
         <Popover open={open} onOpenChange={setOpen}>
           <PopoverTrigger asChild>
@@ -380,15 +366,6 @@ export function BankSelector() {
       fallback={
         <div className="bg-card text-card-foreground px-5 py-3 border-b-4 border-primary-gradient">
           <div className="flex items-center gap-4 text-sm">
-            <Image
-              src="/logo.png"
-              alt="Cognity"
-              width={40}
-              height={40}
-              className="h-10 w-auto"
-              unoptimized
-            />
-            <div className="h-8 w-px bg-border" />
             <Button
               variant="outline"
               className="w-[250px] justify-between font-bold border-2 border-primary"
