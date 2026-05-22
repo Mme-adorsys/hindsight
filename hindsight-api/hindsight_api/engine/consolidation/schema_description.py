@@ -23,12 +23,26 @@ DescriptionLLMCaller = Callable[[str], Awaitable[str]]
 """Async callable: prompt → completion text. Caller wires this from LLMRegistry."""
 
 PROMPT_TEMPLATE: str = (
-    "Du bekommst statistisch aggregierte Properties eines wiederkehrenden Episoden-Musters "
-    "(z.B. Coffee-Meetings am Nachmittag). Schreibe daraus EINEN einzigen, prägnanten Satz "
-    "auf Deutsch, der das Muster beschreibt — kein Reasoning, kein Vorwort, keine Aufzählung.\n\n"
+    "Du bekommst statistisch aggregierte Properties eines wiederkehrenden Musters aus "
+    "einem episodischen Memory-System. Schreibe EINEN präzisen Satz auf Deutsch, der "
+    "die STRUKTUR des Musters beschreibt — kein Vorwort, keine Aufzählung, kein JSON.\n\n"
+    "Lesart der Properties:\n"
+    "- 'cluster': Setting-Etikett (z.B. 'coffee_morning' = Termine, die morgens BEI Kaffee "
+    "stattfinden — nicht Termine ÜBER das Thema Kaffee).\n"
+    "- 'format': Termin-Art ('1on1' = Zwei-Personen-Termin, 'group' = Gruppen-Meeting).\n"
+    "- 'duration': Dauer in MINUTEN (30 = 30 Minuten, nicht Stunden).\n"
+    "- 'time': Zeit-Etikett (morning/afternoon/friday/…).\n"
+    "- 'mood': Charakter des Treffens (productive/casual/reflective/…).\n"
+    "- 'domain': Sachgebiet bei deklarativen Faktum-Clustern.\n"
+    "- 'shape': 'declarative' = wiederkehrende Fakt-Aussage, kein Ereignis.\n"
+    "- Properties mit type='numeric' tragen min/max/mean — beschreibe sie als Richtwerte.\n"
+    "- Properties mit type='categorical' und confidence=1.0 sind invariant für das Muster.\n\n"
+    "Was die Properties NICHT enthalten: konkrete Inhalte einzelner Episoden. Beschreibe "
+    "nur was wiederkehrt: das SETTING, den FORMAT-Rahmen, das Sachgebiet — NICHT was "
+    "Beteiligte konkret besprochen haben.\n\n"
     "Properties (JSON):\n{properties_json}\n\n"
-    "Evidence-Count: {evidence_count}\n\n"
-    "Antwort (1 Satz):"
+    "Evidence-Count (Anzahl Episoden im Cluster): {evidence_count}\n\n"
+    "Antwort (genau 1 Satz, max. 200 Zeichen):"
 )
 
 # Soft cap so a runaway LLM doesn't smuggle paragraphs into the schema doc field.
